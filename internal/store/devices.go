@@ -48,9 +48,9 @@ const deviceColumns = `id, name, token_hash, panel_w, panel_h, row_h, font_size,
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var (
-		d          Device
-		last, rev  sql.NullString
-		createdAt  string
+		d         Device
+		last, rev sql.NullString
+		createdAt string
 	)
 	if err := row.Scan(&d.ID, &d.Name, &d.TokenHash, &d.PanelW, &d.PanelH, &d.RowH,
 		&d.FontSize, &d.ButtonsJSON, &d.TZ, &d.BatteryMV, &last, &rev, &createdAt); err != nil {
