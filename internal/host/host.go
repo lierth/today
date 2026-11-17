@@ -145,6 +145,11 @@ func (h *Host) SetFirstRunPassword(pw string) { h.firstPass = pw }
 
 // Run blocks in the native event loop until the app quits.
 func (h *Host) Run() error {
+	if Version == "dev" {
+		if v := strings.TrimSpace(mygo.App.Version()); v != "" {
+			Version = v
+		}
+	}
 	mygo.App.SetName("Today")
 	mygo.App.SetVersion(Version)
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
