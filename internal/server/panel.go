@@ -70,7 +70,12 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	done := 0
+	visible := items[:0]
 	for _, it := range items {
+		if it.Status == store.StatusCancelled {
+			continue
+		}
+		visible = append(visible, it)
 		if it.Done() {
 			done++
 		}
@@ -79,8 +84,8 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 		Title:      "Today",
 		Nav:        "panel",
 		DateLabel:  now.Format("01月02日"),
-		Items:      items,
-		Total:      len(items),
+		Items:      visible,
+		Total:      len(visible),
 		Done:       done,
 		PanelToken: token,
 	}
