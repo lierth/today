@@ -127,6 +127,12 @@ func (it *Item) fillDerived(loc *time.Location, now time.Time) {
 
 // CreateItem inserts a new item. ID and timestamps are assigned when empty.
 func (s *Store) CreateItem(ctx context.Context, in Item, loc *time.Location) (Item, error) {
+	if err := ValidateRRule(in.RRule, loc); err != nil {
+		return Item{}, err
+	}
+	if in.RRule != "" && in.StartsAt == nil {
+		return Item{}, errors.New("store: recurring item needs a start time")
+	}
 	now := time.Now()
 	if in.ID == "" {
 		in.ID = uuid.NewString()
@@ -183,6 +189,29 @@ func (s *Store) ItemsOn(ctx context.Context, dateLocal string) ([]Item, error) {
 }
 
 // AllItems lists recent live items for the management page.
+// PastItems returns items before the given local date, newest first.
+func (s *Store) PastItems(ctx context.Context, before string, limit int) ([]Item, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemSelect+` FROM items
+		WHERE deleted_at IS NULL AND date_local < ?
+		ORDER BY date_local DESC, sort_key DESC, created_at DESC LIMIT ?`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		it, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) AllItems(ctx context.Context, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
@@ -263,7 +292,13 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 		it.Pinned = *p.Pinned
 	}
 	if p.RRule != nil {
+		if err := ValidateRRule(*p.RRule, loc); err != nil {
+			return Item{}, err
+		}
 		it.RRule = strings.TrimSpace(*p.RRule)
+		if it.RRule != "" && it.StartsAt == nil {
+			return Item{}, errors.New("store: recurring item needs a start time")
+		}
 	}
 	if p.DateLocal != nil && strings.TrimSpace(*p.DateLocal) != "" {
 		it.DateLocal = strings.TrimSpace(*p.DateLocal)
@@ -283,7 +318,88 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 	if err != nil {
 		return Item{}, fmt.Errorf("store: update item: %w", err)
 	}
+
+	// A recurring master owns its future open instances. Keep them in sync so
+	// editing a series does not require touching every occurrence by hand.
+	if it.SeriesID == "" && (it.RRule != "" || p.RRule != nil) {
+		today := it.UpdatedAt.In(loc).Format(DateLayout)
+		switch {
+		case p.RRule != nil:
+			if _, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=?, updated_at=?
+				WHERE series_id=? AND date_local >= ? AND status='open' AND deleted_at IS NULL`,
+				timeStr(it.UpdatedAt), timeStr(it.UpdatedAt), it.ID, today); err != nil {
+				return Item{}, fmt.Errorf("store: clear series instances: %w", err)
+			}
+			if it.RRule != "" {
+				if _, err := s.Materialize(ctx, loc, it.UpdatedAt, 31); err != nil {
+					return Item{}, err
+				}
+			}
+		case p.Title != nil || p.Description != nil || p.StartsAt != nil || p.AllDay != nil:
+			if err := s.syncSeries(ctx, it, today, loc); err != nil {
+				return Item{}, err
+			}
+		}
+		if p.Status != nil && it.Status == StatusCancelled {
+			if _, err := s.db.ExecContext(ctx, `UPDATE items SET status=?, updated_at=?
+				WHERE series_id=? AND date_local >= ? AND status='open' AND deleted_at IS NULL`,
+				StatusCancelled, timeStr(it.UpdatedAt), it.ID, today); err != nil {
+				return Item{}, fmt.Errorf("store: cancel series instances: %w", err)
+			}
+		}
+	}
 	return it, nil
+}
+
+// syncSeries refreshes future open instances from a recurring master while
+// keeping each instance's own date.
+func (s *Store) syncSeries(ctx context.Context, master Item, today string, loc *time.Location) error {
+	if loc == nil {
+		loc = time.Local
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, date_local FROM items
+		WHERE series_id=? AND date_local >= ? AND status='open' AND deleted_at IS NULL`,
+		master.ID, today)
+	if err != nil {
+		return fmt.Errorf("store: list series instances: %w", err)
+	}
+	type instance struct{ id, date string }
+	var instances []instance
+	for rows.Next() {
+		var in instance
+		if err := rows.Scan(&in.id, &in.date); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: scan series instance: %w", err)
+		}
+		instances = append(instances, in)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: list series instances: %w", err)
+	}
+	for _, in := range instances {
+		var starts any
+		var sortKey int64
+		if !master.AllDay && master.StartsAt != nil {
+			clock := master.StartsAt.In(loc).Format("15:04:05")
+			start, err := time.ParseInLocation("2006-01-02 15:04:05", in.date+" "+clock, loc)
+			if err != nil {
+				continue
+			}
+			starts = timeStr(start)
+			sortKey = start.Unix()
+		} else {
+			parsed, _ := time.ParseInLocation(DateLayout, in.date, loc)
+			sortKey = parsed.Unix()
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE items SET title=?, description=?,
+			all_day=?, starts_at=?, sort_key=?, updated_at=? WHERE id=?`,
+			master.Title, master.Description, boolInt(master.AllDay), starts,
+			sortKey, timeStr(master.UpdatedAt), in.id); err != nil {
+			return fmt.Errorf("store: sync series instance: %w", err)
+		}
+	}
+	return nil
 }
 
 func parsePatchTime(v string) (*time.Time, error) {

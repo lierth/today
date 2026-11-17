@@ -86,6 +86,15 @@ func parseUntil(v string, loc *time.Location) (time.Time, error) {
 
 // Materialize generates recurring instances inside [today, today+days).
 // It is idempotent: an instance is keyed by (series_id, date_local).
+// ValidateRRule checks a recurrence expression against the supported subset.
+func ValidateRRule(expr string, loc *time.Location) error {
+	if strings.TrimSpace(expr) == "" {
+		return nil
+	}
+	_, err := parseRRule(expr, loc)
+	return err
+}
+
 func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Time, days int) (int, error) {
 	if loc == nil {
 		loc = time.Local

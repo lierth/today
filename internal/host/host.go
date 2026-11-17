@@ -65,8 +65,14 @@ func deepLinkTarget(raw, base string) string {
 		return base + "/app"
 	case rest == "settings":
 		return base + "/settings"
-	case rest == "items" || rest == "item" || strings.HasPrefix(rest, "item/"):
+	case rest == "items" || rest == "item":
 		return base + "/items"
+	case strings.HasPrefix(rest, "item/"):
+		id := strings.TrimPrefix(rest, "item/")
+		if id == "" || strings.ContainsAny(id, "/?#") {
+			return base + "/items"
+		}
+		return base + "/items/" + id
 	default:
 		return base + "/app"
 	}

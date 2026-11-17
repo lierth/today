@@ -7,6 +7,7 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ type pageData struct {
 	DateLabel string
 	Items     []store.Item
 	All       []store.Item
+	Item      store.Item
+	HasItem   bool
+	Past      []store.Item
 	Settings  map[string]string
 	Devices   []store.Device
 	Stats     store.Stats
@@ -139,6 +143,19 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleItemPage(w http.ResponseWriter, r *http.Request) {
+	it, err := s.st.Item(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "db", http.StatusInternalServerError)
+		return
+	}
+	s.render(w, r, "item.html", pageData{Title: it.Title, Nav: "items", Item: it, HasItem: true})
+}
+
 func (s *Server) handleItemsPage(w http.ResponseWriter, r *http.Request) {
 	items, err := s.st.AllItems(r.Context(), 500)
 	if err != nil {
@@ -146,6 +163,20 @@ func (s *Server) handleItemsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "items.html", pageData{Title: "事项", Nav: "items", All: items})
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	day, _, err := s.Today(r.Context())
+	if err != nil {
+		http.Error(w, "timezone", http.StatusInternalServerError)
+		return
+	}
+	past, err := s.st.PastItems(r.Context(), day.Format(store.DateLayout), 200)
+	if err != nil {
+		http.Error(w, "db", http.StatusInternalServerError)
+		return
+	}
+	s.render(w, r, "history.html", pageData{Title: "历史", Nav: "history", Past: past})
 }
 
 func (s *Server) settingsData(ctx context.Context) (pageData, error) {
@@ -238,10 +269,14 @@ func (s *Server) handleItemCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		in.Title = r.FormValue("title")
 		in.Description = r.FormValue("description")
+		in.RRule = strings.TrimSpace(r.FormValue("rrule"))
 		date := strings.TrimSpace(r.FormValue("date"))
 		clock := strings.TrimSpace(r.FormValue("time"))
 		if date == "" {
 			date = today
+		}
+		if clock == "" && in.RRule != "" {
+			clock = "09:00"
 		}
 		if clock != "" {
 			start, err := time.ParseInLocation("2006-01-02 15:04", date+" "+clock, loc)
@@ -259,6 +294,12 @@ func (s *Server) handleItemCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if item.RRule != "" {
+		if _, err := s.st.Materialize(ctx, loc, time.Now(), 31); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if isJSON(r) {
 		writeJSON(w, http.StatusCreated, item)
@@ -363,6 +404,10 @@ func (s *Server) handleItemPatch(w http.ResponseWriter, r *http.Request) {
 	if view == "" {
 		view = "today"
 	}
+	if view == "item" && r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/items", http.StatusSeeOther)
+		return
+	}
 	s.respondItems(w, r, view)
 }
 
@@ -384,6 +429,18 @@ func (s *Server) handleItemDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleItemDeletePost(w http.ResponseWriter, r *http.Request) {
+	if err := s.st.DeleteItem(r.Context(), r.PathValue("id")); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/items", http.StatusSeeOther)
 }
 
 // respondItems re-renders the list partial the caller targeted.
@@ -428,6 +485,8 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+var deviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
 func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
@@ -464,6 +523,25 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
+	case "add_device":
+		id := strings.ToLower(strings.TrimSpace(r.FormValue("device_id")))
+		name := strings.TrimSpace(r.FormValue("device_name"))
+		if !deviceIDPattern.MatchString(id) {
+			s.renderSettingsPanel(w, r, pageData{Error: "设备 ID 只能用小写字母、数字、- 和 _（1–32 位）。"}, http.StatusBadRequest)
+			return
+		}
+		if name == "" {
+			name = id
+		}
+		if _, err := s.st.Device(ctx, id); err == nil {
+			s.renderSettingsPanel(w, r, pageData{Error: "设备 " + id + " 已存在。"}, http.StatusBadRequest)
+			return
+		}
+		if _, err := s.st.CreateDevice(ctx, id, name, ""); err != nil {
+			s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusInternalServerError)
+			return
+		}
+		msg = "设备已添加，接着为它生成 token。"
 	case "device_token":
 		id := r.FormValue("device")
 		token := newDeviceToken()

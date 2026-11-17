@@ -9,7 +9,7 @@
         <button class="check" type="submit" title="勾选">{{if .Done}}✓{{end}}</button>
       </form>
       <div class="time">{{timeLabel .}}</div>
-      <div class="title">{{.Title}}</div>
+      <div class="title"><a href="/items/{{.ID}}">{{.Title}}</a></div>
     </li>
     {{end}}
   </ul>

@@ -291,3 +291,42 @@ func TestOpenMissingDir(t *testing.T) {
 	}
 	_ = sql.ErrNoRows
 }
+
+func TestPastItems(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	now := time.Now().In(loc)
+	yesterday := now.AddDate(0, 0, -1).Format(DateLayout)
+	today := now.Format(DateLayout)
+
+	if _, err := st.CreateItem(ctx, Item{Title: "昨天", AllDay: true, DateLocal: yesterday}, loc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateItem(ctx, Item{Title: "今天", AllDay: true, DateLocal: today}, loc); err != nil {
+		t.Fatal(err)
+	}
+	past, err := st.PastItems(ctx, today, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(past) != 1 || past[0].Title != "昨天" {
+		t.Fatalf("past items: %+v", past)
+	}
+	if _, err := st.PastItems(ctx, today, -1); err != nil {
+		t.Fatalf("default limit: %v", err)
+	}
+}
+
+func TestRecurringNeedsTime(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	if _, err := st.CreateItem(ctx, Item{Title: "全天重复", AllDay: true, RRule: "FREQ=DAILY"}, loc); err == nil {
+		t.Fatal("expected recurring item without a time to fail")
+	}
+	if err := ValidateRRule("FREQ=YEARLY", loc); err == nil {
+		t.Fatal("expected unsupported frequency to fail")
+	}
+	if err := ValidateRRule("FREQ=WEEKLY;INTERVAL=2;COUNT=4", loc); err != nil {
+		t.Fatalf("valid rule: %v", err)
+	}
+}

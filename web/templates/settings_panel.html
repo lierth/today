@@ -81,6 +81,12 @@
 <div class="card">
   <div class="card-head"><h2>设备</h2><span class="count">{{len .Devices}}</span></div>
   <div class="settings">
+    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+      <input type="hidden" name="action" value="add_device">
+      <input type="text" name="device_id" placeholder="设备 ID（如 dev2）" pattern="[a-z0-9][a-z0-9_-]{0,31}" maxlength="32" required aria-label="设备 ID">
+      <input type="text" name="device_name" placeholder="名称（可选）" maxlength="80" aria-label="设备名称">
+      <button class="ghost" type="submit">添加设备</button>
+    </form>
     {{if .Token}}
     <div>
       <div class="hint">新 token（只显示这一次，请写进固件）：</div>
@@ -103,6 +109,7 @@
           <input type="hidden" name="device" value="{{.ID}}">
           <button class="ghost" type="submit">生成 token</button>
         </form>
+        <a class="ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank">预览</a>
         <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
           <input type="hidden" name="action" value="revoke_device">
           <input type="hidden" name="device" value="{{.ID}}">
@@ -125,7 +132,7 @@
     </div>
     <div class="field">
       <label>设备</label>
-      <span>{{.Stats.Devices}} 台在线</span>
+      <span>{{.Stats.Devices}} 台</span>
     </div>
     <div class="field">
       <label>预览</label>

@@ -1,0 +1,25 @@
+{{define "history.html"}}{{template "head" .}}
+<h1 class="page-title">历史</h1>
+<p class="page-sub">今天之前的事项，最近 200 条。</p>
+
+<section class="card">
+  <div class="card-head">
+    <h2>过去</h2>
+    <span class="count">{{len .Past}}</span>
+  </div>
+  {{if .Past}}
+  <ul class="history">
+    {{range .Past}}
+    <li class="history-row{{if .Done}} done{{end}}">
+      <div class="meta">{{dateLabel .}}</div>
+      <div class="time">{{timeLabel .}}</div>
+      <div class="title"><a href="/items/{{.ID}}">{{.Title}}</a></div>
+      <div class="meta">{{statusLabel .}}</div>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty">还没有历史事项</p>
+  {{end}}
+</section>
+{{template "foot" .}}{{end}}

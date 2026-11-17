@@ -12,3 +12,7 @@ docs/PLAN.md
 Today.app/
 dist/
 .tmp/
+firmware/.pio/
+firmware/.vscode/
+firmware/*.bin
+firmware/*.elf

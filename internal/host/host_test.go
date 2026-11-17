@@ -10,7 +10,7 @@ func TestDeepLinkTarget(t *testing.T) {
 		"today://app":        base + "/app",
 		"today://settings":   base + "/settings",
 		"today://items":      base + "/items",
-		"today://item/abc":   base + "/items",
+		"today://item/abc":   base + "/items/abc",
 		"today://unknown":    base + "/app",
 		"https://example.co": "https://example.co",
 		"garbage":            base + "/app",

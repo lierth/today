@@ -7,6 +7,12 @@
     <input type="text" name="title" placeholder="新事项…" maxlength="200" required autocomplete="off" aria-label="标题">
     <input type="date" name="date" aria-label="日期">
     <input type="time" name="time" aria-label="时间">
+    <select name="rrule" aria-label="重复">
+      <option value="">不重复</option>
+      <option value="FREQ=DAILY">每天</option>
+      <option value="FREQ=WEEKLY">每周</option>
+      <option value="FREQ=MONTHLY">每月</option>
+    </select>
     <button type="submit">添加</button>
   </form>
 </div>

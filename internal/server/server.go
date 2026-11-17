@@ -90,6 +90,10 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /app", s.requireSession(s.handleApp))
 	s.mux.HandleFunc("GET /items", s.requireSession(s.handleItemsPage))
+	s.mux.HandleFunc("GET /history", s.requireSession(s.handleHistory))
+	s.mux.HandleFunc("GET /items/{id}", s.requireSession(s.handleItemPage))
+	s.mux.HandleFunc("POST /items/{id}", s.requireSession(s.handleItemPatch))
+	s.mux.HandleFunc("POST /items/{id}/delete", s.requireSession(s.handleItemDeletePost))
 	s.mux.HandleFunc("GET /settings", s.requireSession(s.handleSettingsPage))
 	s.mux.HandleFunc("GET /", s.handleRoot)
 
