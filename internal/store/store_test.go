@@ -389,3 +389,45 @@ func TestSeriesEditSyncsFutureInstances(t *testing.T) {
 		t.Fatalf("COUNT=2 should not reach day after: %+v", extra)
 	}
 }
+
+func TestDeletedOccurrenceStaysDeleted(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	now := time.Now().In(loc)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
+	master, err := st.CreateItem(ctx, Item{
+		Title: "系列", StartsAt: &start, RRule: "FREQ=DAILY;COUNT=4",
+	}, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Materialize(ctx, loc, now, 7); err != nil {
+		t.Fatal(err)
+	}
+	tomorrow := now.AddDate(0, 0, 1).Format(DateLayout)
+	dayAfter := now.AddDate(0, 0, 2).Format(DateLayout)
+	items, err := st.ItemsOn(ctx, tomorrow)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("tomorrow before delete: %+v err=%v", items, err)
+	}
+	if err := st.DeleteItem(ctx, items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Materialize(ctx, loc, now, 7); err != nil {
+		t.Fatal(err)
+	}
+	items, err = st.ItemsOn(ctx, tomorrow)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("deleted occurrence came back: %+v err=%v", items, err)
+	}
+	if err := st.DeleteItem(ctx, master.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Materialize(ctx, loc, now, 7); err != nil {
+		t.Fatal(err)
+	}
+	items, err = st.ItemsOn(ctx, dayAfter)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("master delete left instances: %+v err=%v", items, err)
+	}
+}

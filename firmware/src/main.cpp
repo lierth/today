@@ -448,7 +448,11 @@ void setup() {
 
   const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   const bool buttonWake = cause == ESP_SLEEP_WAKEUP_EXT1;
+  const bool coldBoot = cause == ESP_SLEEP_WAKEUP_UNDEFINED;
   InitDisplay(!buttonWake);
+  // A cold boot clears the panel; NVS still has the last frame, so paint it
+  // before the timer fetch. Otherwise a 304 would leave a blank screen.
+  if (coldBoot && haveFrame) DrawFull();
 
   if (buttonWake) {
     HandleButtons();

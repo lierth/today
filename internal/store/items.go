@@ -325,9 +325,11 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 		today := it.UpdatedAt.In(loc).Format(DateLayout)
 		switch {
 		case p.RRule != nil:
-			if _, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=?, updated_at=?
+			// Hard-delete future open instances so Materialize can create the
+			// new rule's dates. User-deleted tombstones stay untouched.
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM items
 				WHERE series_id=? AND date_local >= ? AND status='open' AND deleted_at IS NULL`,
-				timeStr(it.UpdatedAt), timeStr(it.UpdatedAt), it.ID, today); err != nil {
+				it.ID, today); err != nil {
 				return Item{}, fmt.Errorf("store: clear series instances: %w", err)
 			}
 			if it.RRule != "" {

@@ -84,7 +84,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_items_date ON items(date_local, status) WHERE deleted_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_items_series ON items(series_id, date_local) WHERE series_id IS NOT NULL AND deleted_at IS NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_items_series_date ON items(series_id, date_local) WHERE series_id IS NOT NULL AND deleted_at IS NULL`,
 		`CREATE TABLE IF NOT EXISTS devices (
 			id           TEXT PRIMARY KEY,
 			name         TEXT NOT NULL DEFAULT '',
@@ -123,6 +122,32 @@ func (s *Store) migrate(ctx context.Context) error {
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
+		}
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("store: schema version: %w", err)
+	}
+	if version < 1 {
+		// A deleted recurring occurrence must stay deleted: the unique index
+		// has to cover tombstones too, otherwise Materialize recreates it.
+		for _, stmt := range []string{
+			`DROP INDEX IF EXISTS idx_items_series_date`,
+			`DELETE FROM items WHERE series_id IS NOT NULL AND deleted_at IS NOT NULL
+				AND EXISTS (SELECT 1 FROM items live
+					WHERE live.series_id = items.series_id AND live.date_local = items.date_local
+					AND live.deleted_at IS NULL AND live.rowid <> items.rowid)`,
+			`DELETE FROM items WHERE series_id IS NOT NULL AND deleted_at IS NOT NULL
+				AND rowid NOT IN (SELECT MIN(rowid) FROM items
+					WHERE series_id IS NOT NULL AND deleted_at IS NOT NULL
+					GROUP BY series_id, date_local)`,
+			`CREATE UNIQUE INDEX idx_items_series_date ON items(series_id, date_local)
+				WHERE series_id IS NOT NULL`,
+			`PRAGMA user_version = 1`,
+		} {
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("store: migrate series index: %w", err)
+			}
 		}
 	}
 	return nil

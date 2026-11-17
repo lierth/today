@@ -113,6 +113,8 @@ below the target. `mode battery` is the default deep-sleep state machine.
 - Cursor movement uses `displayWindow()` per 24 px row. If the panel/controller
   loses RAM across deep sleep on your board, set the button path to redraw the
   full frame after `InitDisplay()`.
+- A cold boot repaints the cached NVS frame before the first fetch; after a
+  deliberate power cycle the screen should never stay blank on a 304.
 - HTTPS certificate validation is disabled (see above).
 - No config portal; provisioning is over USB serial.
 - OTA trusts the uploaded image as far as `Update` validates it; the upload is
