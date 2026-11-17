@@ -543,3 +543,49 @@ func TestPanelToken(t *testing.T) {
 		t.Fatalf("expired panel token: %d", old.StatusCode)
 	}
 }
+
+func TestPanelShowsTodayWithoutCancelled(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().In(e.loc)
+	today := now.Format(store.DateLayout)
+	if _, err := e.st.CreateItem(context.Background(), store.Item{Title: "面板里的会议", AllDay: true, DateLocal: today}, e.loc); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := e.st.CreateItem(context.Background(), store.Item{Title: "已取消", AllDay: true, DateLocal: today}, e.loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.SetStatus(context.Background(), cancelled.ID, store.StatusCancelled); err != nil {
+		t.Fatal(err)
+	}
+	token, err := e.srv.PanelToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := e.client.Get(e.ts.URL + "/panel?t=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("panel: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("面板里的会议")) || bytes.Contains(body, []byte("已取消")) {
+		t.Fatalf("panel body missing today's item or leaked cancelled: %s", body)
+	}
+	req, _ := http.NewRequest("GET", e.ts.URL+"/panel?t="+url.QueryEscape(token), nil)
+	req.Header.Set("HX-Request", "true")
+	part, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer part.Body.Close()
+	if part.StatusCode != http.StatusOK {
+		t.Fatalf("panel fragment: %d", part.StatusCode)
+	}
+	partBody, _ := io.ReadAll(part.Body)
+	if bytes.Contains(partBody, []byte("<!doctype")) || !bytes.Contains(partBody, []byte("面板里的会议")) {
+		t.Fatalf("panel fragment: %s", partBody)
+	}
+}
