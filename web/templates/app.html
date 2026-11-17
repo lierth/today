@@ -1,0 +1,21 @@
+{{define "app.html"}}{{template "head" .}}
+<h1 class="page-title">今天</h1>
+<p class="page-sub">{{.DateLabel}} · <span class="progress">{{.Done}} / {{.Total}}</span></p>
+
+<div class="card">
+  <form class="quick" hx-post="/api/items" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}'>
+    <input type="text" name="title" placeholder="添加一件事…" maxlength="200" required autocomplete="off" aria-label="标题">
+    <input type="time" name="time" aria-label="时间">
+    <button type="submit">添加</button>
+  </form>
+</div>
+
+{{template "today_list.html" .}}
+
+<div class="card">
+  <div class="card-head">
+    <h2>服务端渲染</h2>
+    <a class="count" href="/api/devices/dev1/preview.png?scale=2" target="_blank">打开预览 ↗</a>
+  </div>
+</div>
+{{template "foot" .}}{{end}}

@@ -1,0 +1,20 @@
+{{define "today_list.html"}}
+<section id="today-list" class="card">
+  {{if .Items}}
+  <ul class="items">
+    {{range .Items}}
+    <li class="item{{if .Done}} done{{end}}">
+      <form hx-patch="/api/items/{{.ID}}" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}'>
+        <input type="hidden" name="status" value="{{if .Done}}open{{else}}done{{end}}">
+        <button class="check" type="submit" title="勾选">{{if .Done}}✓{{end}}</button>
+      </form>
+      <div class="time">{{timeLabel .}}</div>
+      <div class="title">{{.Title}}</div>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty">今天没有事项</p>
+  {{end}}
+</section>
+{{end}}

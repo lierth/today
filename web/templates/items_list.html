@@ -1,0 +1,46 @@
+{{define "items_list.html"}}
+<section id="items-list" class="card">
+  <div class="card-head">
+    <h2>全部事项</h2>
+    <span class="count">{{len .All}}</span>
+  </div>
+  {{if .All}}
+  {{range .All}}
+  <div class="list-row">
+    <form hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
+      <input type="hidden" name="status" value="{{if .Done}}open{{else}}done{{end}}">
+      <button class="check" type="submit" title="勾选">{{if .Done}}✓{{end}}</button>
+    </form>
+    <div>
+      <div>{{.Title}}</div>
+      <div class="meta">{{dateLabel .}} · {{timeLabel .}} · {{statusLabel .}}{{if .RRule}} · {{.RRule}}{{end}}{{if .SeriesID}} · 重复实例{{end}}</div>
+      <details class="edit">
+        <summary>编辑</summary>
+        <form class="edit-form" hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
+          <input type="hidden" name="full" value="1">
+          <input class="wide" type="text" name="title" value="{{.Title}}" maxlength="200" required aria-label="标题">
+          <input type="date" name="date" value="{{dateValue .}}" aria-label="日期">
+          <input type="time" name="time" value="{{timeValue .}}" aria-label="时间">
+          <select name="status" aria-label="状态">
+            <option value="open" {{if eq .Status "open"}}selected{{end}}>未完成</option>
+            <option value="done" {{if eq .Status "done"}}selected{{end}}>已完成</option>
+            <option value="cancelled" {{if eq .Status "cancelled"}}selected{{end}}>已取消</option>
+          </select>
+          <label class="checkline"><input type="checkbox" name="all_day" value="1" {{if .AllDay}}checked{{end}}> 全天</label>
+          <label class="checkline"><input type="checkbox" name="pinned" value="1" {{if .Pinned}}checked{{end}}> 置顶</label>
+          <input class="wide" type="text" name="rrule" value="{{.RRule}}" placeholder="FREQ=WEEKLY;INTERVAL=1 或留空" aria-label="重复规则">
+          <div class="edit-actions">
+            <button class="danger" type="button" hx-delete="/api/items/{{.ID}}" hx-confirm="删除这件事？" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>删除</button>
+            <button type="submit">保存</button>
+          </div>
+        </form>
+      </details>
+    </div>
+    <div class="meta">{{.DateLocal}}</div>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="empty">还没有任何事项</p>
+  {{end}}
+</section>
+{{end}}

@@ -1,0 +1,237 @@
+// Package frame implements the Today device frame: a deterministic 1-bit
+// bitmap plus a fixed-size binary header that ESP32 firmware copies straight
+// into panel memory.
+package frame
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"hash/crc32"
+)
+
+// Contract constants, shared with the firmware (docs/PLAN.md §5.2).
+const (
+	Magic         = "TBF1"
+	FormatVersion = 2
+	BitDepth      = 1
+
+	Width  = 400
+	Height = 300
+
+	RowHeight    = 24
+	HeaderHeight = 32
+	FooterHeight = 28
+
+	ContentX     = 16
+	ContentWidth = 368
+)
+
+// Frame flag bits.
+const (
+	FlagForceFull = 1 << 0
+)
+
+// Row flag bits.
+const (
+	RowFlagDone    = 1 << 0
+	RowFlagSummary = 1 << 1
+)
+
+// Cursor encodings.
+const (
+	CursorNone         = 0xFF
+	CursorStyleInvert  = 0
+	CursorStyleStrike  = 1
+	actionUp           = 1
+	actionDown         = 2
+	actionOK           = 3
+	actionRefresh      = 4
+	actionLongOK       = 5
+	defaultFooterCount = 4
+)
+
+// Action codes understood by the firmware: 1 up / 2 down / 3 ok /
+// 4 refresh / 5 long_ok.
+const (
+	ActionUp      = actionUp
+	ActionDown    = actionDown
+	ActionOK      = actionOK
+	ActionRefresh = actionRefresh
+	ActionLongOK  = actionLongOK
+)
+
+// Row binds a bitmap row to an item UUID.
+type Row struct {
+	UUID  [16]byte
+	Y     uint16
+	Flags uint8
+	Pad   uint8
+}
+
+// Footer maps a panel GPIO button to an action code.
+type Footer struct {
+	GPIO   uint8
+	Action uint8
+}
+
+// Frame is one rendered screen.
+type Frame struct {
+	Flags uint8
+
+	Width, Height   uint16
+	RowH            uint16
+	HeaderH         uint16
+	FooterH         uint16
+	ContentX        uint16
+	ContentW        uint16
+	CursorRow       uint8
+	CursorStyle     uint8
+	Rows            []Row
+	Footer          []Footer
+	Bitmap          []byte
+	Encoded         []byte
+	EncodedChecksum uint32
+}
+
+// Stride is the bitmap row length in bytes.
+func (f *Frame) Stride() int { return int((f.Width + 7) / 8) }
+
+// NewFrame returns a frame carrying the panel geometry defaults.
+func NewFrame() *Frame {
+	return &Frame{
+		Width:       Width,
+		Height:      Height,
+		RowH:        RowHeight,
+		HeaderH:     HeaderHeight,
+		FooterH:     FooterHeight,
+		ContentX:    ContentX,
+		ContentW:    ContentWidth,
+		CursorRow:   CursorNone,
+		CursorStyle: CursorStyleInvert,
+	}
+}
+
+// Encode serializes the frame: header, rows, footer bindings, bitmap, CRC32.
+func (f *Frame) Encode() ([]byte, error) {
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	buf.Grow(64 + len(f.Rows)*20 + len(f.Footer)*2 + int(f.Height)*f.Stride() + 4)
+	buf.WriteString(Magic)
+	buf.WriteByte(FormatVersion)
+	buf.WriteByte(BitDepth)
+	buf.WriteByte(f.Flags)
+	for _, v := range []uint16{f.Width, f.Height, f.RowH, f.HeaderH, f.FooterH, f.ContentX, f.ContentW} {
+		_ = binary.Write(&buf, binary.BigEndian, v)
+	}
+	buf.WriteByte(f.CursorRow)
+	buf.WriteByte(f.CursorStyle)
+	buf.WriteByte(byte(len(f.Rows)))
+	for _, r := range f.Rows {
+		buf.Write(r.UUID[:])
+		_ = binary.Write(&buf, binary.BigEndian, r.Y)
+		buf.WriteByte(r.Flags)
+		buf.WriteByte(0)
+	}
+	buf.WriteByte(byte(len(f.Footer)))
+	for _, b := range f.Footer {
+		buf.WriteByte(b.GPIO)
+		buf.WriteByte(b.Action)
+	}
+	buf.Write(f.Bitmap)
+	sum := crc32.ChecksumIEEE(buf.Bytes())
+	f.EncodedChecksum = sum
+	_ = binary.Write(&buf, binary.BigEndian, sum)
+	return buf.Bytes(), nil
+}
+
+// Decode parses and validates an encoded frame.
+func Decode(data []byte) (*Frame, error) {
+	const fixed = 4 + 3 + 14 + 2 + 1
+	if len(data) < fixed+1+4 {
+		return nil, fmt.Errorf("frame: short frame (%d bytes)", len(data))
+	}
+	if string(data[:4]) != Magic {
+		return nil, fmt.Errorf("frame: bad magic %q", data[:4])
+	}
+	if data[4] != FormatVersion {
+		return nil, fmt.Errorf("frame: unsupported format %d", data[4])
+	}
+	if data[5] != BitDepth {
+		return nil, fmt.Errorf("frame: unsupported bit depth %d", data[5])
+	}
+	payload := data[:len(data)-4]
+	want := binary.BigEndian.Uint32(data[len(data)-4:])
+	if got := crc32.ChecksumIEEE(payload); got != want {
+		return nil, fmt.Errorf("frame: crc mismatch (want %08x got %08x)", want, got)
+	}
+	p := 6
+	readU16 := func() uint16 {
+		v := binary.BigEndian.Uint16(data[p:])
+		p += 2
+		return v
+	}
+	f := &Frame{Flags: data[p]}
+	p++
+	f.Width, f.Height = readU16(), readU16()
+	f.RowH, f.HeaderH, f.FooterH = readU16(), readU16(), readU16()
+	f.ContentX, f.ContentW = readU16(), readU16()
+	f.CursorRow = data[p]
+	f.CursorStyle = data[p+1]
+	p += 2
+	if f.Width == 0 || f.Height == 0 || f.RowH == 0 {
+		return nil, errors.New("frame: zero geometry")
+	}
+	nRows := int(data[p])
+	p++
+	need := p + nRows*20
+	if len(payload) < need {
+		return nil, errors.New("frame: truncated rows")
+	}
+	f.Rows = make([]Row, nRows)
+	for i := range f.Rows {
+		copy(f.Rows[i].UUID[:], data[p:p+16])
+		f.Rows[i].Y = binary.BigEndian.Uint16(data[p+16:])
+		f.Rows[i].Flags = data[p+18]
+		f.Rows[i].Pad = data[p+19]
+		p += 20
+	}
+	nFooter := int(data[p])
+	p++
+	need = p + nFooter*2
+	if len(payload) < need {
+		return nil, errors.New("frame: truncated footer")
+	}
+	f.Footer = make([]Footer, nFooter)
+	for i := range f.Footer {
+		f.Footer[i] = Footer{GPIO: data[p], Action: data[p+1]}
+		p += 2
+	}
+	bitmapLen := f.Stride() * int(f.Height)
+	if len(payload) != p+bitmapLen {
+		return nil, fmt.Errorf("frame: bitmap size %d, want %d", len(payload)-p, bitmapLen)
+	}
+	f.Bitmap = append([]byte(nil), data[p:p+bitmapLen]...)
+	f.Encoded = append([]byte(nil), data...)
+	f.EncodedChecksum = want
+	return f, nil
+}
+
+func (f *Frame) validate() error {
+	if f.Width == 0 || f.Height == 0 || f.RowH == 0 {
+		return errors.New("frame: zero geometry")
+	}
+	if len(f.Rows) > 255 {
+		return errors.New("frame: too many rows")
+	}
+	if len(f.Footer) > 255 {
+		return errors.New("frame: too many footer buttons")
+	}
+	if got, want := len(f.Bitmap), f.Stride()*int(f.Height); got != want {
+		return fmt.Errorf("frame: bitmap is %d bytes, want %d", got, want)
+	}
+	return nil
+}

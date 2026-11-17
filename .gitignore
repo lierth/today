@@ -1,0 +1,14 @@
+.DS_Store
+
+# Local design doc — not tracked.
+docs/PLAN.md
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+
+# Build output
+Today.app/
+dist/
+.tmp/
