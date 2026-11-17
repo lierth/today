@@ -431,3 +431,24 @@ func TestDeletedOccurrenceStaysDeleted(t *testing.T) {
 		t.Fatalf("master delete left instances: %+v err=%v", items, err)
 	}
 }
+
+func TestAllDayItemSortsBeforeTimed(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	now := time.Now().In(loc)
+	day := now.Format(DateLayout)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, loc)
+	if _, err := st.CreateItem(ctx, Item{Title: "十点", StartsAt: &start}, loc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateItem(ctx, Item{Title: "全天", AllDay: true, DateLocal: day}, loc); err != nil {
+		t.Fatal(err)
+	}
+	items, err := st.ItemsOn(ctx, day)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("items: %+v err=%v", items, err)
+	}
+	if items[0].Title != "全天" {
+		t.Fatalf("all-day should sort first: %+v", items)
+	}
+}

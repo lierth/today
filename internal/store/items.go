@@ -120,6 +120,9 @@ func (it *Item) fillDerived(loc *time.Location, now time.Time) {
 	}
 	if it.StartsAt != nil {
 		it.SortKey = it.StartsAt.Unix()
+	} else if day, err := time.ParseInLocation(DateLayout, it.DateLocal, loc); err == nil {
+		// All-day items sort at local midnight, ahead of timed items.
+		it.SortKey = day.Unix()
 	} else {
 		it.SortKey = now.Unix()
 	}
