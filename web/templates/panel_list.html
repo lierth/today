@@ -1,0 +1,5 @@
+{{define "panel_list.html"}}
+<main hx-get="/panel?t={{.PanelToken}}" hx-trigger="every 60s" hx-swap="outerHTML">
+{{range .Items}}<div class="row{{if .Done}} done{{end}}"><span class="time">{{timeLabel .}}</span><span class="title">{{.Title}}</span></div>{{else}}<p class="empty">今天没有事项</p>{{end}}
+</main>
+{{end}}

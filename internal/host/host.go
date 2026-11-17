@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -102,8 +103,9 @@ type Host struct {
 	dev bool
 	log *log.Logger
 
-	tray *mygo.Tray
-	menu *mygo.Menu
+	tray  *mygo.Tray
+	menu  *mygo.Menu
+	panel *mygo.Window
 
 	iconNormal []byte
 	iconError  []byte
@@ -313,6 +315,51 @@ func (h *Host) iconForState() []byte {
 	return h.iconError
 }
 
+// togglePanel shows a small read-only WebView beside the tray icon. The URL
+// carries a short-lived panel token; the window has no session cookie and
+// cannot mutate anything.
+func (h *Host) togglePanel() {
+	if h.panel == nil {
+		panel := mygo.NewWindow(mygo.WindowOptions{
+			Title:           "Today",
+			Width:           360,
+			Height:          460,
+			Panel:           true,
+			Frameless:       true,
+			DisableResize:   true,
+			Hidden:          true,
+			CornerRadius:    12,
+			BackgroundColor: "#f7f4ed",
+		})
+		panel.OnBlur(func() { panel.Hide() })
+		panel.OnClosed(func() { h.panel = nil })
+		h.panel = panel
+	}
+	if h.panel.IsVisible() {
+		h.panel.Hide()
+		return
+	}
+	token, err := h.srv.PanelToken()
+	if err != nil {
+		h.log.Printf("host: panel token: %v", err)
+		return
+	}
+	url := "http://" + webAddr(h.srv.Addr()) + "/panel?t=" + url.QueryEscape(token)
+	if err := h.panel.Page().LoadURL(url); err != nil {
+		h.log.Printf("host: panel load: %v", err)
+		return
+	}
+	if b := h.tray.Bounds(); b.Width > 0 {
+		x := b.X + b.Width - 360
+		if x < 8 {
+			x = 8
+		}
+		h.panel.SetPosition(x, b.Y+b.Height+6)
+	}
+	h.panel.Show()
+	h.panel.Focus()
+}
+
 func (h *Host) open(path string) {
 	url := "http://" + webAddr(h.srv.Addr()) + path
 	if err := mygo.Shell.OpenExternal(url); err != nil {
@@ -419,7 +466,10 @@ func (h *Host) buildMenu() *mygo.Menu {
 	}
 
 	items := []*mygo.MenuItem{
-		{Label: "打开今日页面", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/app") }},
+		{Label: "打开今日页面", Submenu: []*mygo.MenuItem{
+			{Label: "在浏览器打开", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/app") }},
+			{Label: "快速面板（只读）", Click: func(*mygo.MenuItem, *mygo.Window) { h.togglePanel() }},
+		}},
 		{Label: "管理事项", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/items") }},
 		{Label: "设置…", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/settings") }},
 		mygo.Separator(),

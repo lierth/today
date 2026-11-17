@@ -15,22 +15,23 @@ import (
 )
 
 type pageData struct {
-	Title     string
-	Nav       string
-	DateLabel string
-	Items     []store.Item
-	All       []store.Item
-	Item      store.Item
-	HasItem   bool
-	Past      []store.Item
-	Settings  map[string]string
-	Devices   []store.Device
-	Stats     store.Stats
-	Total     int
-	Done      int
-	Token     string
-	Message   string
-	Error     string
+	Title      string
+	Nav        string
+	DateLabel  string
+	Items      []store.Item
+	All        []store.Item
+	Item       store.Item
+	HasItem    bool
+	Past       []store.Item
+	Settings   map[string]string
+	Devices    []store.Device
+	Stats      store.Stats
+	Total      int
+	Done       int
+	Token      string
+	PanelToken string
+	Message    string
+	Error      string
 }
 
 var weekdayZH = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}

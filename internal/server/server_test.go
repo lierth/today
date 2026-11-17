@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -480,5 +481,48 @@ func TestFirmwareUploadAndDownload(t *testing.T) {
 	defer badResp.Body.Close()
 	if badResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("bad token: %d", badResp.StatusCode)
+	}
+}
+
+func TestPanelToken(t *testing.T) {
+	e := newTestEnv(t)
+	if _, err := e.st.CreateItem(context.Background(), store.Item{
+		Title: "面板事项", AllDay: true, DateLocal: time.Now().In(e.loc).Format(store.DateLayout),
+	}, e.loc); err != nil {
+		t.Fatal(err)
+	}
+	token, err := e.srv.PanelToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(e.ts.URL + "/panel?t=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("面板事项")) {
+		t.Fatalf("panel: %d %s", resp.StatusCode, body)
+	}
+	bad, err := http.Get(e.ts.URL + "/panel?t=nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad panel token: %d", bad.StatusCode)
+	}
+	key, err := e.srv.loadSessionKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10) + "." + panelMAC(key, time.Now().Add(-time.Minute).Unix())
+	old, err := http.Get(e.ts.URL + "/panel?t=" + url.QueryEscape(expired))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Body.Close()
+	if old.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired panel token: %d", old.StatusCode)
 	}
 }

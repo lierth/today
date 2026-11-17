@@ -1,0 +1,33 @@
+{{define "panel.html"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Today</title>
+<style>
+:root { color-scheme: light dark; --paper:#f7f4ed; --ink:#1d1a16; --muted:#7d756a; --line:#ddd6c9; }
+@media (prefers-color-scheme: dark) { :root { --paper:#171614; --ink:#f0ece4; --muted:#9f968a; --line:#35312b; } }
+* { box-sizing: border-box; }
+html, body { margin:0; height:100%; }
+body { background:var(--paper); color:var(--ink); font:14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+header { display:flex; align-items:baseline; justify-content:space-between; padding:14px 16px 8px; }
+header strong { font-size:17px; letter-spacing:.02em; }
+header span { color:var(--muted); font-size:12px; }
+main { padding:0 16px 8px; }
+.row { display:flex; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); align-items:baseline; }
+.row:last-child { border-bottom:0; }
+.time { width:44px; flex:none; color:var(--muted); font-variant-numeric:tabular-nums; font-size:12px; }
+.title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.row.done .title { color:var(--muted); text-decoration:line-through; }
+.empty { color:var(--muted); padding:18px 0; }
+footer { position:absolute; bottom:0; left:0; right:0; padding:10px 16px 12px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; display:flex; justify-content:space-between; }
+a { color:inherit; }
+</style>
+<script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<header><strong>今天</strong><span>{{.DateLabel}} · {{.Done}}/{{.Total}}</span></header>
+{{template "panel_list.html" .}}
+<footer><span>菜单栏 → 打开今日页面</span><a href="/app">打开</a></footer>
+</body>
+</html>{{end}}
