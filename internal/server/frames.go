@@ -85,7 +85,8 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cursor, _ = strconv.Atoi(raw)
 	}
-	force := r.URL.Query().Get("force") == "1"
+	forced := s.takeForcedRefresh(device.ID)
+	force := r.URL.Query().Get("force") == "1" || forced
 	fr, err := s.buildFrame(ctx, now, cursor, force)
 	if err != nil {
 		s.log.Printf("server: frame: %v", err)
@@ -93,7 +94,16 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := fr.Encoded
-	sum := sha256.Sum256(body)
+	// ETag describes the content, not the one-shot force_full control bit, so
+	// a forced 200 is followed by a normal 304 instead of another full frame.
+	etagBody := append([]byte(nil), body...)
+	if len(etagBody) > 6 {
+		etagBody[6] &^= frame.FlagForceFull
+	}
+	if len(etagBody) >= 4 {
+		etagBody = etagBody[:len(etagBody)-4] // CRC follows the bitmap.
+	}
+	sum := sha256.Sum256(etagBody)
 	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
 	seq := s.frameSeq.Add(1)
 
@@ -105,7 +115,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Seq", strconv.FormatUint(seq, 10))
 	h.Set("X-Server-Now", strconv.FormatInt(time.Now().Unix(), 10))
 	wake, refresh := s.nextWake(ctx, now)
-	refresh = refresh || s.takeForcedRefresh(device.ID)
+	refresh = refresh || forced
 	h.Set("X-Next-Wake-At", strconv.FormatInt(wake.Unix(), 10))
 	if refresh {
 		h.Set("X-Refresh", "1")
@@ -115,7 +125,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 
 	_ = s.st.TouchDevice(ctx, id, 0)
-	if etag == r.Header.Get("If-None-Match") {
+	if !forced && etag == r.Header.Get("If-None-Match") {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}

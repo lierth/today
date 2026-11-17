@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"today/internal/frame"
 	"today/internal/store"
 )
 
@@ -203,8 +204,16 @@ func TestFrameETagAndAcks(t *testing.T) {
 	}
 	e.srv.ForceFullRefresh()
 	forced := frameReq(etag)
-	if forced.StatusCode != http.StatusNotModified || forced.Header.Get("X-Refresh") != "1" {
+	if forced.StatusCode != http.StatusOK || forced.Header.Get("X-Refresh") != "1" {
 		t.Fatalf("forced refresh: %d %q", forced.StatusCode, forced.Header.Get("X-Refresh"))
+	}
+	forcedBody, _ := io.ReadAll(forced.Body)
+	if len(forcedBody) < 1000 || forcedBody[6]&frame.FlagForceFull == 0 {
+		t.Fatalf("forced frame body: %d flags=%#x", len(forcedBody), forcedBody[6])
+	}
+	followUp := frameReq(forced.Header.Get("ETag"))
+	if followUp.StatusCode != http.StatusNotModified {
+		t.Fatalf("frame after forced repaint: %d", followUp.StatusCode)
 	}
 
 	acks := func(ops []map[string]string) ackResponse {
