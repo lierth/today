@@ -362,11 +362,6 @@ func (h *Host) buildMenu() *mygo.Menu {
 					h.log.Printf("host: funnel setting: %v", err)
 					return
 				}
-				if on {
-					go h.startFunnel()
-				} else {
-					go h.stopFunnel()
-				}
 				h.kick()
 			},
 		},
