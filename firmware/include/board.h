@@ -23,6 +23,9 @@ constexpr int kPinRefresh = 26;
 constexpr int kPinBattery = 34;
 constexpr int kBatteryScale = 2;
 
+// Bump when the firmware changes so devices fetch a newly uploaded image.
+constexpr char kFirmwareVersion[] = "0.1.0";
+
 constexpr uint16_t kWidth = 400;
 constexpr uint16_t kHeight = 300;
 constexpr uint16_t kRowHeight = 24;

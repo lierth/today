@@ -77,6 +77,9 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	seq := s.frameSeq.Add(1)
 
 	h := w.Header()
+	if version, err := s.st.Setting(ctx, "firmware_version"); err == nil && version != "" {
+		h.Set("X-Firmware-Version", version)
+	}
 	h.Set("ETag", etag)
 	h.Set("X-Frame-Seq", strconv.FormatUint(seq, 10))
 	h.Set("X-Server-Now", strconv.FormatInt(time.Now().Unix(), 10))

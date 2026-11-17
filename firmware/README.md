@@ -41,8 +41,11 @@ pio device monitor      # serial, 115200
 
 The partition table reserves two 1.7 MB app slots and 64 KB NVS. NVS survives a
 reflash, so Wi-Fi credentials, device token, cursor and the cached frame are not
-lost when you update the app. OTA transport itself is not implemented yet; the
-A/B slots are ready for M5.
+lost when you update the app. OTA is implemented: upload an ESP32 image from
+Settings → 固件, the next frame response carries `X-Firmware-Version`, and the
+device streams the image into the inactive slot with `Update`, then reboots.
+Bump `board::kFirmwareVersion` for every build or the device will keep the
+version it already has. The A/B slots keep the previous image for rollback.
 
 PlatformIO pins a pioarduino Arduino-ESP32 3.x build (ESP-IDF 5). With the
 Arduino IDE, select "ESP32 Dev Module", the same partition scheme, and install
@@ -111,4 +114,6 @@ below the target. `mode battery` is the default deep-sleep state machine.
   loses RAM across deep sleep on your board, set the button path to redraw the
   full frame after `InitDisplay()`.
 - HTTPS certificate validation is disabled (see above).
-- No OTA, no config portal; provisioning is over USB serial.
+- No config portal; provisioning is over USB serial.
+- OTA trusts the uploaded image as far as `Update` validates it; the upload is
+  protected by the web session, the download by the device token.

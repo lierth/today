@@ -19,9 +19,10 @@ import (
 
 // Config configures the HTTP listener.
 type Config struct {
-	Addr   string
-	Dev    bool
-	Logger *log.Logger
+	Addr    string
+	DataDir string
+	Dev     bool
+	Logger  *log.Logger
 }
 
 // Server is the long-lived HTTP service.
@@ -86,6 +87,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /login", s.handleLoginPost)
 
 	s.mux.HandleFunc("GET /v1/devices/{id}/frame", s.handleFrame)
+	s.mux.HandleFunc("GET /v1/devices/{id}/firmware", s.handleFirmware)
 	s.mux.HandleFunc("POST /v1/devices/{id}/acks", s.handleAcks)
 
 	s.mux.HandleFunc("GET /app", s.requireSession(s.handleApp))

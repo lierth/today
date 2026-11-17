@@ -116,6 +116,10 @@ type Host struct {
 
 	wake      chan struct{}
 	firstPass string
+
+	updating  bool
+	latest    string
+	updateURL string
 }
 
 // New builds a host around an already started server.
@@ -261,8 +265,7 @@ func (h *Host) setSettings(next map[string]string) bool {
 	}
 	h.settings = next
 	if changed && h.tray != nil {
-		h.menu = h.buildMenu()
-		h.tray.SetMenu(h.menu)
+		h.refreshMenu()
 	}
 	return changed
 }
@@ -329,6 +332,67 @@ func webAddr(addr string) string {
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
+}
+
+func (h *Host) refreshMenu() {
+	if h.tray == nil || h.menu == nil {
+		return
+	}
+	h.menu = h.buildMenu()
+	h.tray.SetMenu(h.menu)
+}
+
+// checkUpdate asks the configured feed once. The menu label doubles as the
+// result: it becomes clickable only when a newer release exists.
+func (h *Host) checkUpdate() {
+	h.mu.Lock()
+	if h.updating {
+		h.mu.Unlock()
+		return
+	}
+	h.updating = true
+	h.mu.Unlock()
+	h.refreshMenu()
+
+	feed := h.setting("update_feed")
+	if feed == "" {
+		h.finishUpdate("", "")
+		h.notify("Today 更新", "还没有配置更新源，先在设置里填写。")
+		return
+	}
+	rel, err := fetchRelease(context.Background(), feed, nil)
+	if err != nil {
+		h.finishUpdate("", "")
+		h.notify("检查更新失败", err.Error())
+		return
+	}
+	if newerVersion(rel.Version, Version) {
+		h.finishUpdate(rel.Version, rel.URL)
+		h.notify("Today 有新版本 "+rel.Version, "点菜单栏的“有新版本”打开下载页。")
+		return
+	}
+	h.finishUpdate("", "")
+	h.notify("Today 已是最新版本", "当前 "+Version+"。")
+}
+
+func (h *Host) finishUpdate(latest, url string) {
+	h.mu.Lock()
+	h.updating = false
+	h.latest = latest
+	h.updateURL = url
+	h.mu.Unlock()
+	h.refreshMenu()
+}
+
+func (h *Host) notify(title, body string) {
+	if !mygo.NotificationsSupported() {
+		return
+	}
+	mygo.NewNotification(mygo.NotificationOptions{
+		ID:    "today-update",
+		Title: title,
+		Body:  body,
+	}).Show()
 }
 
 func (h *Host) buildMenu() *mygo.Menu {
@@ -417,7 +481,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 				{Label: "监听 " + h.srv.Addr(), Disabled: true},
 			},
 		},
-		{Label: "检查更新…", Disabled: true, Subtitle: Version},
+		updateItem(h),
 		mygo.Separator(),
 		{Role: mygo.RoleQuit, Label: "退出 Today"},
 	}

@@ -19,6 +19,8 @@ var KnownSettings = []string{
 	"auth_password_hash",
 	"auth_session_key",
 	"device_token_hint",
+	"firmware_version",
+	"update_feed",
 }
 
 // DefaultSettings returns the values used when a key is absent.

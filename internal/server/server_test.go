@@ -9,10 +9,12 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -33,12 +35,13 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "today.db"))
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "today.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv, err := New(st, Config{Addr: "127.0.0.1:0", Dev: true, Logger: log.New(io.Discard, "", 0)})
+	srv, err := New(st, Config{Addr: "127.0.0.1:0", DataDir: dir, Dev: true, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,5 +390,95 @@ func TestSettingsGetHidesSecrets(t *testing.T) {
 		if strings.Contains(string(body), key) {
 			t.Fatalf("settings leaked %s: %s", key, body)
 		}
+	}
+}
+
+func TestFirmwareUploadAndDownload(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(e.password())
+
+	image := append([]byte{0xE9}, bytes.Repeat([]byte{0x5A}, 4096)...)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("firmware", "today.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	_ = mw.WriteField("action", "upload_firmware")
+	_ = mw.WriteField("firmware_version", "1.2.3")
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := e.req("POST", e.ts.URL+"/api/settings", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp := e.do(req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upload: %d %s", resp.StatusCode, msg)
+	}
+	if _, err := os.Stat(filepath.Join(e.srv.cfg.DataDir, "firmware.bin")); err != nil {
+		t.Fatalf("firmware file: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := e.st.EnsureDevice(ctx, "dev1", "设备"); err != nil {
+		t.Fatal(err)
+	}
+	token := "firmware-test-token"
+	if err := e.st.SetDeviceToken(ctx, "dev1", tokenHash(token)); err != nil {
+		t.Fatal(err)
+	}
+
+	frameReq, _ := http.NewRequest("GET", e.ts.URL+"/v1/devices/dev1/frame", nil)
+	frameReq.Header.Set("X-Device-Token", token)
+	frameResp := e.do(frameReq)
+	defer frameResp.Body.Close()
+	if frameResp.StatusCode != http.StatusOK {
+		t.Fatalf("frame: %d", frameResp.StatusCode)
+	}
+	if got := frameResp.Header.Get("X-Firmware-Version"); got != "1.2.3" {
+		t.Fatalf("frame firmware version %q", got)
+	}
+
+	get := func(etag string) *http.Response {
+		r, _ := http.NewRequest("GET", e.ts.URL+"/v1/devices/dev1/firmware", nil)
+		r.Header.Set("X-Device-Token", token)
+		if etag != "" {
+			r.Header.Set("If-None-Match", etag)
+		}
+		return e.do(r)
+	}
+	res := get("")
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("download: %d", res.StatusCode)
+	}
+	got, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, image) {
+		t.Fatalf("downloaded %d bytes, want %d", len(got), len(image))
+	}
+	etag := res.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("missing etag")
+	}
+	again := get(etag)
+	defer again.Body.Close()
+	if again.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional download: %d", again.StatusCode)
+	}
+
+	bad, _ := http.NewRequest("GET", e.ts.URL+"/v1/devices/dev1/firmware", nil)
+	bad.Header.Set("X-Device-Token", "wrong")
+	badResp := e.do(bad)
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bad token: %d", badResp.StatusCode)
 	}
 }

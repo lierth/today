@@ -17,6 +17,7 @@ struct FetchResult {
   uint32_t seq = 0;
   int64_t sleepSeconds = 0;  // server-computed time until next wake
   String etag;
+  String firmwareVersion;  // X-Firmware-Version, empty when none uploaded
 };
 
 // FetchFrame writes the bitmap into `buf` and points `out->bitmap` into it.
@@ -24,5 +25,9 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag,
                        uint8_t* buf, size_t cap, tbf::Frame* out);
 
 int PostAcks(const storage::Config& cfg, const String& json);
+
+// DownloadFirmware streams the image into the inactive OTA partition and
+// reboots on success. The caller compares versions first.
+bool DownloadFirmware(const storage::Config& cfg);
 
 }  // namespace net

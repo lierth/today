@@ -61,7 +61,7 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 		_ = st.Close()
 		return nil, "", err
 	}
-	srv, err := server.New(st, server.Config{Addr: cfg.Addr, Dev: cfg.Dev, Logger: cfg.Logger})
+	srv, err := server.New(st, server.Config{Addr: cfg.Addr, DataDir: filepath.Dir(cfg.DBPath), Dev: cfg.Dev, Logger: cfg.Logger})
 	if err != nil {
 		_ = st.Close()
 		return nil, "", err

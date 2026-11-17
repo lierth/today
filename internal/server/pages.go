@@ -489,13 +489,26 @@ var deviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
 func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, maxFirmwareBytes+(1<<20))
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			s.renderSettingsPanel(w, r, pageData{Error: "上传内容过大或格式错误"}, http.StatusBadRequest)
+			return
+		}
+	} else if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
 	action := r.FormValue("action")
 	var msg string
 	switch action {
+	case "upload_firmware":
+		version, err := s.saveFirmware(r)
+		if err != nil {
+			s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusBadRequest)
+			return
+		}
+		msg = "固件已上传：" + version + "，设备下次取帧后升级"
 	case "password":
 		pw := r.FormValue("new_password")
 		if err := s.SetPassword(ctx, pw); err != nil {
@@ -579,10 +592,18 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		feed := strings.TrimSpace(r.FormValue("update_feed"))
+		if feed != "" && !strings.HasPrefix(feed, "https://") && !strings.HasPrefix(feed, "http://") {
+			s.renderSettingsPanel(w, r, pageData{Error: "更新源必须是 http(s) 地址。"}, http.StatusBadRequest)
+			return
+		}
 		diff := map[string]string{
 			"open_at_login": boolString(r.FormValue("open_at_login") != ""),
 			"tray_title":    boolString(r.FormValue("tray_title") != ""),
 			"funnel":        boolString(r.FormValue("funnel") != ""),
+		}
+		if _, ok := r.Form["update_feed"]; ok {
+			diff["update_feed"] = feed
 		}
 		if tz != "" {
 			diff["timezone"] = tz

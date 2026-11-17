@@ -1,8 +1,17 @@
 {{define "settings_panel.html"}}
+{{if .Message}}<p class="flash">{{.Message}}</p>{{end}}
+{{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
 <div class="card">
   <div class="card-head"><h2>常规</h2></div>
   <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
     <input type="hidden" name="action" value="general">
+    <div class="field">
+      <label for="update_feed">更新源</label>
+      <div>
+        <input id="update_feed" type="url" name="update_feed" value="{{index .Settings "update_feed"}}" placeholder="GitHub release API 或 {version,url} JSON">
+        <div class="hint">留空关闭检查更新。支持 GitHub releases/latest 与自定义 JSON。</div>
+      </div>
+    </div>
     <div class="field">
       <label for="tray_title">状态栏</label>
       <div>
@@ -120,6 +129,22 @@
     {{else}}
     <p class="empty">还没有设备</p>
     {{end}}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>固件</h2>
+    <span class="count">{{with index .Settings "firmware_version"}}{{.}}{{else}}未上传{{end}}</span>
+  </div>
+  <div class="settings">
+    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML" hx-encoding="multipart/form-data" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="upload_firmware">
+      <input type="file" name="firmware" accept=".bin,application/octet-stream" required aria-label="固件文件">
+      <input type="text" name="firmware_version" placeholder="版本标记（可选）" maxlength="40" aria-label="版本标记">
+      <button class="ghost" type="submit">上传固件</button>
+    </form>
+    <div class="hint">设备下次取帧时看到新版本号会自动 OTA；A/B 分区保留上一版，升级失败仍可回滚。</div>
   </div>
 </div>
 

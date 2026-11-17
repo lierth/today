@@ -22,6 +22,7 @@ namespace {
 board::Panel display(GxEPD2_420(board::kPinCs, board::kPinDC, board::kPinRst, board::kPinBusy));
 
 storage::Config cfg;
+String availableFirmware;
 tbf::Row rows[tbf::kMaxRows];
 uint8_t rowCount = 0;
 uint8_t cursorRow = 0;
@@ -237,6 +238,18 @@ String BuildAcksJson(uint32_t batteryMv) {
   return out;
 }
 
+void MaybeUpdate(const String& version) {
+  if (version.isEmpty() || version == board::kFirmwareVersion) return;
+  Serial.printf("ota: %s -> %s\n", board::kFirmwareVersion, version.c_str());
+  DrawMessage("正在升级固件", version, "请保持供电");
+  if (net::DownloadFirmware(cfg)) {
+    Serial.println("ota: ok, rebooting");
+    delay(800);
+    ESP.restart();
+  }
+  Serial.println("ota: failed, keeping current firmware");
+}
+
 void SendAcks() {
   const uint8_t count = storage::OutboxCount();
   const String payload = BuildAcksJson(BatteryMillivolts());
@@ -263,6 +276,7 @@ void FetchFrame() {
       storage::SaveSeq(frameSeq);
     }
     if (result.refresh && haveFrame) DrawFull();
+    availableFirmware = result.firmwareVersion;
     return;
   }
   if (!result.changed) {
@@ -301,6 +315,7 @@ void FetchFrame() {
 
   DrawFull();
   Serial.printf("frame: seq %lu rows %u\n", static_cast<unsigned long>(frameSeq), rowCount);
+  availableFirmware = result.firmwareVersion;
 }
 
 void SerialCommand(String line) {
@@ -393,6 +408,7 @@ void RunMains() {
     if (last == 0 || millis() - last >= 60000) {
       FetchFrame();
       SendAcks();
+      MaybeUpdate(availableFirmware);
       last = millis();
     }
     HandleButtons();
@@ -461,6 +477,7 @@ void setup() {
 
   FetchFrame();
   SendAcks();
+  MaybeUpdate(availableFirmware);
   DeepSleep(sleepSeconds);
 }
 
