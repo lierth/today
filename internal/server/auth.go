@@ -238,6 +238,26 @@ func (s *Server) validSession(r *http.Request) bool {
 }
 
 // requireSession guards browser routes and API endpoints.
+// renewSession slides the 30-day cookie forward once it is halfway through
+// its life. A browser that keeps being used never has to log in again.
+func (s *Server) renewSession(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return
+	}
+	parts := strings.Split(c.Value, "|")
+	if len(parts) != 3 {
+		return
+	}
+	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return
+	}
+	if time.Until(time.Unix(exp, 0)) < sessionTTL/2 {
+		s.setSessionCookie(w, r)
+	}
+}
+
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.validSession(r) {
@@ -251,6 +271,7 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
+		s.renewSession(w, r)
 		next(w, r)
 	}
 }
