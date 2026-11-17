@@ -69,9 +69,9 @@
   <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
     <input type="hidden" name="action" value="password">
     <div class="field">
-      <label for="new_password">新口令</label>
+      <label for="passphrase">新口令</label>
       <div>
-        <input id="new_password" type="password" name="new_password" minlength="8" required autocomplete="new-password">
+        <input id="passphrase" type="password" name="passphrase" minlength="8" required autocomplete="new-password">
         <div class="hint">至少 8 位。更新后所有浏览器会话立即失效。</div>
       </div>
     </div>

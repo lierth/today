@@ -511,7 +511,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = "固件已上传：" + version + "，设备下次取帧后升级"
 	case "password":
-		pw := r.FormValue("new_password")
+		pw := r.FormValue("passphrase")
 		if err := s.SetPassword(ctx, pw); err != nil {
 			s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusBadRequest)
 			return
