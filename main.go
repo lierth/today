@@ -25,6 +25,9 @@ func main() {
 		fmt.Println(host.Version)
 		return
 	}
+	if !host.Claim(*addr) {
+		return
+	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

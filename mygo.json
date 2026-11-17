@@ -1,0 +1,14 @@
+{
+  "name": "Today",
+  "slug": "today",
+  "identifier": "com.lierth.today",
+  "version": "0.1.0",
+  "main": ".",
+  "icon": "resources/icon.png",
+  "urlSchemes": ["today"],
+  "macos": {
+    "infoPlist": {
+      "LSUIElement": true
+    }
+  }
+}

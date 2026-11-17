@@ -11,6 +11,8 @@ import (
 	"image/draw"
 	"image/png"
 	"log"
+	"net"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -24,6 +26,67 @@ import (
 
 // Version is surfaced in the menu; release builds overwrite it.
 var Version = "dev"
+
+// Claim takes the single-instance lock and routes today:// links to the local
+// server. Call it before starting the server: a second launch exits quietly
+// after handing its command line to the first instance.
+func Claim(addr string) bool {
+	base := "http://" + webAddr(addr)
+	open := func(raw string) { go openWhenReady(base, deepLinkTarget(raw, base)) }
+	mygo.App.SetName("Today")
+	mygo.App.OnOpenURL(open)
+	mygo.App.OnSecondInstance(func(args []string, _ string) {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "today://") {
+				open(arg)
+				return
+			}
+		}
+		open("")
+	})
+	return mygo.App.RequestSingleInstanceLock()
+}
+
+// deepLinkTarget maps a today:// URL to the page that serves it.
+func deepLinkTarget(raw, base string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return base + "/app"
+	}
+	if !strings.HasPrefix(raw, "today://") {
+		if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+			return raw
+		}
+		return base + "/app"
+	}
+	rest := strings.TrimPrefix(strings.TrimPrefix(raw, "today://"), "/")
+	switch {
+	case rest == "" || rest == "app":
+		return base + "/app"
+	case rest == "settings":
+		return base + "/settings"
+	case rest == "items" || rest == "item" || strings.HasPrefix(rest, "item/"):
+		return base + "/items"
+	default:
+		return base + "/app"
+	}
+}
+
+// openWhenReady waits for the local server, then hands the URL to the browser.
+func openWhenReady(base, target string) {
+	client := &http.Client{Timeout: 400 * time.Millisecond}
+	for i := 0; i < 25; i++ {
+		resp, err := client.Get(base + "/healthz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = mygo.Shell.OpenExternal(target)
+}
 
 var funnelURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.ts\.net`)
 
@@ -87,6 +150,13 @@ func (h *Host) ready() {
 	}
 	h.setSettings(settings)
 	h.applyLoginItem(settings["open_at_login"] == "true")
+
+	mygo.Power.OnResume(func() {
+		h.kick()
+		if h.funnelEnabled() && !h.dev {
+			go h.probeFunnel()
+		}
+	})
 
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID:              "today",
@@ -242,12 +312,15 @@ func (h *Host) open(path string) {
 }
 
 func webAddr(addr string) string {
-	host, port, ok := strings.Cut(addr, ":")
-	if !ok {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
 		return addr
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
 }
