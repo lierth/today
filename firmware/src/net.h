@@ -13,6 +13,7 @@ struct FetchResult {
   int status = -1;          // HTTP status, -1 on transport error
   bool changed = false;     // body parsed and bitmap replaced
   bool forceFull = false;   // server asked for a full refresh
+  bool refresh = false;     // X-Refresh: repaint even on 304
   uint32_t seq = 0;
   int64_t sleepSeconds = 0;  // server-computed time until next wake
   String etag;

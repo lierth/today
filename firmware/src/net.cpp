@@ -67,6 +67,7 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag,
     res.sleepSeconds = static_cast<int64_t>(nextWake - serverNow);
   }
   res.etag = http.header("ETag");
+  res.refresh = http.header("X-Refresh") == "1";
 
   if (code == HTTP_CODE_NOT_MODIFIED) {
     res.etag = etag;

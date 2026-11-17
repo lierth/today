@@ -330,3 +330,62 @@ func TestRecurringNeedsTime(t *testing.T) {
 		t.Fatalf("valid rule: %v", err)
 	}
 }
+
+func TestSeriesEditSyncsFutureInstances(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	now := time.Now().In(loc)
+	today := now.Format(DateLayout)
+	tomorrow := now.AddDate(0, 0, 1).Format(DateLayout)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
+
+	master, err := st.CreateItem(ctx, Item{
+		Title: "系列", StartsAt: &start, RRule: "FREQ=DAILY;COUNT=4",
+	}, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Materialize(ctx, loc, now, 7); err != nil {
+		t.Fatal(err)
+	}
+	instances, err := st.ItemsOn(ctx, tomorrow)
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("tomorrow before edit: %+v err=%v", instances, err)
+	}
+
+	later := time.Date(now.Year(), now.Month(), now.Day(), 10, 30, 0, 0, loc)
+	title := "系列改名"
+	startStr := timeStr(later)
+	dateStr := today
+	updated, err := st.UpdateItem(ctx, master.ID, Patch{
+		Title: &title, StartsAt: &startStr, DateLocal: &dateStr,
+	}, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != title {
+		t.Fatalf("master title: %+v", updated)
+	}
+	instances, err = st.ItemsOn(ctx, tomorrow)
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("tomorrow after edit: %+v err=%v", instances, err)
+	}
+	if instances[0].Title != title || instances[0].StartsAt == nil ||
+		instances[0].StartsAt.Format("15:04") != "10:30" ||
+		instances[0].DateLocal != tomorrow {
+		t.Fatalf("instance not synced: %+v", instances[0])
+	}
+
+	rule := "FREQ=DAILY;COUNT=2"
+	if _, err := st.UpdateItem(ctx, master.ID, Patch{RRule: &rule}, loc); err != nil {
+		t.Fatal(err)
+	}
+	instances, err = st.ItemsOn(ctx, tomorrow)
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("tomorrow after rule change: %+v err=%v", instances, err)
+	}
+	dayAfter := now.AddDate(0, 0, 2).Format(DateLayout)
+	if extra, _ := st.ItemsOn(ctx, dayAfter); len(extra) != 0 {
+		t.Fatalf("COUNT=2 should not reach day after: %+v", extra)
+	}
+}

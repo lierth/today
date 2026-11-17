@@ -125,6 +125,9 @@ void ShowRow(int index) {
   const int y = rows[index].y;
   ComposeRow(index);
   const size_t offset = static_cast<size_t>(y) * (board::kWidth / 8);
+  // drawBitmap leaves zero bits untouched, so clear the row window first;
+  // otherwise moving the cursor would leave the old inversion behind.
+  display.fillRect(0, y, board::kWidth, board::kRowHeight, GxEPD_WHITE);
   display.drawBitmap(0, y, workBmp + offset, board::kWidth, board::kRowHeight, GxEPD_BLACK);
   display.displayWindow(0, y, board::kWidth, board::kRowHeight);
 }
@@ -259,6 +262,7 @@ void FetchFrame() {
       frameSeq = result.seq;
       storage::SaveSeq(frameSeq);
     }
+    if (result.refresh && haveFrame) DrawFull();
     return;
   }
   if (!result.changed) {
