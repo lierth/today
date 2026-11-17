@@ -22,7 +22,7 @@ func main() {
 	version := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *version {
-		fmt.Println(host.Version)
+		fmt.Println(host.AppVersion())
 		return
 	}
 	if !host.Claim(*addr) {

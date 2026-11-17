@@ -28,6 +28,18 @@ import (
 // Version is surfaced in the menu; release builds overwrite it.
 var Version = "dev"
 
+// AppVersion prefers an explicit build version, then the packaged bundle's
+// Info.plist version. It is safe to call before Run.
+func AppVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	if v := strings.TrimSpace(mygo.App.Version()); v != "" {
+		return v
+	}
+	return Version
+}
+
 // Claim takes the single-instance lock and routes today:// links to the local
 // server. Call it before starting the server: a second launch exits quietly
 // after handing its command line to the first instance.
@@ -145,11 +157,7 @@ func (h *Host) SetFirstRunPassword(pw string) { h.firstPass = pw }
 
 // Run blocks in the native event loop until the app quits.
 func (h *Host) Run() error {
-	if Version == "dev" {
-		if v := strings.TrimSpace(mygo.App.Version()); v != "" {
-			Version = v
-		}
-	}
+	Version = AppVersion()
 	mygo.App.SetName("Today")
 	mygo.App.SetVersion(Version)
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
