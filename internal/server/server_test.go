@@ -187,8 +187,8 @@ func TestFrameETagAndAcks(t *testing.T) {
 	if etag == "" || resp.Header.Get("X-Next-Wake-At") == "" || resp.Header.Get("X-Frame-Seq") == "" {
 		t.Fatalf("missing headers: %v", resp.Header)
 	}
-	if resp.Header.Get("X-Refresh") != "0" {
-		t.Fatalf("X-Refresh: %q", resp.Header.Get("X-Refresh"))
+	if resp.Header.Get("X-Refresh") != "1" {
+		t.Fatalf("first frame should force a repaint, got X-Refresh %q", resp.Header.Get("X-Refresh"))
 	}
 
 	notModified := frameReq(etag)
@@ -197,6 +197,14 @@ func TestFrameETagAndAcks(t *testing.T) {
 	}
 	if b, _ := io.ReadAll(notModified.Body); len(b) != 0 {
 		t.Fatalf("304 body: %d bytes", len(b))
+	}
+	if notModified.Header.Get("X-Refresh") != "0" {
+		t.Fatalf("304 should not force a repaint: %q", notModified.Header.Get("X-Refresh"))
+	}
+	e.srv.ForceFullRefresh()
+	forced := frameReq(etag)
+	if forced.StatusCode != http.StatusNotModified || forced.Header.Get("X-Refresh") != "1" {
+		t.Fatalf("forced refresh: %d %q", forced.StatusCode, forced.Header.Get("X-Refresh"))
 	}
 
 	acks := func(ops []map[string]string) ackResponse {

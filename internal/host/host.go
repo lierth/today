@@ -164,6 +164,7 @@ func (h *Host) ready() {
 	h.applyLoginItem(settings["open_at_login"] == "true")
 
 	mygo.Power.OnResume(func() {
+		h.srv.ForceFullRefresh()
 		h.kick()
 		if h.funnelEnabled() && !h.dev {
 			go h.probeFunnel()

@@ -47,9 +47,30 @@ func (s *Server) authorizeDevice(r *http.Request, id string) (store.Device, bool
 	return d, true
 }
 
+// ForceFullRefresh asks every device to repaint its cached frame. It is used
+// after a server restart and when the host resumes from sleep; the flag rides
+// in X-Refresh rather than the body so the ETag and 304 path stay intact.
+func (s *Server) ForceFullRefresh() {
+	s.refreshMu.Lock()
+	s.refreshAll = true
+	s.refreshDone = map[string]bool{}
+	s.refreshMu.Unlock()
+}
+
+func (s *Server) takeForcedRefresh(deviceID string) bool {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	if !s.refreshAll || s.refreshDone[deviceID] {
+		return false
+	}
+	s.refreshDone[deviceID] = true
+	return true
+}
+
 func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.authorizeDevice(r, id); !ok {
+	device, ok := s.authorizeDevice(r, id)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -84,6 +105,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Seq", strconv.FormatUint(seq, 10))
 	h.Set("X-Server-Now", strconv.FormatInt(time.Now().Unix(), 10))
 	wake, refresh := s.nextWake(ctx, now)
+	refresh = refresh || s.takeForcedRefresh(device.ID)
 	h.Set("X-Next-Wake-At", strconv.FormatInt(wake.Unix(), 10))
 	if refresh {
 		h.Set("X-Refresh", "1")

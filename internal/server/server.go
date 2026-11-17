@@ -46,6 +46,10 @@ type Server struct {
 	limiter *loginLimiter
 	tmpl    *template.Template
 	sleep   func(time.Duration)
+
+	refreshMu   sync.Mutex
+	refreshAll  bool
+	refreshDone map[string]bool
 }
 
 // New wires the router. Call Start to listen.
@@ -54,13 +58,15 @@ func New(st *store.Store, cfg Config) (*Server, error) {
 		cfg.Logger = log.Default()
 	}
 	s := &Server{
-		st:        st,
-		cfg:       cfg,
-		log:       cfg.Logger,
-		mux:       http.NewServeMux(),
-		startedAt: time.Now(),
-		limiter:   newLoginLimiter(),
-		sleep:     time.Sleep,
+		st:          st,
+		cfg:         cfg,
+		refreshAll:  true,
+		refreshDone: map[string]bool{},
+		log:         cfg.Logger,
+		mux:         http.NewServeMux(),
+		startedAt:   time.Now(),
+		limiter:     newLoginLimiter(),
+		sleep:       time.Sleep,
 	}
 	tmpl, err := template.New("today").Funcs(templateFuncs()).ParseFS(web.Templates(), "*.html")
 	if err != nil {
@@ -127,6 +133,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 // Start listens on cfg.Addr and serves in the background.
 func (s *Server) Start(ctx context.Context) error {
+	s.ForceFullRefresh()
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return err
