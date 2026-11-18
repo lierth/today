@@ -45,6 +45,15 @@ uint32_t BatteryMillivolts() {
 }
 
 void InitDisplay(bool fullInit) {
+  // GxEPD2's constructor pulls CS/DC/RST high before it sets them as outputs,
+  // which makes Arduino-ESP32 3.x log "IO n is not set as GPIO". Claim the pins
+  // first so a cold boot stays quiet.
+  pinMode(board::kPinCs, OUTPUT);
+  pinMode(board::kPinDC, OUTPUT);
+  pinMode(board::kPinRst, OUTPUT);
+  digitalWrite(board::kPinCs, HIGH);
+  digitalWrite(board::kPinDC, HIGH);
+  digitalWrite(board::kPinRst, HIGH);
   display.init(115200, fullInit, 2, false);
   display.setRotation(0);
   display.setTextColor(GxEPD_BLACK);
@@ -429,17 +438,11 @@ void DeepSleep(uint32_t seconds) {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
-  // Classic ESP32 note: ext1 only has ALL_LOW and ANY_HIGH. Active-high buttons
-  // make ANY_HIGH fire on a single press; with active-low wiring no ext1 mode
-  // can watch one low level, so fall back to ext0 on a single RTC pin.
-  if (board::kButtonsActiveHigh) {
-    esp_sleep_enable_ext1_wakeup(board::ButtonMask(), board::WakeMode());
-  } else {
-    // ext0 runs off the RTC peripheral, so that domain (and its internal
-    // pull-ups) has to stay powered through sleep. It costs some microamps.
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
-    esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(board::kWakePin), board::kButtonActiveLevel);
-  }
+  // The buttons are low-active with internal pull-ups, so the RTC peripheral
+  // domain has to stay powered through sleep or the pull-ups (and with them the
+  // idle level) disappear. It costs a few microamps; measure before changing.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  esp_sleep_enable_ext1_wakeup(board::ButtonMask(), board::WakeMode());
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -472,8 +475,11 @@ void setup() {
     DeepSleep(board::kButtonSleepSeconds);
   }
 
-  if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
-    SerialConfigWindow(4000);
+  if (coldBoot) {
+    // A configured board only needs a short window. A blank one cannot do
+    // anything until it has Wi-Fi and a token, so hold the port open long
+    // enough for someone to attach a monitor and type.
+    SerialConfigWindow(Configured() ? board::kConfigWindowMs : board::kProvisionWindowMs);
     cfg = storage::LoadConfig();
   }
 

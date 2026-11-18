@@ -9,40 +9,39 @@ is shared between the Go server and this C++ code.
 
 ## Hardware
 
-| Signal | ESP32 | Notes |
+Target board: **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM).
+The board enumerates as `USB JTAG/serial debug unit` (VID 0x303A, PID 0x1001)
+over its built-in USB-Serial/JTAG port, so no CP210x/CH340 driver is needed and
+a plain USB-C data cable is enough; a charge-only cable shows no `/dev/cu.*`.
+
+| Signal | ESP32-S3 | Notes |
 |---|---|---|
-| EPD CS | GPIO5 | |
+| EPD CS | GPIO10 | |
 | EPD DC | GPIO17 | |
 | EPD RST | GPIO16 | |
 | EPD BUSY | GPIO4 | |
-| EPD SCK | GPIO18 | VSPI |
-| EPD MOSI | GPIO23 | VSPI |
-| Button up | GPIO32 | to 3V3, external 100k to GND, RTC GPIO |
-| Button down | GPIO33 | to 3V3, 100k to GND |
-| Button OK | GPIO25 | to 3V3, 100k to GND |
-| Button refresh | GPIO26 | to 3V3, 100k to GND |
-| Battery | GPIO34 | 100k/100k divider, ×2 in software |
+| EPD SCK | GPIO12 | default SPI SCK of the DevKitC-1 |
+| EPD MOSI | GPIO11 | default SPI MOSI of the DevKitC-1 |
+| Button up | GPIO6 | to GND, internal pull-up, RTC GPIO |
+| Button down | GPIO7 | to GND, internal pull-up |
+| Button OK | GPIO15 | to GND, internal pull-up |
+| Button refresh | GPIO21 | to GND, internal pull-up |
+| Battery | GPIO1 | ADC1 channel 0, 100k/100k divider, ×2 in software |
 
 Panel: 4.2" 400×300, UC8176 (`GDEW042T2`) by default. If the silkscreen says
 SSD1619 (`GYE042A3`), change the panel type in `include/board.h` to
 `GxEPD2_420_GYE042A3` and keep the same pins.
 
-Buttons must stay on RTC GPIOs (0, 2, 4, 12–15, 25–27, 32–39) for `ext1` wake.
-The reference map uses 25/26/32/33.
+Pins are not free: the S3 package has **no GPIO 22–25**, deep-sleep wake only
+works on RTC GPIO 0–21, and ADC1 is GPIO 1–10. That rules out the classic-ESP32
+map (MOSI 23, OK 25, battery 34). Buttons must stay within 0–21 for `ext1`.
 
-**The buttons are active high on purpose.** The classic ESP32 has only two
-`ext1` wake modes, `ALL_LOW` and `ANY_HIGH`. With the common "button to GND plus
-internal pull-up" wiring, `ALL_LOW` would need all four buttons pressed at once,
-so a single press could never wake the board — the device would only ever wake
-on its timer. Wiring the buttons to 3V3 with external pull-downs lets
-`ANY_HIGH` fire on the first press, and the pull-downs keep the pins at a
-defined level while the RTC domain is off.
-
-If you already soldered the active-low wiring, set `board::kButtonsActiveHigh`
-to `false` in `include/board.h`. Sleep then falls back to `ext0` on
-`board::kWakePin` only: the OK button wakes the device, up/down/refresh work
-once it is awake. `ext0` needs `ESP_PD_DOMAIN_RTC_PERIPH` kept on, which costs a
-few microamps, so fix the wiring when you can.
+**The buttons are active low**, which is fine on this chip: unlike the classic
+ESP32, the S3 offers `ESP_EXT1_WAKEUP_ANY_LOW`, so "button to GND plus internal
+pull-up" wakes on the first press. `DeepSleep()` keeps
+`ESP_PD_DOMAIN_RTC_PERIPH` powered so those pull-ups survive sleep; measure the
+standby current before turning that off, and fit 100k pull-ups to 3V3 if it
+matters.
 
 ## Build and flash
 
@@ -50,8 +49,13 @@ few microamps, so fix the wiring when you can.
 cd firmware
 pio run                 # compile
 pio run -t upload       # flash over USB
-pio device monitor      # serial, 115200
+pio device monitor      # serial, 115200 over USB CDC
 ```
+
+`Serial` is the USB CDC (`-DARDUINO_USB_CDC_ON_BOOT=1 -DARDUINO_USB_MODE=1` in
+`platformio.ini`), because the board has no UART bridge chip. The port is
+`/dev/cu.usbmodem*`; if `pio run -t upload` cannot open it, hold BOOT while
+tapping RESET and retry, or call esptool with a lower `-b 460800`.
 
 The partition table reserves two 1.7 MB app slots and 64 KB NVS. NVS survives a
 reflash, so Wi-Fi credentials, device token, cursor and the cached frame are not
@@ -62,8 +66,8 @@ Bump `board::kFirmwareVersion` for every build or the device will keep the
 version it already has. The A/B slots keep the previous image for rollback.
 
 PlatformIO pins a pioarduino Arduino-ESP32 3.x build (ESP-IDF 5). With the
-Arduino IDE, select "ESP32 Dev Module", the same partition scheme, and install
-GxEPD2 and ArduinoJson.
+Arduino IDE, select "ESP32S3 Dev Module", 16 MB flash, OPI PSRAM, the same
+partition scheme, and install GxEPD2 and ArduinoJson.
 
 ## Provisioning
 

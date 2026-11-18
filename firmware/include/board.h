@@ -1,5 +1,13 @@
-// Board assumptions for the reference build. Change pins here, not in the
-// driver code. Buttons must stay on RTC GPIOs for ext1 deep-sleep wake.
+// Board assumptions for the reference build (ESP32-S3-DevKitC-1 N16R8 with a
+// UC8176 4.2" panel). Change pins here, not in the driver code.
+//
+// ESP32-S3 facts that shape this file:
+//   * GPIO 22-25 do not exist on the package (SOC_GPIO_VALID_GPIO_MASK clears
+//     them), so the classic-ESP32 map (MOSI 23, OK 25) cannot be reused.
+//   * Deep-sleep wake pins are RTC GPIO 0-21 only.
+//   * ADC1 is GPIO 1-10, so the battery divider has to sit there.
+//   * Unlike the classic ESP32, ext1 offers ANY_LOW, so plain
+//     "button to GND plus internal pull-up" wakes on a single press.
 #pragma once
 
 #include <Arduino.h>
@@ -8,41 +16,31 @@
 
 namespace board {
 
-constexpr int kPinCs = 5;
+// SPI: the ESP32-S3 DevKitC-1 defaults (SCK 12, MOSI 11) with the panel chip
+// select and control lines on pins that are free on the header.
+constexpr int kPinCs = 10;
 constexpr int kPinDC = 17;
 constexpr int kPinRst = 16;
 constexpr int kPinBusy = 4;
-constexpr int kPinSck = 18;
-constexpr int kPinMosi = 23;
+constexpr int kPinSck = 12;
+constexpr int kPinMosi = 11;
 
-constexpr int kPinUp = 32;
-constexpr int kPinDown = 33;
-constexpr int kPinOk = 25;
-constexpr int kPinRefresh = 26;
+// Buttons: wired to GND, internal pull-up, all on RTC GPIO 0-21 so ext1 can
+// watch them in deep sleep. None of them is a strapping pin.
+constexpr int kPinUp = 6;
+constexpr int kPinDown = 7;
+constexpr int kPinOk = 15;
+constexpr int kPinRefresh = 21;
 
-// The classic ESP32 only exposes two ext1 wake modes: ALL_LOW and ANY_HIGH.
-// With the common "button to GND plus internal pull-up" wiring ALL_LOW needs
-// every button pressed at the same moment, so one press can never wake the
-// board. The reference build therefore wires the buttons active-high (pin to
-// 3V3, 100k to GND) and wakes on ANY_HIGH.
-//
-// Set this to false to keep the old active-low wiring: sleep then falls back to
-// ext0 on kWakePin alone, because no ext1 mode can watch a single low level.
-constexpr bool kButtonsActiveHigh = true;
+constexpr int kButtonActiveLevel = LOW;
+constexpr int kButtonPinMode = INPUT_PULLUP;
 
-// Only used when kButtonsActiveHigh is false. Must be one of the button pins.
-constexpr int kWakePin = kPinOk;
-
-constexpr int kButtonActiveLevel = kButtonsActiveHigh ? HIGH : LOW;
-// Internal pull-ups are only wanted for the active-low wiring.
-constexpr int kButtonPinMode = kButtonsActiveHigh ? INPUT : INPUT_PULLUP;
-
-// Battery divider: 100k/100k, so ADC millivolts are doubled.
-constexpr int kPinBattery = 34;
+// Battery divider: 100k/100k, so ADC millivolts are doubled. ADC1 channel 0.
+constexpr int kPinBattery = 1;
 constexpr int kBatteryScale = 2;
 
 // Bump when the firmware changes so devices fetch a newly uploaded image.
-constexpr char kFirmwareVersion[] = "0.1.0";
+constexpr char kFirmwareVersion[] = "0.2.0";
 
 constexpr uint16_t kWidth = 400;
 constexpr uint16_t kHeight = 300;
@@ -54,22 +52,23 @@ constexpr uint32_t kFallbackSleepSeconds = 6 * 60 * 60;
 constexpr uint32_t kMinSleepSeconds = 60;
 constexpr uint16_t kMaxOutbox = 32;
 
+// Cold-boot serial windows: short for a board that is already provisioned,
+// effectively open-ended for a blank one (the port stays usable until reset).
+constexpr uint32_t kConfigWindowMs = 4000;
+constexpr uint32_t kProvisionWindowMs = 10 * 60 * 1000;
+
 using Panel = GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT>;
 
 inline uint64_t ButtonMask() {
   return (1ULL << kPinUp) | (1ULL << kPinDown) | (1ULL << kPinOk) | (1ULL << kPinRefresh);
 }
 
-// ESP_EXT1_WAKEUP_ANY_HIGH is the only per-pin mode the classic ESP32 offers
-// besides ALL_LOW, so the mask above is armed that way.
-inline esp_sleep_ext1_wakeup_mode_t WakeMode() {
-  return kButtonsActiveHigh ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ALL_LOW;
-}
+// Pressing any button pulls its pin low, so ANY_LOW is exactly the condition
+// we want. The internal pull-ups only survive deep sleep while the RTC
+// peripheral domain stays powered (see DeepSleep in main.cpp).
+inline esp_sleep_ext1_wakeup_mode_t WakeMode() { return ESP_EXT1_WAKEUP_ANY_LOW; }
 
 // True when the boot was caused by a button rather than the timer.
-inline bool IsButtonWake(esp_sleep_wakeup_cause_t cause) {
-  if (kButtonsActiveHigh) return cause == ESP_SLEEP_WAKEUP_EXT1;
-  return cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1;
-}
+inline bool IsButtonWake(esp_sleep_wakeup_cause_t cause) { return cause == ESP_SLEEP_WAKEUP_EXT1; }
 
 }  // namespace board
