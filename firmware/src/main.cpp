@@ -264,9 +264,12 @@ void SendAcks() {
 
 void FetchFrame() {
   const String etag = storage::LoadETag();
+  // A long OK press or the Refresh button asked for a full repaint; the flag
+  // is one-shot, taken here so the next wake can go back to plain 304s.
+  const bool force = storage::TakeForceFull();
   tbf::Frame frame{};
   const net::FetchResult result =
-      net::FetchFrame(cfg, etag, frameBuf, sizeof(frameBuf), &frame);
+      net::FetchFrame(cfg, etag, force, frameBuf, sizeof(frameBuf), &frame);
   if (result.sleepSeconds > 0) {
     sleepSeconds = static_cast<uint32_t>(result.sleepSeconds);
   }

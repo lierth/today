@@ -21,7 +21,9 @@ struct FetchResult {
 };
 
 // FetchFrame writes the bitmap into `buf` and points `out->bitmap` into it.
-FetchResult FetchFrame(const storage::Config& cfg, const String& etag,
+// When force is set the request carries force=1, so the server answers with a
+// full repaint instead of a 304 for the cached ETag.
+FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool force,
                        uint8_t* buf, size_t cap, tbf::Frame* out);
 
 int PostAcks(const storage::Config& cfg, const String& json);

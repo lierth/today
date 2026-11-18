@@ -88,8 +88,9 @@ deep sleep
   next timer fetch posts them to `/v1/devices/<id>/acks`. The server dedupes by
   `op_id`, so retries are safe.
 - OK short press toggles the cursor row; long press (≥0.7 s) forces a full
-  refresh and asks the next frame for `force_full`.
-- Refresh forces a full panel refresh and a forced full frame on the next fetch.
+  refresh and sets a one-shot flag, so the next fetch sends `?force=1` and the
+  server answers 200 with a full frame even when the cached `ETag` matches.
+- Refresh forces a full panel refresh and the same one-shot `?force=1` fetch.
 - Battery millivolts are sent with every acks request and shown in Settings.
 
 ## Power notes (read before trusting battery life)

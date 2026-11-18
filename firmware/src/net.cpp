@@ -35,13 +35,15 @@ bool Connect(const storage::Config& cfg, uint32_t timeoutMs) {
   return true;
 }
 
-FetchResult FetchFrame(const storage::Config& cfg, const String& etag,
+FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool force,
                        uint8_t* buf, size_t cap, tbf::Frame* out) {
   FetchResult res;
   if (cfg.server.isEmpty() || cfg.device.isEmpty() || cfg.token.isEmpty()) {
     return res;
   }
-  const String url = Join(cfg, ("/v1/devices/" + cfg.device + "/frame").c_str());
+  String path = "/v1/devices/" + cfg.device + "/frame";
+  if (force) path += "?force=1";
+  const String url = Join(cfg, path.c_str());
   WiFiClient plain;
   WiFiClientSecure tls;
   HTTPClient http;

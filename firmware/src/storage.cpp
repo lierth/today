@@ -124,7 +124,7 @@ void DropOutbox(uint8_t sent) {
 }
 
 bool TakeForceFull() {
-  const bool value = prefs.getBool("force", true);
+  const bool value = prefs.getBool("force", false);
   if (value) prefs.putBool("force", false);
   return value;
 }

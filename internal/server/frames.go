@@ -86,7 +86,8 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		cursor, _ = strconv.Atoi(raw)
 	}
 	forced := s.takeForcedRefresh(device.ID)
-	force := r.URL.Query().Get("force") == "1" || forced
+	clientForce := r.URL.Query().Get("force") == "1"
+	force := clientForce || forced
 	fr, err := s.buildFrame(ctx, now, cursor, force)
 	if err != nil {
 		s.log.Printf("server: frame: %v", err)
@@ -115,7 +116,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Seq", strconv.FormatUint(seq, 10))
 	h.Set("X-Server-Now", strconv.FormatInt(time.Now().Unix(), 10))
 	wake, refresh := s.nextWake(ctx, now)
-	refresh = refresh || forced
+	refresh = refresh || forced || clientForce
 	h.Set("X-Next-Wake-At", strconv.FormatInt(wake.Unix(), 10))
 	if refresh {
 		h.Set("X-Refresh", "1")
@@ -125,7 +126,9 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 
 	_ = s.st.TouchDevice(ctx, id, 0)
-	if !forced && etag == r.Header.Get("If-None-Match") {
+	// A device that asks for force=1 wants the bits even when its ETag still
+	// matches: it is about to repaint a blank or half-written panel.
+	if !forced && !clientForce && etag == r.Header.Get("If-None-Match") {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}

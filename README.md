@@ -52,6 +52,7 @@ go tool mygo build             # dist/darwin-arm64/Today.app + dmg
 `firmware/` 是独立的 PlatformIO 工程，接线、分区、串口配置和电源注意事项见 `firmware/README.md`。固件只依赖 `internal/frame` 的线格式：
 
 - 定时唤醒：连 Wi-Fi，`GET /v1/devices/<id>/frame`（ETag），按 `X-Next-Wake-At` 休眠
+- 长按 OK 或按 Refresh：下次取帧带 `?force=1`，即使 ETag 命中也要 200 全帧，用于重画空白屏
 - 按键唤醒：不连 Wi-Fi，本地移动光标/勾选，写入 NVS outbox，60 秒后再睡
 - 下一次定时唤醒把 outbox POST 到 `/v1/devices/<id>/acks`，服务端按 `op_id` 去重
 - 电池毫伏随 acks 上报

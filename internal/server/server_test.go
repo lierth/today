@@ -230,6 +230,28 @@ func TestFrameETagAndAcks(t *testing.T) {
 		t.Fatalf("frame after forced repaint: %d", followUp.StatusCode)
 	}
 
+	// A device wakes with a blank panel and asks for force=1: the cached ETag
+	// still matches, so only this branch can get it the bits.
+	clientForced := e.req(http.MethodGet, e.ts.URL+"/v1/devices/dev1/frame?force=1", nil)
+	clientForced.Header.Set("X-Device-Token", token)
+	clientForced.Header.Set("If-None-Match", forced.Header.Get("ETag"))
+	clientResp := e.do(clientForced)
+	if clientResp.StatusCode != http.StatusOK {
+		t.Fatalf("force=1 with a matching etag: %d", clientResp.StatusCode)
+	}
+	clientBody, _ := io.ReadAll(clientResp.Body)
+	if len(clientBody) < 1000 || clientBody[6]&frame.FlagForceFull == 0 {
+		t.Fatalf("force=1 body: %d flags=%#x", len(clientBody), clientBody[6])
+	}
+	if clientResp.Header.Get("X-Refresh") != "1" {
+		t.Fatalf("force=1 should force a repaint: %q", clientResp.Header.Get("X-Refresh"))
+	}
+	// The force was one request only: the next wake is a plain 304 again.
+	afterForce := frameReq(clientResp.Header.Get("ETag"))
+	if afterForce.StatusCode != http.StatusNotModified {
+		t.Fatalf("frame after force=1: %d", afterForce.StatusCode)
+	}
+
 	acks := func(ops []map[string]string) ackResponse {
 		payload, _ := json.Marshal(map[string]any{"frame_seq": 1, "battery_mv": 3980, "ops": ops})
 		req := e.req(http.MethodPost, e.ts.URL+"/v1/devices/dev1/acks", bytes.NewReader(payload))
