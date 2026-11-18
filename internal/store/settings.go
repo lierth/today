@@ -21,6 +21,14 @@ var KnownSettings = []string{
 	"device_token_hint",
 	"firmware_version",
 	"update_feed",
+	"night_off",
+	"night_start",
+	"night_end",
+	"power_state",
+	"funnel_state",
+	"funnel_action",
+	"funnel_detail",
+	"funnel_request",
 }
 
 // DefaultSettings returns the values used when a key is absent.
@@ -34,6 +42,14 @@ func DefaultSettings() map[string]string {
 		"auth_password_hash": "",
 		"auth_session_key":   "",
 		"device_token_hint":  "",
+		"night_off":          "true",
+		"night_start":        "23:00",
+		"night_end":          "07:00",
+		"power_state":        "",
+		"funnel_state":       "",
+		"funnel_action":      "",
+		"funnel_detail":      "",
+		"funnel_request":     "",
 	}
 }
 

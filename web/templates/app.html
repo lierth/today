@@ -3,7 +3,7 @@
 <p class="page-sub" id="today-progress">{{.DateLabel}} · <span class="progress">{{.Done}} / {{.Total}}</span></p>
 
 <div class="card">
-  <form class="quick" hx-post="/api/items" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}' hx-on::after-request="if (event.detail.successful) this.reset()">
+  <form class="quick quick-today" hx-post="/api/items" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}' hx-on::after-request="if (event.detail.successful) this.reset()">
     <input type="text" name="title" placeholder="添加一件事…" maxlength="200" required autocomplete="off" aria-label="标题">
     <input type="time" name="time" aria-label="时间">
     <button type="submit">添加</button>
@@ -12,10 +12,23 @@
 
 {{template "today_list.html" .}}
 
-<div class="card">
+<div class="card device-preview">
   <div class="card-head">
-    <h2>服务端渲染</h2>
-    {{if .PreviewID}}<a class="count" href="/api/devices/{{.PreviewID}}/preview.png?scale=2" target="_blank">打开预览 ↗</a>{{else}}<span class="count">还没有设备</span>{{end}}
+    <h2>设备屏</h2>
+    {{if .PreviewIDs}}
+    <span class="count">{{len .PreviewIDs}} 台</span>
+    {{else}}<span class="count">还没有设备</span>{{end}}
   </div>
+  {{if .PreviewIDs}}
+  <div class="preview-tabs" role="tablist" aria-label="设备">
+    {{range .PreviewIDs}}
+    <button class="ghost preview-tab" type="button" role="tab" aria-selected="{{if eq . $.PreviewID}}true{{else}}false{{end}}" aria-label="查看设备 {{.}} 的帧" data-frame="/api/devices/{{.}}/preview.png?scale=2" onclick="var f=document.getElementById('device-frame');f.src=this.dataset.frame;f.srcset=this.dataset.frame + ' 1x, ' + this.dataset.frame + ' 2x';f.closest('a').href=this.dataset.frame;var tabs=this.parentNode.querySelectorAll('.preview-tab');for(var i=0;i<tabs.length;i++)tabs[i].setAttribute('aria-selected',tabs[i]===this?'true':'false')">{{.}}</button>
+    {{end}}
+  </div>
+  <a class="frame-link" href="/api/devices/{{.PreviewID}}/preview.png?scale=2" target="_blank" rel="noopener">
+    <img id="device-frame" src="/api/devices/{{.PreviewID}}/preview.png?scale=2" srcset="/api/devices/{{.PreviewID}}/preview.png?scale=1 1x, /api/devices/{{.PreviewID}}/preview.png?scale=2 2x" alt="设备帧预览（400×300，含时钟、Wi-Fi、温湿度、电量小部件示例值）" width="400" height="300">
+  </a>
+  <p class="hint preview-note">这是服务端渲染的真机帧；右上角的时间、Wi-Fi、电量、温湿度为设备本机绘制，图里是示例值。</p>
+  {{end}}
 </div>
 {{template "foot" .}}{{end}}

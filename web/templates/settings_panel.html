@@ -43,18 +43,26 @@
     <div class="field">
       <label for="timezone">时区</label>
       <div>
-        <input id="timezone" type="text" name="timezone" value="{{.Settings.timezone}}" list="tzlist" autocomplete="off">
+        <input id="timezone" type="text" name="timezone" value="{{index .Settings "timezone"}}" list="tzlist" autocomplete="off" spellcheck="false" placeholder="Asia/Shanghai">
         <datalist id="tzlist">
-          <option value="Asia/Shanghai">
-          <option value="Asia/Tokyo">
-          <option value="Asia/Singapore">
-          <option value="Europe/London">
-          <option value="Europe/Berlin">
-          <option value="America/New_York">
-          <option value="America/Los_Angeles">
-          <option value="UTC">
+          {{range .Zones}}<option value="{{.}}">{{end}}
         </datalist>
-        <div class="hint">决定“今天”的边界、重复物化和帧里的日期。</div>
+        <div class="hint">IANA 名称（如 Asia/Shanghai）。留空或 Local 时按系统时区；决定“今天”的边界、重复物化和帧里的日期。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="night_off">夜间熄屏</label>
+      <div>
+        <div class="checkline">
+          <input id="night_off" type="checkbox" name="night_off" value="1" {{if eq .Settings.night_off "true"}}checked{{end}}>
+          <span>到点关屏，按键临时点亮 30 秒</span>
+        </div>
+        <div class="checkline">
+          <input id="night_start" type="time" name="night_start" value="{{.Settings.night_start}}" aria-label="夜间开始">
+          <span>到</span>
+          <input id="night_end" type="time" name="night_end" value="{{.Settings.night_end}}" aria-label="夜间结束">
+        </div>
+        <div class="hint">跨午夜自动处理（如 23:00 到 07:00）。设备按本地时间判断，Wi-Fi 与取帧不受影响。</div>
       </div>
     </div>
     <div class="field">
@@ -65,8 +73,12 @@
           <span>开启 Tailscale Funnel</span>
         </div>
         <div class="hint">
-          {{if .Settings.funnel_host}}当前地址：https://{{.Settings.funnel_host}}{{else}}勾选后由宿主启动，地址写回设置。{{end}}
+          {{if .Settings.funnel_host}}当前地址：{{.Settings.funnel_host}}{{else}}勾选后由宿主启动，地址写回设置。{{end}}
+          {{if .Settings.funnel_detail}}<br>状态：{{.Settings.funnel_detail}}{{end}}
         </div>
+        {{if and .Settings.funnel_action (ne .Settings.funnel_state "on")}}
+        <button class="ghost" type="submit" name="funnel_continue" value="1">继续设置外网</button>
+        {{end}}
       </div>
     </div>
     <div class="edit-actions">
@@ -108,9 +120,12 @@
       <button class="ghost" type="submit">添加设备</button>
     </form>
     {{if .Token}}
-    <div>
-      <div class="hint">新 token（只显示这一次，请写进固件）：</div>
+    <div class="token-box">
+      <div class="hint">新 token 只显示这一次。把下面四行贴进串口（115200），设备会写进 NVS：</div>
       <div class="token">{{.Token}}</div>
+      <pre class="token setup-cmds" id="setup-cmds">{{range .SetupCmds}}{{.}}
+{{end}}</pre>
+      <button class="ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('setup-cmds').innerText);this.textContent='已复制'">复制命令</button>
     </div>
     {{end}}
     {{range .Devices}}
@@ -121,6 +136,7 @@
           {{if .LastSeenAt}}上次取帧 {{fmtTime .LastSeenAt}}{{else}}从未连接{{end}}
           {{if .RevokedAt}} · 已吊销{{end}}
           {{if .BatteryMV}} · {{.BatteryMV}} mV{{end}}
+          {{if index $.Settings "power_state"}} · {{powerLabel (index $.Settings "power_state")}}{{end}}
         </div>
       </div>
       <div class="checkline">
@@ -129,11 +145,11 @@
           <input type="hidden" name="device" value="{{.ID}}">
           <button class="ghost" type="submit">生成 token</button>
         </form>
-        <a class="ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank">预览</a>
+        <a class="button ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank" rel="noopener">预览</a>
         <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
           <input type="hidden" name="action" value="revoke_device">
           <input type="hidden" name="device" value="{{.ID}}">
-          <button class="danger" type="submit">吊销</button>
+          <button class="danger" type="submit" aria-label="吊销设备 {{.ID}}">吊销</button>
         </form>
       </div>
     </div>

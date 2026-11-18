@@ -54,6 +54,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tests must not depend on the host's TZ: pin the app timezone so
+	// X-UTC-Offset and local dates are the same under TZ=UTC.
+	if err := st.PutSettings(context.Background(), map[string]string{"timezone": "Asia/Shanghai"}); err != nil {
+		t.Fatal(err)
+	}
 	return &testEnv{t: t, st: st, srv: srv, ts: ts, loc: loc, client: &http.Client{Jar: jar}}
 }
 
@@ -206,9 +211,21 @@ func TestFrameETagAndAcks(t *testing.T) {
 		t.Fatalf("first frame should force a repaint, got X-Refresh %q", resp.Header.Get("X-Refresh"))
 	}
 
+	if off := resp.Header.Get("X-UTC-Offset"); off != "28800" {
+		t.Fatalf("X-UTC-Offset on 200: %q", off)
+	}
+	if night := resp.Header.Get("X-Night"); night != "1380-420" {
+		t.Fatalf("X-Night on 200: %q", night)
+	}
 	notModified := frameReq(etag)
 	if notModified.StatusCode != http.StatusNotModified {
 		t.Fatalf("if-none-match: %d", notModified.StatusCode)
+	}
+	if off := notModified.Header.Get("X-UTC-Offset"); off != "28800" {
+		t.Fatalf("X-UTC-Offset on 304: %q", off)
+	}
+	if night := notModified.Header.Get("X-Night"); night != "1380-420" {
+		t.Fatalf("X-Night on 304: %q", night)
 	}
 	if b, _ := io.ReadAll(notModified.Body); len(b) != 0 {
 		t.Fatalf("304 body: %d bytes", len(b))
@@ -410,6 +427,50 @@ func TestSettingsUpdateRotatesSessions(t *testing.T) {
 	}
 }
 
+// The device draws its own cursor, so the frame endpoint must ignore any
+// cursor query and always return the neutral frame (the ETag stays stable).
+func TestDeviceFrameIgnoresCursor(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	if _, err := e.st.EnsureDevice(ctx, "dev1", "测试设备"); err != nil {
+		t.Fatal(err)
+	}
+	token := "cursor-token"
+	sum := sha256.Sum256([]byte(token))
+	if err := e.st.SetDeviceToken(ctx, "dev1", hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	get := func(cursor int) *http.Response {
+		u := e.ts.URL + "/v1/devices/dev1/frame"
+		if cursor >= 0 {
+			u += "?cursor=" + strconv.Itoa(cursor)
+		}
+		req := e.req(http.MethodGet, u, nil)
+		req.Header.Set("X-Device-Token", token)
+		return e.do(req)
+	}
+	// The first response consumes the server-start forced repaint; compare
+	// the steady state after it.
+	_ = get(-1)
+	plain := get(-1)
+	if plain.StatusCode != http.StatusOK {
+		t.Fatalf("frame: %d", plain.StatusCode)
+	}
+	body, _ := io.ReadAll(plain.Body)
+	withCursor := get(2)
+	if withCursor.StatusCode != http.StatusOK {
+		t.Fatalf("frame with cursor: %d", withCursor.StatusCode)
+	}
+	other, _ := io.ReadAll(withCursor.Body)
+	if !bytes.Equal(body, other) {
+		t.Fatal("cursor query changed the frame; the device draws its own cursor")
+	}
+	if withCursor.Header.Get("ETag") != plain.Header.Get("ETag") {
+		t.Fatalf("cursor query changed the ETag: %q vs %q",
+			withCursor.Header.Get("ETag"), plain.Header.Get("ETag"))
+	}
+}
+
 func TestPreviewPNG(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(e.password())
@@ -429,6 +490,28 @@ func TestPreviewPNG(t *testing.T) {
 	}
 	if img.Bounds().Dx() != 800 || img.Bounds().Dy() != 600 {
 		t.Fatalf("preview size: %v", img.Bounds())
+	}
+}
+
+func TestFunnelContinuePokesHost(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(e.password())
+	req := e.req(http.MethodPost, e.ts.URL+"/api/settings",
+		strings.NewReader(url.Values{
+			"action":          {"general"},
+			"funnel_continue": {"1"},
+		}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := e.do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("funnel_continue: %d", resp.StatusCode)
+	}
+	st, err := e.st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["funnel"] != "true" || st["funnel_request"] == "" {
+		t.Fatalf("host was not poked: funnel=%q request=%q", st["funnel"], st["funnel_request"])
 	}
 }
 

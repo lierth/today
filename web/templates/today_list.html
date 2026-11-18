@@ -7,9 +7,9 @@
     <li class="item{{if .Done}} done{{end}}">
       <form hx-patch="/api/items/{{.ID}}" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}'>
         <input type="hidden" name="status" value="{{if .Done}}open{{else}}done{{end}}">
-        <button class="check" type="submit" title="勾选">{{if .Done}}✓{{end}}</button>
+        <button class="check" type="submit" aria-pressed="{{if .Done}}true{{else}}false{{end}}" aria-label="{{if .Done}}标记为未完成：{{else}}标记为完成：{{end}}{{.Title}}">{{if .Done}}✓{{end}}</button>
       </form>
-      <div class="time">{{timeLabel .}}</div>
+      <div class="time">{{if .AllDay}}全天{{else}}{{timeLabel .}}{{end}}</div>
       <div class="title"><a href="/items/{{.ID}}">{{.Title}}</a></div>
     </li>
     {{end}}

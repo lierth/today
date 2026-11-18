@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,9 @@ type pageData struct {
 	Token       string
 	PanelToken  string
 	PreviewID   string
+	PreviewIDs  []string
+	Zones       []string
+	SetupCmds   []string
 	ListenAddr  string
 	ListenNow   string
 	BindNote    string
@@ -49,6 +53,20 @@ func templateFuncs() template.FuncMap {
 		"timeValue":   itemTimeValue,
 		"statusLabel": itemStatusLabel,
 		"fmtTime":     fmtTime,
+		"powerLabel":  powerLabel,
+	}
+}
+
+func powerLabel(v string) string {
+	switch v {
+	case "usb":
+		return "USB 供电"
+	case "charging":
+		return "充电中"
+	case "battery":
+		return "电池供电"
+	default:
+		return "供电状态未知"
 	}
 }
 
@@ -145,13 +163,14 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "app.html", pageData{
-		Title:     "今天",
-		Nav:       "today",
-		DateLabel: day.Format("1月2日") + " " + weekdayZH[day.Weekday()],
-		Items:     items,
-		Total:     total,
-		Done:      done,
-		PreviewID: previewDevice(devices),
+		Title:      "今天",
+		Nav:        "today",
+		DateLabel:  day.Format("1月2日") + " " + weekdayZH[day.Weekday()],
+		Items:      items,
+		Total:      total,
+		Done:       done,
+		PreviewID:  previewDevice(devices),
+		PreviewIDs: liveDevices(devices),
 	})
 }
 
@@ -220,14 +239,57 @@ func (s *Server) settingsData(ctx context.Context) (pageData, error) {
 	return pageData{
 		Title:      "设置",
 		Nav:        "settings",
-		Settings:   st,
+		Settings:   shownSettings(st),
 		Devices:    devices,
 		Stats:      stats,
 		ListenAddr: s.ListenLabel(),
 		ListenNow:  s.Addr(),
 		BindNote:   s.BindNote(),
 		PreviewID:  previewDevice(devices),
+		PreviewIDs: liveDevices(devices),
+		Zones:      zoneChoices(displayTimezone(st["timezone"])),
 	}, nil
+}
+
+// shownSettings replaces the legacy "Local" (and an empty zone) with the
+// machine's IANA name so the field never stores an untranslatable value.
+func shownSettings(st map[string]string) map[string]string {
+	out := make(map[string]string, len(st))
+	for k, v := range st {
+		out[k] = v
+	}
+	tz := out["timezone"]
+	if tz == "" || tz == "Local" {
+		if name := systemTimezone(); name != "" {
+			out["timezone"] = name
+		}
+	}
+	return out
+}
+
+// liveDevices lists the ids whose preview should be offered on the today page.
+func liveDevices(devices []store.Device) []string {
+	out := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if d.RevokedAt == nil {
+			out = append(out, d.ID)
+		}
+	}
+	return out
+}
+
+// setupCommands is the serial provisioning block shown after a token is made.
+// The Wi-Fi line is a placeholder: the password is not stored anywhere.
+func setupCommands(base, token string) []string {
+	if token == "" {
+		return nil
+	}
+	return []string{
+		"wifi <SSID> <password>",
+		"server " + base,
+		"device dev1",
+		"token " + token,
+	}
 }
 
 // previewDevice picks the device whose frame the pages link to: the first
@@ -626,6 +688,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data.Token = token
+		data.SetupCmds = setupCommands(s.lanBase(), token)
 		data.Message = msg
 		s.render(w, r, "settings_panel.html", data)
 		return
@@ -637,7 +700,24 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = "设备已吊销。"
 	default:
+		if r.FormValue("funnel_continue") != "" {
+			// The host owns Tailscale; the page pokes it through settings and
+			// the host's OnSettingsChanged callback runs the CLI outside this
+			// request.
+			if _, err := s.UpdateSettings(ctx, map[string]string{
+				"funnel":         "true",
+				"funnel_request": strconv.FormatInt(time.Now().UnixNano(), 10),
+			}); err != nil {
+				s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusInternalServerError)
+				return
+			}
+			msg = "已请求宿主继续设置外网，按提示在浏览器完成授权。"
+			break
+		}
 		tz := strings.TrimSpace(r.FormValue("timezone"))
+		if tz == "Local" {
+			tz = systemTimezone()
+		}
 		if tz != "" {
 			if _, err := time.LoadLocation(tz); err != nil {
 				s.renderSettingsPanel(w, r, pageData{Error: "时区无效：" + tz}, http.StatusBadRequest)
@@ -666,6 +746,18 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			"open_at_login": boolString(r.FormValue("open_at_login") != ""),
 			"tray_title":    boolString(r.FormValue("tray_title") != ""),
 			"funnel":        boolString(r.FormValue("funnel") != ""),
+			"night_off":     boolString(r.FormValue("night_off") != ""),
+		}
+		for _, key := range []string{"night_start", "night_end"} {
+			v := strings.TrimSpace(r.FormValue(key))
+			if v == "" {
+				continue
+			}
+			if _, ok := minutesOfDay(v); !ok {
+				s.renderSettingsPanel(w, r, pageData{Error: "夜间时间格式无效：" + v}, http.StatusBadRequest)
+				return
+			}
+			diff[key] = v
 		}
 		if _, ok := r.Form["update_feed"]; ok {
 			diff["update_feed"] = feed

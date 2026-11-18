@@ -9,13 +9,13 @@
   <div class="list-row">
     <form hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
       <input type="hidden" name="status" value="{{if .Done}}open{{else}}done{{end}}">
-      <button class="check" type="submit" title="勾选">{{if .Done}}✓{{end}}</button>
+      <button class="check" type="submit" aria-pressed="{{if .Done}}true{{else}}false{{end}}" aria-label="{{if .Done}}标记为未完成：{{else}}标记为完成：{{end}}{{.Title}}">{{if .Done}}✓{{end}}</button>
     </form>
-    <div>
-      <div><a href="/items/{{.ID}}">{{.Title}}</a></div>
+    <div class="row-main">
+      <div class="row-title"><a href="/items/{{.ID}}">{{.Title}}</a></div>
       <div class="meta">{{dateLabel .}} · {{timeLabel .}} · {{statusLabel .}}{{if .RRule}} · {{.RRule}}{{end}}{{if .SeriesID}} · 重复实例{{end}}</div>
       <details class="edit">
-        <summary>编辑</summary>
+        <summary class="ghost-button">编辑</summary>
         <form class="edit-form" hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
           <input type="hidden" name="full" value="1">
           <input class="wide" type="text" name="title" value="{{.Title}}" maxlength="200" required aria-label="标题">
@@ -34,13 +34,12 @@
           <input class="wide" type="text" name="rrule" value="{{.RRule}}" placeholder="FREQ=WEEKLY;INTERVAL=1 或留空" aria-label="重复规则">
           {{end}}
           <div class="edit-actions">
-            <button class="danger" type="button" hx-delete="/api/items/{{.ID}}" hx-confirm="删除这件事？" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>删除</button>
+            <button class="danger" type="button" aria-label="删除：{{.Title}}" hx-delete="/api/items/{{.ID}}" hx-confirm="删除这件事？" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>删除</button>
             <button type="submit">保存</button>
           </div>
         </form>
       </details>
     </div>
-    <div class="meta">{{.DateLocal}}</div>
   </div>
   {{end}}
   {{else}}

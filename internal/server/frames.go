@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"today/internal/frame"
@@ -81,14 +82,13 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().In(loc)
-	cursor := -1
-	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		cursor, _ = strconv.Atoi(raw)
-	}
+	// The device draws its own cursor (and local strike-through) so moving it
+	// never depends on the network and never changes the ETag. Only the web
+	// preview takes a cursor parameter.
 	forced := s.takeForcedRefresh(device.ID)
 	clientForce := r.URL.Query().Get("force") == "1"
 	force := clientForce || forced
-	fr, err := s.buildFrame(ctx, now, cursor, force)
+	fr, err := s.buildFrame(ctx, now, -1, force)
 	if err != nil {
 		s.log.Printf("server: frame: %v", err)
 		http.Error(w, "render", http.StatusInternalServerError)
@@ -115,6 +115,17 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("ETag", etag)
 	h.Set("X-Frame-Seq", strconv.FormatUint(seq, 10))
 	h.Set("X-Server-Now", strconv.FormatInt(time.Now().Unix(), 10))
+	// Seconds east of UTC at "now", DST included. The device draws the clock
+	// locally, so it needs the offset even when the body is a 304.
+	_, offset := now.Zone()
+	h.Set("X-UTC-Offset", strconv.Itoa(offset))
+	// Night off is a configuration of the whole board, not part of the
+	// bitmap: a header keeps the ETag stable when the window changes.
+	if night, ok := s.nightWindow(ctx); ok {
+		h.Set("X-Night", night)
+	} else {
+		h.Set("X-Night", "")
+	}
 	wake, refresh := s.nextWake(ctx, now)
 	refresh = refresh || forced || clientForce
 	h.Set("X-Next-Wake-At", strconv.FormatInt(wake.Unix(), 10))
@@ -135,6 +146,34 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "application/octet-stream")
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	_, _ = w.Write(body)
+}
+
+// nightWindow returns "start-end" in local minutes, e.g. "1380-420", and false
+// when night-off is disabled. Only a valid HH:MM pair is reported.
+func (s *Server) nightWindow(ctx context.Context) (string, bool) {
+	settings, err := s.st.Settings(ctx)
+	if err != nil || !store.BoolSetting(settings, "night_off") {
+		return "", false
+	}
+	start, sok := minutesOfDay(settings["night_start"])
+	end, eok := minutesOfDay(settings["night_end"])
+	if !sok || !eok {
+		return "", false
+	}
+	return strconv.Itoa(start) + "-" + strconv.Itoa(end), true
+}
+
+func minutesOfDay(hhmm string) (int, bool) {
+	parts := strings.Split(strings.TrimSpace(hhmm), ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }
 
 // buildFrame renders today's board. GET never writes to the database.
@@ -201,6 +240,7 @@ func (s *Server) nextWake(ctx context.Context, now time.Time) (time.Time, bool) 
 type ackRequest struct {
 	FrameSeq  int64   `json:"frame_seq"`
 	BatteryMV int     `json:"battery_mv,omitempty"`
+	Power     string  `json:"power,omitempty"` // usb | battery | charging
 	Ops       []ackOp `json:"ops"`
 }
 
@@ -264,6 +304,9 @@ func (s *Server) handleAcks(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BatteryMV > 0 {
 		_ = s.st.TouchDevice(ctx, id, req.BatteryMV)
+	}
+	if req.Power != "" {
+		_, _ = s.UpdateSettings(ctx, map[string]string{"power_state": req.Power})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
