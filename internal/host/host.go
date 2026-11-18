@@ -184,7 +184,17 @@ type Host struct {
 	updating  bool
 	latest    string
 	updateURL string
+
+	release  func()
+	shutdown func() error
+	done     chan struct{}
+	stopOnce sync.Once
 }
+
+// SetShutdown registers the process-wide cleanup that runs when the app is
+// about to quit: the listener drains and the database closes, so the WAL is
+// checkpointed instead of being replayed on the next start.
+func (h *Host) SetShutdown(fn func() error) { h.shutdown = fn }
 
 // New builds a host around an already started server.
 func New(srv *server.Server, dev bool, logger *log.Logger) *Host {
@@ -198,6 +208,7 @@ func New(srv *server.Server, dev bool, logger *log.Logger) *Host {
 		wake:    make(chan struct{}, 1),
 		fails:   3,
 		tailnet: "unknown",
+		done:    make(chan struct{}),
 	}
 }
 
@@ -251,12 +262,35 @@ func (h *Host) ready() {
 	// without a listener.
 	mygo.App.OnWindowAllClosed(func() {})
 
+	// The shell has no visible window, so App Nap would throttle the
+	// listener that the panel and the boards depend on. KeepRunning holds
+	// an idle-sleep-allowed activity: the Mac still sleeps when idle.
+	// KeepAwake would keep the whole machine up, which it must not.
+	h.release = mygo.Power.KeepRunning("serving the Today panel and boards")
+
+	// Session end cannot be canceled, so the cleanup has to finish
+	// synchronously inside the hook before the process goes away.
+	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		reason := "quit"
+		if e.SessionEnding {
+			reason = "session end"
+		}
+		h.close(reason)
+	})
+
 	mygo.Power.OnResume(func() {
 		h.srv.ForceFullRefresh()
 		h.kick()
 		if h.funnelEnabled() && !h.dev {
 			go h.probeFunnel()
 		}
+	})
+
+	// Nothing to do on suspend: the store is in WAL mode and every write is
+	// already durable. The line is here so a wake that loses frames can be
+	// told apart from one that never slept.
+	mygo.Power.OnSuspend(func() {
+		h.log.Printf("host: system sleeping; next wake forces a full repaint")
 	})
 
 	tray, err := mygo.NewTray(mygo.TrayOptions{
@@ -348,8 +382,12 @@ func (h *Host) loop() {
 	// the funnel guard, and both tolerate a stale answer.
 	go func() {
 		for {
+			select {
+			case <-h.done:
+				return
+			case <-time.After(30 * time.Second):
+			}
 			h.noteStranger()
-			time.Sleep(30 * time.Second)
 		}
 	}()
 	ticker := time.NewTicker(2 * time.Second)
@@ -358,6 +396,8 @@ func (h *Host) loop() {
 	defer probe.Stop()
 	for {
 		select {
+		case <-h.done:
+			return
 		case <-ticker.C:
 			h.refresh()
 		case <-probe.C:
@@ -633,6 +673,34 @@ func (h *Host) notify(title, body string) {
 		Title: title,
 		Body:  body,
 	}).Show()
+}
+
+// close releases the App Nap activity and runs the process cleanup once. The
+// quit hook fires on a normal quit and again when the OS ends the session, so
+// the work has to be idempotent; it also has to be synchronous, because the
+// process may go away as soon as the hook returns.
+func (h *Host) close(reason string) {
+	h.mu.Lock()
+	release, shutdown := h.release, h.shutdown
+	h.release, h.shutdown = nil, nil
+	h.mu.Unlock()
+	if release == nil && shutdown == nil {
+		return
+	}
+	h.stopOnce.Do(func() { close(h.done) })
+	// Speaking to Tailscale would outlive the process: the funnel is a
+	// system service that keeps running, and resetting it on quit would
+	// take the public entry point down with the menu bar.
+	if release != nil {
+		release()
+	}
+	if shutdown != nil {
+		if err := shutdown(); err != nil {
+			h.log.Printf("host: %s: cleanup: %v", reason, err)
+			return
+		}
+		h.log.Printf("host: %s: server stopped", reason)
+	}
 }
 
 func (h *Host) buildMenu() *mygo.Menu {

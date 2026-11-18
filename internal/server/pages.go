@@ -31,6 +31,7 @@ type pageData struct {
 	HasProgress bool
 	Token       string
 	PanelToken  string
+	PreviewID   string
 	ListenAddr  string
 	ListenNow   string
 	BindNote    string
@@ -138,6 +139,11 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 			done++
 		}
 	}
+	devices, err := s.st.Devices(ctx)
+	if err != nil {
+		http.Error(w, "db", http.StatusInternalServerError)
+		return
+	}
 	s.render(w, r, "app.html", pageData{
 		Title:     "今天",
 		Nav:       "today",
@@ -145,6 +151,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 		Items:     items,
 		Total:     total,
 		Done:      done,
+		PreviewID: previewDevice(devices),
 	})
 }
 
@@ -219,7 +226,19 @@ func (s *Server) settingsData(ctx context.Context) (pageData, error) {
 		ListenAddr: s.ListenLabel(),
 		ListenNow:  s.Addr(),
 		BindNote:   s.BindNote(),
+		PreviewID:  previewDevice(devices),
 	}, nil
+}
+
+// previewDevice picks the device whose frame the pages link to: the first
+// live one, so a revoked or single dev1 does not leave a dead link behind.
+func previewDevice(devices []store.Device) string {
+	for _, d := range devices {
+		if d.RevokedAt == nil {
+			return d.ID
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleSettingsPage(w http.ResponseWriter, r *http.Request) {

@@ -1,10 +1,12 @@
 package host
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDeepLinkTarget(t *testing.T) {
@@ -99,5 +101,47 @@ func TestProbeBaseRequiresMarker(t *testing.T) {
 	addr := "0.0.0.0" + stranger.URL[idx:]
 	if _, ok := probeBase(addr, ""); ok {
 		t.Fatal("probeBase trusted a listener that sends no instance id")
+	}
+}
+
+// The quit hook runs again when the OS ends the session, so the cleanup has
+// to be safe to call twice — and it must stop the background loop first, so
+// nothing reads the store after it closed.
+func TestCloseRunsCleanupOnce(t *testing.T) {
+	h := New(nil, true, nil)
+	released, stopped := 0, 0
+	h.release = func() { released++ }
+	h.shutdown = func() error { stopped++; return nil }
+
+	loopDone := make(chan struct{})
+	go func() {
+		h.loop()
+		close(loopDone)
+	}()
+
+	h.close("quit")
+	h.close("session end")
+
+	select {
+	case <-loopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("loop kept running after close")
+	}
+	if released != 1 || stopped != 1 {
+		t.Fatalf("cleanup ran %d/%d times, want once each", released, stopped)
+	}
+}
+
+// A shutdown error is reported but must not stop the release from happening:
+// the process is going away either way.
+func TestCloseReportsShutdownError(t *testing.T) {
+	h := New(nil, true, nil)
+	released := false
+	h.release = func() { released = true }
+	h.shutdown = func() error { return errors.New("boom") }
+
+	h.close("quit")
+	if !released {
+		t.Fatal("release did not run before the failing shutdown")
 	}
 }

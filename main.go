@@ -39,6 +39,7 @@ func main() {
 	defer a.Close()
 
 	h := host.New(a.Server, *dev, logger)
+	h.SetShutdown(a.Close)
 	if pw != "" {
 		h.SetFirstRunPassword(pw)
 	}

@@ -15,7 +15,7 @@
 <div class="card">
   <div class="card-head">
     <h2>服务端渲染</h2>
-    <a class="count" href="/api/devices/dev1/preview.png?scale=2" target="_blank">打开预览 ↗</a>
+    {{if .PreviewID}}<a class="count" href="/api/devices/{{.PreviewID}}/preview.png?scale=2" target="_blank">打开预览 ↗</a>{{else}}<span class="count">还没有设备</span>{{end}}
   </div>
 </div>
 {{template "foot" .}}{{end}}

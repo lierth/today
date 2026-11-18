@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"today/internal/config"
@@ -56,6 +57,9 @@ func resolveAddr(cfg Config) (string, string, error) {
 type App struct {
 	Store  *store.Store
 	Server *server.Server
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // DefaultDBPath is ~/Library/Application Support/Today/today.db on macOS and
@@ -108,13 +112,17 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 	return &App{Store: st, Server: srv}, pw, nil
 }
 
-// Close drains the listener and the database.
+// Close drains the listener and the database. The quit hook and the deferred
+// call in main both run it, so it is safe to call more than once.
 func (a *App) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	err := a.Server.Shutdown(ctx)
-	if cerr := a.Store.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	a.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		err := a.Server.Shutdown(ctx)
+		if cerr := a.Store.Close(); err == nil {
+			err = cerr
+		}
+		a.closeErr = err
+	})
+	return a.closeErr
 }

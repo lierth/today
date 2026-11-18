@@ -103,6 +103,20 @@ func (e *testEnv) get(path string) *http.Response {
 	return e.do(e.req(http.MethodGet, e.ts.URL+path, nil))
 }
 
+// body fetches a page as the logged-in session and returns its bytes.
+func (e *testEnv) body(path string) []byte {
+	e.t.Helper()
+	resp := e.get(path)
+	if resp.StatusCode != http.StatusOK {
+		e.t.Fatalf("GET %s: %d", path, resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return b
+}
+
 func TestAuthFlow(t *testing.T) {
 	e := newTestEnv(t)
 	pw := e.password()
@@ -676,5 +690,41 @@ func TestPagesConfigureHtmxToSwapErrors(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte(`"code":"4..","swap":true`)) {
 		t.Fatalf("htmx config should swap 4xx responses: %s", body[:200])
+	}
+}
+
+// The preview link used to hardcode dev1, so a board added later had no way
+// to look at its own frame and a revoked dev1 left a dead link behind.
+func TestPreviewLinkFollowsTheDevice(t *testing.T) {
+	e := newTestEnv(t)
+	pw := e.password()
+	e.login(pw)
+	ctx := context.Background()
+
+	if _, err := e.st.EnsureDevice(ctx, "dev1", "开发设备"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.CreateDevice(ctx, "desk", "桌面屏", ""); err != nil {
+		t.Fatal(err)
+	}
+	body := e.body("/app")
+	if !bytes.Contains(body, []byte("/api/devices/dev1/preview.png")) {
+		t.Fatalf("today page should preview the first device: %s", body)
+	}
+
+	if err := e.st.RevokeDevice(ctx, "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	body = e.body("/app")
+	if bytes.Contains(body, []byte("/api/devices/dev1/preview.png")) {
+		t.Fatal("revoked device should not be linked")
+	}
+	if !bytes.Contains(body, []byte("/api/devices/desk/preview.png")) {
+		t.Fatalf("next live device should be linked: %s", body)
+	}
+
+	set := e.body("/settings")
+	if !bytes.Contains(set, []byte("/api/devices/desk/preview.png")) {
+		t.Fatalf("settings should preview the live device: %s", set)
 	}
 }
