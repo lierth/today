@@ -6,6 +6,16 @@
   <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
     <input type="hidden" name="action" value="general">
     <div class="field">
+      <label for="listen_addr">端口</label>
+      <div>
+        <input id="listen_addr" type="text" name="listen_addr" value="{{.ListenAddr}}" placeholder="8787 或 0.0.0.0:8787" autocomplete="off" inputmode="numeric">
+        <div class="hint">
+          当前监听 {{.ListenNow}}。写入 config.json，重启后仍生效；端口被别的程序占用时改这里。
+          {{if .BindNote}}<br><strong>上次启动时原端口被占用：{{.BindNote}}</strong> —— 改好端口后请把设备的服务器地址也一并更新。{{end}}
+        </div>
+      </div>
+    </div>
+    <div class="field">
       <label for="update_feed">更新源</label>
       <div>
         <input id="update_feed" type="url" name="update_feed" value="{{index .Settings "update_feed"}}" placeholder="GitHub release API 或 {version,url} JSON">

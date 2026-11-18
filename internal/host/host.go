@@ -44,8 +44,7 @@ func AppVersion() string {
 // server. Call it before starting the server: a second launch exits quietly
 // after handing its command line to the first instance.
 func Claim(addr string) bool {
-	base := "http://" + webAddr(addr)
-	open := func(raw string) { go openWhenReady(base, deepLinkTarget(raw, base)) }
+	open := func(raw string) { go openWhenReady(addr, raw) }
 	mygo.App.SetName("Today")
 	mygo.App.OnOpenURL(open)
 	mygo.App.OnSecondInstance(func(args []string, _ string) {
@@ -92,19 +91,68 @@ func deepLinkTarget(raw, base string) string {
 }
 
 // openWhenReady waits for the local server, then hands the URL to the browser.
-func openWhenReady(base, target string) {
-	client := &http.Client{Timeout: 400 * time.Millisecond}
+// It resolves which loopback address really serves Today first, so a stranger
+// squatting on 127.0.0.1:8787 never receives the click.
+func openWhenReady(addr, raw string) {
+	base := waitForBase(addr)
+	_ = mygo.Shell.OpenExternal(deepLinkTarget(raw, base))
+}
+
+// waitForBase polls every candidate loopback address until Today answers, and
+// returns the URL prefix to use. When nothing answers it still returns the
+// plain loopback URL so the click has a destination.
+func waitForBase(addr string) string {
 	for i := 0; i < 25; i++ {
-		resp, err := client.Get(base + "/healthz")
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
+		if base, ok := probeBase(addr, ""); ok {
+			return base
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = mygo.Shell.OpenExternal(target)
+	return "http://" + webAddr(addr)
+}
+
+// probeBase finds the loopback URL that actually reaches our server. Binding a
+// wildcard port and a loopback port can both succeed, and the kernel then sends
+// loopback traffic to the more specific listener — so a stranger holding
+// 127.0.0.1:8787 would answer the tray's links. Today marks every /healthz
+// response with its instance id; only the address that echoes the expected
+// marker (any marker when want is empty) is used.
+func probeBase(addr, want string) (string, bool) {
+	port := portOf(addr)
+	if port == "" {
+		return "http://" + webAddr(addr), false
+	}
+	client := &http.Client{Timeout: 400 * time.Millisecond}
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		base := "http://" + net.JoinHostPort(host, port)
+		resp, err := client.Get(base + "/healthz")
+		if err != nil {
+			continue
+		}
+		id := resp.Header.Get("X-Today-Instance")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || id == "" {
+			continue
+		}
+		if want != "" && id != want {
+			continue
+		}
+		return base, true
+	}
+	return "http://" + webAddr(addr), false
+}
+
+func portOf(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" || port == "0" {
+		return ""
+	}
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return port
 }
 
 var funnelURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.ts\.net`)
@@ -127,6 +175,8 @@ type Host struct {
 	funnelOK bool
 	fails    int
 	tailnet  string
+	stranger string
+	base     string
 
 	wake      chan struct{}
 	firstPass string
@@ -175,6 +225,26 @@ func (h *Host) ready() {
 	}
 	h.setSettings(settings)
 	h.applyLoginItem(settings["open_at_login"] == "true")
+	if base := h.baseURL(); base != "http://"+webAddr(h.srv.Addr()) {
+		h.log.Printf("host: %s is served by another process; links use %s", webAddr(h.srv.Addr()), base)
+	}
+
+	// A port change invalidates every cached link and leaves Tailscale
+	// forwarding the old port, so re-run the funnel on the new one.
+	h.srv.OnAddrChanged(func(addr string) {
+		h.mu.Lock()
+		h.base = ""
+		h.stranger = ""
+		h.mu.Unlock()
+		h.log.Printf("host: listening moved to %s", addr)
+		if h.funnelEnabled() && !h.dev {
+			go func() {
+				h.stopFunnel()
+				h.startFunnel()
+			}()
+		}
+		h.kick()
+	})
 
 	mygo.Power.OnResume(func() {
 		h.srv.ForceFullRefresh()
@@ -227,6 +297,40 @@ func (h *Host) ready() {
 	go h.loop()
 }
 
+// cachedBase is the last verified loopback prefix. Menu building must never
+// block on the network, so it reads the value the probe loop refreshed.
+func (h *Host) cachedBase() string {
+	h.mu.Lock()
+	base := h.base
+	h.mu.Unlock()
+	if base != "" {
+		return base
+	}
+	return "http://" + webAddr(h.srv.Addr())
+}
+
+// noteStranger records whether some other program answers our port on
+// loopback, so the menu can say so instead of silently sending users to it.
+func (h *Host) noteStranger() {
+	hp := h.strangerOn()
+	base, ok := probeBase(h.srv.Addr(), h.srv.InstanceID())
+	h.mu.Lock()
+	changed := h.stranger != hp
+	h.stranger = hp
+	if ok {
+		h.base = base
+	} else if h.base == "" {
+		h.base = "http://" + webAddr(h.srv.Addr())
+	}
+	h.mu.Unlock()
+	if changed {
+		if hp != "" {
+			h.log.Printf("host: %s answers but is not Today; tray links avoid it", hp)
+		}
+		h.kick()
+	}
+}
+
 func (h *Host) kick() {
 	select {
 	case h.wake <- struct{}{}:
@@ -235,6 +339,14 @@ func (h *Host) kick() {
 }
 
 func (h *Host) loop() {
+	// The health probe is deliberately slow: it only feeds the status menu and
+	// the funnel guard, and both tolerate a stale answer.
+	go func() {
+		for {
+			h.noteStranger()
+			time.Sleep(30 * time.Second)
+		}
+	}()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	probe := time.NewTicker(60 * time.Second)
@@ -329,6 +441,50 @@ func (h *Host) iconForState() []byte {
 	return h.iconError
 }
 
+// baseURL returns the loopback prefix that demonstrably reaches this process.
+// The probe runs per call (a cached answer could go stale if the port holder
+// changes) but a previous good value is kept as the fallback.
+func (h *Host) baseURL() string {
+	want := h.srv.InstanceID()
+	if base, ok := probeBase(h.srv.Addr(), want); ok {
+		h.mu.Lock()
+		h.base = base
+		h.mu.Unlock()
+		return base
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.base != "" {
+		return h.base
+	}
+	return "http://" + webAddr(h.srv.Addr())
+}
+
+// strangerOn reports a loopback address that answers our port but is not this
+// process. It matters twice: links must avoid it, and the funnel — which
+// proxies to 127.0.0.1 — would deliver traffic to the stranger instead.
+func (h *Host) strangerOn() string {
+	port := portOf(h.srv.Addr())
+	if port == "" {
+		return ""
+	}
+	want := h.srv.InstanceID()
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		hp := net.JoinHostPort(host, port)
+		resp, err := client.Get("http://" + hp + "/healthz")
+		if err != nil {
+			continue
+		}
+		id := resp.Header.Get("X-Today-Instance")
+		_ = resp.Body.Close()
+		if id != want {
+			return hp
+		}
+	}
+	return ""
+}
+
 // togglePanel shows a small read-only WebView beside the tray icon. The URL
 // carries a short-lived panel token; the window has no session cookie and
 // cannot mutate anything.
@@ -358,8 +514,8 @@ func (h *Host) togglePanel() {
 		h.log.Printf("host: panel token: %v", err)
 		return
 	}
-	url := "http://" + webAddr(h.srv.Addr()) + "/panel?t=" + url.QueryEscape(token)
-	if err := h.panel.Page().LoadURL(url); err != nil {
+	panelURL := h.baseURL() + "/panel?t=" + url.QueryEscape(token)
+	if err := h.panel.Page().LoadURL(panelURL); err != nil {
 		h.log.Printf("host: panel load: %v", err)
 		return
 	}
@@ -375,9 +531,9 @@ func (h *Host) togglePanel() {
 }
 
 func (h *Host) open(path string) {
-	url := "http://" + webAddr(h.srv.Addr()) + path
-	if err := mygo.Shell.OpenExternal(url); err != nil {
-		h.log.Printf("host: open %s: %v", url, err)
+	target := h.baseURL() + path
+	if err := mygo.Shell.OpenExternal(target); err != nil {
+		h.log.Printf("host: open %s: %v", target, err)
 	}
 }
 
@@ -393,6 +549,28 @@ func webAddr(addr string) string {
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
+}
+
+// lanAddr returns the address other devices on the network can use. It picks
+// the first private IPv4 interface address, and falls back to the loopback
+// prefix when the machine is offline.
+func (h *Host) lanAddr() string {
+	port := portOf(h.srv.Addr())
+	addrs, err := net.InterfaceAddrs()
+	if err == nil && port != "" {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || !ip4.IsPrivate() {
+				continue
+			}
+			return "http://" + net.JoinHostPort(ip4.String(), port)
+		}
+	}
+	return h.baseURL()
 }
 
 func (h *Host) refreshMenu() {
@@ -464,9 +642,15 @@ func (h *Host) buildMenu() *mygo.Menu {
 	done, total, _ := h.srv.TodaySummary(context.Background())
 
 	statusLabel := "服务：运行中"
+	if note := h.srv.BindNote(); note != "" {
+		statusLabel = "服务：原端口被占用，已改用 " + h.srv.Port()
+	}
 	h.mu.Lock()
-	ok, tailnet := h.funnelOK, h.tailnet
+	ok, tailnet, stranger := h.funnelOK, h.tailnet, h.stranger
 	h.mu.Unlock()
+	if stranger != "" {
+		statusLabel = "服务：端口被占用（" + stranger + "）"
+	}
 	funnelLabel := "外网：关闭"
 	switch {
 	case h.dev:
@@ -533,7 +717,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 			},
 		},
 		{Label: "复制局域网地址", Click: func(*mygo.MenuItem, *mygo.Window) {
-			mygo.Clipboard.WriteText("http://" + webAddr(h.srv.Addr()) + "/app")
+			mygo.Clipboard.WriteText(h.lanAddr() + "/app")
 		}},
 		mygo.Separator(),
 		{
@@ -543,6 +727,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 				{Label: fmt.Sprintf("今日：%d/%d", done, total), Disabled: true},
 				{Label: funnelLabel, Disabled: true},
 				{Label: "监听 " + h.srv.Addr(), Disabled: true},
+				{Label: "内网链接 " + h.cachedBase(), Disabled: true},
 			},
 		},
 		updateItem(h),
@@ -586,9 +771,20 @@ func (h *Host) startFunnel() {
 	if h.dev {
 		return
 	}
+	// Tailscale dials 127.0.0.1 for this port; if another program answers
+	// there, the public URL would serve that program instead of Today.
+	if hp := h.strangerOn(); hp != "" {
+		h.log.Printf("host: funnel refused: %s answers but is not Today", hp)
+		h.mu.Lock()
+		h.funnelOK = false
+		h.stranger = hp
+		h.mu.Unlock()
+		h.kick()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	out, err := h.runTailscale(ctx, "funnel", "--bg", "8787")
+	out, err := h.runTailscale(ctx, "funnel", "--bg", h.port())
 	if err != nil {
 		h.log.Printf("host: funnel on: %v: %s", err, strings.TrimSpace(out))
 		h.mu.Lock()
@@ -598,6 +794,15 @@ func (h *Host) startFunnel() {
 		return
 	}
 	h.probeFunnel()
+}
+
+// port is the port Tailscale should forward, taken from the live listener so a
+// custom port needs no second place to change.
+func (h *Host) port() string {
+	if p := h.srv.Port(); p != "" {
+		return p
+	}
+	return "8787"
 }
 
 func (h *Host) stopFunnel() {

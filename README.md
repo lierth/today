@@ -16,6 +16,14 @@ go run ./cmd/todayd passwd --db ~/Library/Application\ Support/Today/today.db
 
 首次启动会生成 12 位访问口令并打印到 stderr，同时复制到剪贴板。之后在 `/login` 输口令进入 `/app`。
 
+端口默认 `0.0.0.0:8787`。它被别的程序占用时（本机 `127.0.0.1:8787` 可能就是别的服务），有三种改法：
+
+1. 设置页「常规 → 端口」填端口，保存后立即换绑，并写进数据库旁的 `config.json`；
+2. 直接编辑 `~/Library/Application Support/Today/config.json` 的 `listen_addr`，重启生效 —— 端口绑不上时网页打不开，这个文件是唯一的入口；
+3. `--addr 8890` 临时覆盖一次（优先级最高）。
+
+菜单栏应用绑不上时会自动退到相邻端口继续运行，菜单和设置页都会写明「原端口被占用」，因为一个起不来的应用没法打开设置页自救；`todayd serve` 则直接把错误打出来。
+
 `--dev` 会关闭 Funnel 接管，并允许 `http://127.0.0.1` 下的会话 cookie；正式运行不要带。
 
 ## 打包
@@ -31,7 +39,8 @@ go tool mygo build             # dist/darwin-arm64/Today.app + dmg
 - `internal/frame` — 帧契约、版式、字体、1-bit 渲染、PNG/PBM 预览
 - `internal/store` — SQLite：事项、重复物化、设备、op 去重、设置
 - `internal/server` — 路由、口令会话、设备 token、ETag 帧、JSON API
-- `internal/host` — mygo 托盘、菜单、单实例、深链、Funnel 守护、休眠唤醒
+- `internal/host` — mygo 托盘、菜单、单实例、深链、Funnel 守护、休眠唤醒、回环地址探测
+- `internal/config` — 启动前可读的 `config.json`（监听端口）
 - `web/` — 模板与静态资源（HTMX）
 - `firmware/` — ESP32 + GxEPD2 固件（PlatformIO，串口配置，按键 outbox）
 - `cmd/todayd` — 无 GUI 的 serve / preview / decode / sim / passwd

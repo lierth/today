@@ -30,6 +30,9 @@ type pageData struct {
 	Done       int
 	Token      string
 	PanelToken string
+	ListenAddr string
+	ListenNow  string
+	BindNote   string
 	Message    string
 	Error      string
 }
@@ -198,11 +201,14 @@ func (s *Server) settingsData(ctx context.Context) (pageData, error) {
 		return pageData{}, err
 	}
 	return pageData{
-		Title:    "设置",
-		Nav:      "settings",
-		Settings: st,
-		Devices:  devices,
-		Stats:    stats,
+		Title:      "设置",
+		Nav:        "settings",
+		Settings:   st,
+		Devices:    devices,
+		Stats:      stats,
+		ListenAddr: s.ListenLabel(),
+		ListenNow:  s.Addr(),
+		BindNote:   s.BindNote(),
 	}, nil
 }
 
@@ -593,6 +599,19 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// A bare port keeps the interface already in use; the field is
+		// compared after expansion so resubmitting the same port is a no-op
+		// even when the label and the listen address are spelled differently.
+		listen := strings.TrimSpace(r.FormValue("listen_addr"))
+		listenChanged := false
+		if listen != "" {
+			target := ExpandAddr(s.Addr(), listen)
+			if err := ValidateAddr(target); err != nil {
+				s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusBadRequest)
+				return
+			}
+			listenChanged = !sameListen(target, s.Addr())
+		}
 		feed := strings.TrimSpace(r.FormValue("update_feed"))
 		if feed != "" && !strings.HasPrefix(feed, "https://") && !strings.HasPrefix(feed, "http://") {
 			s.renderSettingsPanel(w, r, pageData{Error: "更新源必须是 http(s) 地址。"}, http.StatusBadRequest)
@@ -614,6 +633,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		msg = "设置已保存。"
+		if listenChanged {
+			if err := s.SetListenAddr(listen); err != nil {
+				msg = ""
+				s.renderSettingsPanel(w, r, pageData{Error: "设置已保存，但端口没换成：" + err.Error()}, http.StatusBadRequest)
+				return
+			}
+			msg = "端口已改为 " + s.Addr() + "，旧地址不再应答。"
+		}
 	}
 	data, err := s.settingsData(ctx)
 	if err != nil {

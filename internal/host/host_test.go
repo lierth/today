@@ -1,6 +1,11 @@
 package host
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestDeepLinkTarget(t *testing.T) {
 	const base = "http://127.0.0.1:8787"
@@ -34,5 +39,65 @@ func TestWebAddr(t *testing.T) {
 		if got := webAddr(in); got != want {
 			t.Fatalf("webAddr(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestPortOf(t *testing.T) {
+	cases := map[string]string{
+		"0.0.0.0:8787":  "8787",
+		"[::]:8787":     "8787",
+		"127.0.0.1:0":   "",
+		"127.0.0.1":     "",
+		"unix:/tmp/x":   "",
+		"192.168.1:900": "900",
+	}
+	for in, want := range cases {
+		if got := portOf(in); got != want {
+			t.Fatalf("portOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A stranger can hold 127.0.0.1:8787 while Today holds the wildcard address;
+// the probe must skip the stranger and keep the server that answers with our
+// instance id.
+func TestProbeBaseSkipsForeignListener(t *testing.T) {
+	stranger := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer stranger.Close()
+
+	ours := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Today-Instance", "abc123")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer ours.Close()
+
+	idx := strings.LastIndex(ours.URL, ":")
+	addr := "0.0.0.0" + ours.URL[idx:]
+	base, ok := probeBase(addr, "abc123")
+	if !ok {
+		t.Fatalf("probeBase(%q) found no server", addr)
+	}
+	if base != "http://"+ours.Listener.Addr().String() {
+		t.Fatalf("probeBase(%q) = %q, want our server", addr, base)
+	}
+	if _, ok := probeBase(addr, "other"); ok {
+		t.Fatal("probeBase accepted a server with a different instance id")
+	}
+}
+
+// A plain HTTP listener without the marker is not Today: probing must fail
+// even though it answers 200.
+func TestProbeBaseRequiresMarker(t *testing.T) {
+	stranger := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer stranger.Close()
+
+	idx := strings.LastIndex(stranger.URL, ":")
+	addr := "0.0.0.0" + stranger.URL[idx:]
+	if _, ok := probeBase(addr, ""); ok {
+		t.Fatal("probeBase trusted a listener that sends no instance id")
 	}
 }

@@ -53,7 +53,7 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `todayd — Today server and device tooling
 
-  todayd serve   [--addr 0.0.0.0:8787] [--db path] [--dev]
+  todayd serve   [--addr 8787] [--db path] [--dev]
   todayd preview [--db path] [--device dev1] [--out frame.png] [--png] [--scale 3] [--demo]
   todayd decode  <frame.bin>
   todayd sim     [--db path] <ops.jsonl>
@@ -79,7 +79,7 @@ func location(ctx context.Context, st *store.Store) *time.Location {
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", app.DefaultAddr, "listen address")
+	addr := fs.String("addr", "", "listen address (default: config.json, then "+app.DefaultAddr+")")
 	db := fs.String("db", "", "database path")
 	dev := fs.Bool("dev", false, "development mode: keep hands off Tailscale")
 	if err := fs.Parse(args); err != nil {

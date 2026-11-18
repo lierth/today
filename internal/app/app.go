@@ -9,20 +9,47 @@ import (
 	"path/filepath"
 	"time"
 
+	"today/internal/config"
 	"today/internal/server"
 	"today/internal/store"
 )
 
-// DefaultAddr keeps every consumer on one listener; a second bind on
-// 127.0.0.1 would make Tailscale funnel and device tokens disagree.
+// DefaultAddr is only a starting point: the port is configurable through
+// --addr and through config.json next to the database, because 8787 is a
+// popular port and the web page that would fix a conflict is unreachable
+// when the bind fails.
 const DefaultAddr = "0.0.0.0:8787"
 
-// Config is the subset of flags both entry points accept.
+// Config is the subset of flags both entry points accept. An empty Addr means
+// "read config.json, then fall back to DefaultAddr".
 type Config struct {
 	Addr   string
 	DBPath string
 	Dev    bool
 	Logger *log.Logger
+	// FallbackPort lets the GUI keep running when the configured port is
+	// taken; the CLI keeps the hard failure.
+	FallbackPort bool
+}
+
+// resolveAddr picks the listen address and reports where it came from, so the
+// log line explains why the app bound the port it did.
+func resolveAddr(cfg Config) (string, string, error) {
+	if cfg.Addr != "" {
+		return server.NormalizeAddr(cfg.Addr), "flag", nil
+	}
+	file, err := config.Load(filepath.Dir(cfg.DBPath))
+	if err != nil {
+		return "", "", err
+	}
+	if file.ListenAddr != "" {
+		addr := server.NormalizeAddr(file.ListenAddr)
+		if err := server.ValidateAddr(addr); err != nil {
+			return "", "", err
+		}
+		return addr, config.FileName, nil
+	}
+	return DefaultAddr, "default", nil
 }
 
 // App owns the process-wide resources.
@@ -47,12 +74,14 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
-	if cfg.Addr == "" {
-		cfg.Addr = DefaultAddr
-	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = DefaultDBPath()
 	}
+	addr, source, err := resolveAddr(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	cfg.Addr = addr
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return nil, "", err
@@ -61,7 +90,7 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 		_ = st.Close()
 		return nil, "", err
 	}
-	srv, err := server.New(st, server.Config{Addr: cfg.Addr, DataDir: filepath.Dir(cfg.DBPath), Dev: cfg.Dev, Logger: cfg.Logger})
+	srv, err := server.New(st, server.Config{Addr: cfg.Addr, DataDir: filepath.Dir(cfg.DBPath), Dev: cfg.Dev, Logger: cfg.Logger, FallbackPort: cfg.FallbackPort})
 	if err != nil {
 		_ = st.Close()
 		return nil, "", err
@@ -75,7 +104,7 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 		_ = st.Close()
 		return nil, "", err
 	}
-	cfg.Logger.Printf("today: listening on %s (db %s)", srv.Addr(), cfg.DBPath)
+	cfg.Logger.Printf("today: listening on %s (%s, db %s)", srv.Addr(), source, cfg.DBPath)
 	return &App{Store: st, Server: srv}, pw, nil
 }
 

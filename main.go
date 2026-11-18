@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", app.DefaultAddr, "listen address")
+	addr := flag.String("addr", "", "listen address (default: config.json, then "+app.DefaultAddr+")")
 	db := flag.String("db", "", "database path")
 	dev := flag.Bool("dev", false, "development mode: no funnel, insecure cookies allowed")
 	version := flag.Bool("version", false, "print the version and exit")
@@ -32,7 +32,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	a, pw, err := app.Boot(ctx, app.Config{Addr: *addr, DBPath: *db, Dev: *dev, Logger: logger})
+	a, pw, err := app.Boot(ctx, app.Config{Addr: *addr, DBPath: *db, Dev: *dev, Logger: logger, FallbackPort: true})
 	if err != nil {
 		logger.Fatalf("today: %v", err)
 	}

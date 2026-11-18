@@ -66,7 +66,9 @@ reboot
 ```
 
 Values are stored in NVS. `server` must be reachable from the device; the
-default LAN listener is `0.0.0.0:8787`. HTTPS works but uses
+default LAN listener is `0.0.0.0:8787`; if the Mac's port was taken and the
+app moved to a neighbour, the settings page shows the address to type here.
+HTTPS works but uses
 `WiFiClientSecure::setInsecure()` because the Funnel certificate is public and
 rotates; for a trusted deployment pin the CA instead.
 
