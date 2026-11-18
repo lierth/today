@@ -246,6 +246,11 @@ func (h *Host) ready() {
 		h.kick()
 	})
 
+	// The tray panel is the only window this app ever opens. Closing it
+	// must not quit the shell, which is what "last window closed" means
+	// without a listener.
+	mygo.App.OnWindowAllClosed(func() {})
+
 	mygo.Power.OnResume(func() {
 		h.srv.ForceFullRefresh()
 		h.kick()
@@ -485,28 +490,17 @@ func (h *Host) strangerOn() string {
 	return ""
 }
 
-// togglePanel shows a small read-only WebView beside the tray icon. The URL
-// carries a short-lived panel token; the window has no session cookie and
-// cannot mutate anything.
+// togglePanel shows a small read-only flyout under the tray icon. The URL
+// carries a short-lived panel token; the flyout has no session cookie and
+// cannot mutate anything. It is rebuilt on each open because the token expires
+// and a popover closes itself on the first click outside it.
 func (h *Host) togglePanel() {
-	if h.panel == nil {
-		panel := mygo.NewWindow(mygo.WindowOptions{
-			Title:           "Today",
-			Width:           360,
-			Height:          460,
-			Panel:           true,
-			Frameless:       true,
-			DisableResize:   true,
-			Hidden:          true,
-			CornerRadius:    12,
-			BackgroundColor: "#f7f4ed",
-		})
-		panel.OnBlur(func() { panel.Hide() })
-		panel.OnClosed(func() { h.panel = nil })
-		h.panel = panel
+	if h.panel != nil {
+		h.panel.Close()
+		h.panel = nil
+		return
 	}
-	if h.panel.IsVisible() {
-		h.panel.Hide()
+	if h.tray == nil {
 		return
 	}
 	token, err := h.srv.PanelToken()
@@ -514,20 +508,27 @@ func (h *Host) togglePanel() {
 		h.log.Printf("host: panel token: %v", err)
 		return
 	}
-	panelURL := h.baseURL() + "/panel?t=" + url.QueryEscape(token)
-	if err := h.panel.Page().LoadURL(panelURL); err != nil {
-		h.log.Printf("host: panel load: %v", err)
-		return
-	}
-	if b := h.tray.Bounds(); b.Width > 0 {
-		x := b.X + b.Width - 360
-		if x < 8 {
-			x = 8
+	panel := mygo.NewFlyout(mygo.FlyoutOptions{
+		Tray:      h.tray,
+		Placement: mygo.PlacementBottom,
+		Gap:       4,
+		Width:     360,
+		Height:    460,
+		MinWidth:  320,
+		MaxWidth:  420,
+		Focusable: true,
+		Shadow:    true,
+		Popover:   true,
+		URL:       h.baseURL() + "/panel?t=" + url.QueryEscape(token),
+	})
+	// The callback fires after a slow close animation; only clear the field
+	// when it still points at this flyout, or a fast reopen would be lost.
+	panel.OnClosed(func() {
+		if h.panel == panel {
+			h.panel = nil
 		}
-		h.panel.SetPosition(x, b.Y+b.Height+6)
-	}
-	h.panel.Show()
-	h.panel.Focus()
+	})
+	h.panel = panel
 }
 
 func (h *Host) open(path string) {
