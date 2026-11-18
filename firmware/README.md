@@ -1,148 +1,155 @@
 # Today firmware
 
-ESP32 + 4.2" 400×300 e-paper. The firmware is intentionally small: it sleeps,
-wakes on a timer or a button, draws the 1-bit frame the server renders, and
-queues button actions locally.
+ESP32-S3 + 4.2" ST7305 reflective LCD (Waveshare ESP32-S3-RLCD-4.2).
+The firmware is intentionally small: it stays awake, fetches the 1-bit frame
+the server renders, draws the local widgets (clock, Wi-Fi, climate, battery)
+inside the rectangles the frame declares, and queues button actions locally.
 
-The contract is `internal/frame/frame.go` and `docs/PLAN.md` §5.2. Nothing else
-is shared between the Go server and this C++ code.
+The contract is `internal/frame/frame.go` (format 3) and `docs/PLAN.md` §5.2.
+Nothing else is shared between the Go server and this C++ code.
 
 ## Hardware
 
-Target board: **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM).
-The board enumerates as `USB JTAG/serial debug unit` (VID 0x303A, PID 0x1001)
-over its built-in USB-Serial/JTAG port, so no CP210x/CH340 driver is needed and
-a plain USB-C data cable is enough; a charge-only cable shows no `/dev/cu.*`.
+Target board: **Waveshare ESP32-S3-RLCD-4.2** (ESP32-S3-WROOM-1-N16R8,
+16 MB flash, 8 MB octal PSRAM, 1× 18650 holder).
 
 | Signal | ESP32-S3 | Notes |
 |---|---|---|
-| EPD CS | GPIO10 | |
-| EPD DC | GPIO17 | |
-| EPD RST | GPIO16 | |
-| EPD BUSY | GPIO4 | |
-| EPD SCK | GPIO12 | default SPI SCK of the DevKitC-1 |
-| EPD MOSI | GPIO11 | default SPI MOSI of the DevKitC-1 |
-| Button up | GPIO6 | to GND, internal pull-up, RTC GPIO |
-| Button down | GPIO7 | to GND, internal pull-up |
-| Button OK | GPIO15 | to GND, internal pull-up |
-| Button refresh | GPIO21 | to GND, internal pull-up |
-| Battery | GPIO1 | ADC1 channel 0, 100k/100k divider, ×2 in software |
+| LCD SCK | GPIO11 | SPI3, mode 0, 10 MHz |
+| LCD MOSI | GPIO12 | |
+| LCD CS | GPIO40 | |
+| LCD DC/RS | GPIO5 | |
+| LCD RST | GPIO41 | |
+| LCD TE | GPIO6 | not used |
+| KEY | GPIO18 | to GND, active low, long = toggle, 3 s = setup |
+| BOOT | GPIO0 | to GND, strapping pin: read at runtime only |
+| I2C SDA | GPIO13 | SHTC3 0x70, PCF85063 0x51, ES8311 0x18, ES7210 0x40 |
+| I2C SCL | GPIO14 | |
+| RTC INT | GPIO15 | PCF85063 open-drain alarm output |
+| Battery | GPIO4 | ADC1 channel 3, 1:3 divider (×3 in software) |
 
-Panel: 4.2" 400×300, UC8176 (`GDEW042T2`) by default. If the silkscreen says
-SSD1619 (`GYE042A3`), change the panel type in `include/board.h` to
-`GxEPD2_420_GYE042A3` and keep the same pins.
+There is **no VBUS/CHG GPIO** on this board: the charger's `STAT` only drives
+an LED, so the firmware never claims "charging" — the power widget shows the
+battery gauge and percentage only.
 
-Pins are not free: the S3 package has **no GPIO 22–25**, deep-sleep wake only
-works on RTC GPIO 0–21, and ADC1 is GPIO 1–10. That rules out the classic-ESP32
-map (MOSI 23, OK 25, battery 34). Buttons must stay within 0–21 for `ext1`.
-
-**The buttons are active low**, which is fine on this chip: unlike the classic
-ESP32, the S3 offers `ESP_EXT1_WAKEUP_ANY_LOW`, so "button to GND plus internal
-pull-up" wakes on the first press. `DeepSleep()` keeps
-`ESP_PD_DOMAIN_RTC_PERIPH` powered so those pull-ups survive sleep; measure the
-standby current before turning that off, and fit 100k pull-ups to 3V3 if it
-matters.
+The panel is a reflective LCD, not e-paper. It keeps its picture while the
+controller is powered and scanning; `DISPOFF (0x28)` stops it and keeps RAM, so
+the night mode is a DISPOFF plus a repaint on the next key, not a full re-init.
 
 ## Build and flash
 
+See [`../docs/flashing.md`](../docs/flashing.md) for the full walkthrough
+(download mode, browser flashing without a toolchain, esptool offsets, first
+provisioning). Short version:
+
 ```sh
 cd firmware
-pio run                 # compile
-pio run -t upload       # flash over USB
-pio device monitor      # serial, 115200 over USB CDC
+./flash.sh doctor       # tools and serial ports
+./flash.sh build        # pio run
+./flash.sh flash        # upload over USB
+./flash.sh monitor      # serial, 115200 over USB CDC
+./flash.sh merge        # dist/today-rlcd-merged.bin for esptool-js
+```
+
+or with PlatformIO directly (`brew install platformio`):
+
+```sh
+pio run && pio run -t upload && pio device monitor
 ```
 
 `Serial` is the USB CDC (`-DARDUINO_USB_CDC_ON_BOOT=1 -DARDUINO_USB_MODE=1` in
-`platformio.ini`), because the board has no UART bridge chip. The port is
-`/dev/cu.usbmodem*`; if `pio run -t upload` cannot open it, hold BOOT while
-tapping RESET and retry, or call esptool with a lower `-b 460800`.
+`platformio.ini`). The port is `/dev/cu.usbmodem*`; if upload cannot open it,
+hold BOOT while tapping RESET and retry.
 
-The partition table reserves two 1.7 MB app slots and 64 KB NVS. NVS survives a
-reflash, so Wi-Fi credentials, device token, cursor and the cached frame are not
-lost when you update the app. OTA is implemented: upload an ESP32 image from
-Settings → 固件, the next frame response carries `X-Firmware-Version`, and the
-device streams the image into the inactive slot with `Update`, then reboots.
-Bump `board::kFirmwareVersion` for every build or the device will keep the
-version it already has. The A/B slots keep the previous image for rollback.
+The partition table uses Arduino's standard prefix: `nvs` at `0x9000`
+(20 KB), `otadata` at `0xe000`, two 3 MB app slots from `0x10000`, and a 1 MB
+LittleFS partition. `otadata` must sit at `0xe000` because PlatformIO writes
+`boot_app0.bin` there; an OTA table with otadata anywhere else makes every USB
+flash corrupt the start of NVS. `python3 test/check_partitions.py` enforces it.
+
+NVS keeps Wi-Fi credentials, device token, cursor, outbox and the row table;
+the 15 KB frame cache lives in LittleFS (`/frame.bin`) so it does not crowd
+the small NVS partition. The mount passes the partition name explicitly
+(`LittleFS.begin(true, "/littlefs", 10, "littlefs")`): the Arduino default
+label is `spiffs`, which would fail silently against our `littlefs` partition. OTA: upload an ESP32 image from Settings → 固件, the
+next frame response carries `X-Firmware-Version`, and the device streams the
+image into the inactive slot.
 
 PlatformIO pins a pioarduino Arduino-ESP32 3.x build (ESP-IDF 5). With the
 Arduino IDE, select "ESP32S3 Dev Module", 16 MB flash, OPI PSRAM, the same
-partition scheme, and install GxEPD2 and ArduinoJson.
+partition scheme, and install ArduinoJson.
 
 ## Provisioning
 
-On a cold boot (USB or reset) the firmware opens a 4-second serial window:
+On a cold boot without credentials the firmware opens a 10-minute serial
+window; `setup` (or a 3 s KEY hold) opens the same portal later:
 
 ```
 wifi <ssid> <password>
+setup
 server http://192.168.1.10:8787
 device dev1
 token <token from Settings → 设备>
-mode battery|mains
 show
 reboot
 ```
 
-Values are stored in NVS. `server` must be reachable from the device; the
-default LAN listener is `0.0.0.0:8787`; if the Mac's port was taken and the
-app moved to a neighbour, the settings page shows the address to type here.
-HTTPS works but uses
-`WiFiClientSecure::setInsecure()` because the Funnel certificate is public and
-rotates; for a trusted deployment pin the CA instead.
+The SoftAP portal (`Today-XXXX`, WPA2, random 10-character password without
+look-alike letters/digits) serves a form
+at `http://192.168.4.1` that only collects SSID and password. Credentials are
+stored in NVS and the board reboots. Five minutes without a submission closes
+the portal. HTTPS works but uses `WiFiClientSecure::setInsecure()` because the
+Funnel certificate is public and rotates; pin a CA for a trusted deployment.
 
 ## State machine
 
 ```
-deep sleep
-  ├─ button wake → local cursor / toggle → outbox → sleep ≥60 s (no Wi-Fi)
-  └─ timer wake  → Wi-Fi → GET frame (ETag) → draw → POST acks → sleep
+always on
+  ├─ every 60 s → GET frame (ETag) → repaint + widgets → POST acks
+  ├─ KEY short → next row, repaint
+  ├─ KEY long (0.6 s) → toggle done, POST ack, force=1 refetch
+  ├─ KEY hold (3 s) → SoftAP portal
+  ├─ BOOT short → force=1 refetch (BOOT is never a wake key)
+  └─ night window → DISPOFF; any key lights for 30 s
 ```
 
 - `GET /v1/devices/<id>/frame` sends `If-None-Match`; `304` keeps the cached
-  bitmap and only refreshes the sleep deadline.
-- `X-Next-Wake-At` and `X-Server-Now` are absolute Unix seconds. The firmware
-  sleeps `next − now`, so it does not need NTP.
-- Button actions append `{op_id,item_id,status}` to a 32-entry NVS outbox; the
-  next timer fetch posts them to `/v1/devices/<id>/acks`. The server dedupes by
-  `op_id`, so retries are safe.
-- OK short press toggles the cursor row; long press (≥0.7 s) forces a full
-  refresh and sets a one-shot flag, so the next fetch sends `?force=1` and the
-  server answers 200 with a full frame even when the cached `ETag` matches.
-- Refresh forces a full panel refresh and the same one-shot `?force=1` fetch.
-- Battery millivolts are sent with every acks request and shown in Settings.
+  bitmap and only repaints the local widgets. The cursor never goes over the
+  wire: the device inverts the row itself, so a key press works offline and
+  does not change the ETag.
+- `X-Server-Now` (Unix seconds) and `X-UTC-Offset` (seconds east of UTC, DST
+  included) set the ESP32 clock and are written to the PCF85063, so a cold
+  boot without network still has the right time.
+- `X-Night: <start>-<end>` carries the night window in local minutes
+  (`1380-420`); the device blanks the panel inside it and wakes on any key.
+- Button actions append `{op_id,item_id,status}` to a 32-entry NVS outbox and
+  are posted immediately; the server dedupes by `op_id`.
+- Battery millivolts ride on every acks request; `power` is omitted because the
+  board has no VBUS sense line.
 
-## Power notes (read before trusting battery life)
+## Widgets
 
-Measure deep-sleep current before optimizing the UI. The plan's order is:
+The server leaves four rectangles blank and the device draws them:
 
-1. Hold SPI/CS levels with `gpio_hold_en()` and isolate button pins with
-   `rtc_gpio_isolate()` if they leak.
-2. `Serial.end()`, `WiFi.mode(WIFI_OFF)`, `esp_wifi_stop()`.
-3. Only then consider dropping the Arduino runtime for plain ESP-IDF.
+| kind | what | source |
+|---|---|---|
+| 1 clock | `HH:MM`, 3× scale | system clock, calibrated by `X-Server-Now` |
+| 2 wifi | 3 signal bars / `--` / `x` / `AP` | `WiFi.RSSI()` |
+| 3 climate | `23° 45%` or `-- --%` | SHTC3 0x70, every 60 s |
+| 4 power | battery gauge + `%`, or a plug when the reading is < 2.5 V | GPIO4 ×3, median of 7 samples |
 
-The reference code calls `display.hibernate()`, turns Wi-Fi off and sleeps, but
-does not yet hold the SPI pins. Add that after measuring the board.
-
-The ext1 wake mask is armed `ANY_HIGH` over all four buttons, so the pull-downs
-draw no current at rest and any single press wakes the board. If you keep the
-active-low wiring, `kButtonsActiveHigh = false` switches to `ext0` on one pin and
-keeps `ESP_PD_DOMAIN_RTC_PERIPH` powered — that domain stays on for the whole
-sleep, so expect a few extra microamps.
-
-`mode mains` keeps Wi-Fi up and pulls every 60 s instead of sleeping; use it
-when the board runs from USB or when deep-sleep current cannot be brought
-below the target. `mode battery` is the default deep-sleep state machine.
+No CJK font is linked into the firmware: boot/error screens use ASCII only,
+and all Chinese text lives in the server-rendered bitmap.
 
 ## Current limits
 
-- Local toggle draws a strike-through but cannot erase a server-rendered strike
-  until the next fetched frame reflects the ack.
-- Cursor movement uses `displayWindow()` per 24 px row. If the panel/controller
-  loses RAM across deep sleep on your board, set the button path to redraw the
-  full frame after `InitDisplay()`.
-- A cold boot repaints the cached NVS frame before the first fetch; after a
-  deliberate power cycle the screen should never stay blank on a 304.
+- Local toggles are not drawn until the next fetched frame reflects the ack;
+  the request is immediate, but the panel updates when the server answers.
+- The night window comes from the server, so the first boot before any frame
+  has no night mode. While dark, fetches still update the controller RAM but
+  never send DISPON; only a key or the end of the window lights the panel.
 - HTTPS certificate validation is disabled (see above).
-- No config portal; provisioning is over USB serial.
+- No config portal on first boot until the 10-minute serial window ends.
 - OTA trusts the uploaded image as far as `Update` validates it; the upload is
   protected by the web session, the download by the device token.
+- Charging state is not shown: there is no VBUS/CHG GPIO.

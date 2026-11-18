@@ -13,6 +13,7 @@ Today.app/
 dist/
 .tmp/
 firmware/.pio/
+firmware/dist/
 firmware/.vscode/
 firmware/*.bin
 firmware/*.elf
