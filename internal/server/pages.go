@@ -15,26 +15,27 @@ import (
 )
 
 type pageData struct {
-	Title      string
-	Nav        string
-	DateLabel  string
-	Items      []store.Item
-	All        []store.Item
-	Item       store.Item
-	HasItem    bool
-	Past       []store.Item
-	Settings   map[string]string
-	Devices    []store.Device
-	Stats      store.Stats
-	Total      int
-	Done       int
-	Token      string
-	PanelToken string
-	ListenAddr string
-	ListenNow  string
-	BindNote   string
-	Message    string
-	Error      string
+	Title       string
+	Nav         string
+	DateLabel   string
+	Items       []store.Item
+	All         []store.Item
+	Item        store.Item
+	HasItem     bool
+	Past        []store.Item
+	Settings    map[string]string
+	Devices     []store.Device
+	Stats       store.Stats
+	Total       int
+	Done        int
+	HasProgress bool
+	Token       string
+	PanelToken  string
+	ListenAddr  string
+	ListenNow   string
+	BindNote    string
+	Message     string
+	Error       string
 }
 
 var weekdayZH = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
@@ -160,8 +161,17 @@ func (s *Server) handleItemPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "item.html", pageData{Title: it.Title, Nav: "items", Item: it, HasItem: true})
 }
 
+// allItems lists every live item, ordered for the management page.
+func (s *Server) allItems(ctx context.Context) ([]store.Item, error) {
+	day, _, err := s.Today(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.st.AllItems(ctx, day.Format(store.DateLayout), 500)
+}
+
 func (s *Server) handleItemsPage(w http.ResponseWriter, r *http.Request) {
-	items, err := s.st.AllItems(r.Context(), 500)
+	items, err := s.allItems(r.Context())
 	if err != nil {
 		http.Error(w, "db", http.StatusInternalServerError)
 		return
@@ -234,7 +244,7 @@ func (s *Server) handleItemsList(w http.ResponseWriter, r *http.Request) {
 		err   error
 	)
 	if r.URL.Query().Get("scope") == "all" {
-		items, err = s.st.AllItems(ctx, 500)
+		items, err = s.allItems(ctx)
 	} else {
 		day, _, derr := s.Today(ctx)
 		if derr != nil {
@@ -454,7 +464,7 @@ func (s *Server) handleItemDeletePost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) respondItems(w http.ResponseWriter, r *http.Request, view string) {
 	ctx := r.Context()
 	if view == "items" {
-		items, err := s.st.AllItems(ctx, 500)
+		items, err := s.allItems(ctx)
 		if err != nil {
 			http.Error(w, "db", http.StatusInternalServerError)
 			return
@@ -472,7 +482,23 @@ func (s *Server) respondItems(w http.ResponseWriter, r *http.Request, view strin
 		http.Error(w, "db", http.StatusInternalServerError)
 		return
 	}
-	s.render(w, r, "today_list.html", pageData{Items: items})
+	total, done := 0, 0
+	for _, it := range items {
+		if it.Status == store.StatusCancelled {
+			continue
+		}
+		total++
+		if it.Done() {
+			done++
+		}
+	}
+	s.render(w, r, "today_list.html", pageData{
+		Items:       items,
+		Total:       total,
+		Done:        done,
+		HasProgress: true,
+		DateLabel:   day.Format("1月2日") + " " + weekdayZH[day.Weekday()],
+	})
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {

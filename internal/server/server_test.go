@@ -589,3 +589,92 @@ func TestPanelShowsTodayWithoutCancelled(t *testing.T) {
 		t.Fatalf("panel fragment: %s", partBody)
 	}
 }
+
+func TestTodayListCarriesProgressSwap(t *testing.T) {
+	e := newTestEnv(t)
+	pw := e.password()
+	e.login(pw)
+	day, _, err := e.srv.Today(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.CreateItem(context.Background(), store.Item{Title: "带进度", AllDay: true, DateLocal: day.Format(store.DateLayout)}, e.loc); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"title": {"局部刷新"}, "view": {"today"}}
+	req := e.req(http.MethodPost, e.ts.URL+"/api/items", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp := e.do(req)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+	if !bytes.Contains(body, []byte(`id="today-list"`)) {
+		t.Fatalf("today list missing: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`id="today-progress"`)) || !bytes.Contains(body, []byte(`hx-swap-oob`)) {
+		t.Fatalf("progress should ride along out of band: %s", body)
+	}
+	if !bytes.Contains(body, []byte("0 / 2")) {
+		t.Fatalf("progress total wrong: %s", body)
+	}
+}
+
+func TestSettingsPanelIsTheSwapTarget(t *testing.T) {
+	e := newTestEnv(t)
+	pw := e.password()
+	e.login(pw)
+
+	page, err := e.client.Get(e.ts.URL + "/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Body.Close()
+	html, _ := io.ReadAll(page.Body)
+	if !bytes.Contains(html, []byte(`id="settings-panel"`)) {
+		t.Fatal("settings page has no #settings-panel element to target")
+	}
+
+	form := url.Values{"action": {"device_token"}, "device": {"dev1"}}
+	if _, err := e.st.EnsureDevice(context.Background(), "dev1", "开发设备"); err != nil {
+		t.Fatal(err)
+	}
+	req := e.req(http.MethodPost, e.ts.URL+"/api/settings", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp := e.do(req)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("settings post: %d %s", resp.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte(`id="settings-panel"`)) {
+		t.Fatalf("settings partial should carry its own swap target: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`class="token"`)) {
+		t.Fatalf("token should be shown: %s", body)
+	}
+}
+
+// htmx swaps 4xx bodies only when responseHandling says so; without this the
+// error banners under the settings forms never appear.
+func TestPagesConfigureHtmxToSwapErrors(t *testing.T) {
+	e := newTestEnv(t)
+	pw := e.password()
+	e.login(pw)
+	resp := e.get("/settings")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`name="htmx-config"`)) {
+		t.Fatal("pages should carry an htmx config")
+	}
+	if !bytes.Contains(body, []byte(`"code":"4..","swap":true`)) {
+		t.Fatalf("htmx config should swap 4xx responses: %s", body[:200])
+	}
+}

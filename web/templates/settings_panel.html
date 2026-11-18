@@ -1,9 +1,10 @@
 {{define "settings_panel.html"}}
+<div id="settings-panel">
 {{if .Message}}<p class="flash">{{.Message}}</p>{{end}}
 {{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
 <div class="card">
   <div class="card-head"><h2>常规</h2></div>
-  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
     <input type="hidden" name="action" value="general">
     <div class="field">
       <label for="listen_addr">端口</label>
@@ -76,7 +77,7 @@
 
 <div class="card">
   <div class="card-head"><h2>安全</h2></div>
-  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
     <input type="hidden" name="action" value="password">
     <div class="field">
       <label for="passphrase">新口令</label>
@@ -89,7 +90,7 @@
       <button type="submit">更新口令</button>
     </div>
   </form>
-  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
     <input type="hidden" name="action" value="logout_all">
     <div class="edit-actions">
       <button class="ghost" type="submit">登出所有设备</button>
@@ -100,7 +101,7 @@
 <div class="card">
   <div class="card-head"><h2>设备</h2><span class="count">{{len .Devices}}</span></div>
   <div class="settings">
-    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
       <input type="hidden" name="action" value="add_device">
       <input type="text" name="device_id" placeholder="设备 ID（如 dev2）" pattern="[a-z0-9][a-z0-9_-]{0,31}" maxlength="32" required aria-label="设备 ID">
       <input type="text" name="device_name" placeholder="名称（可选）" maxlength="80" aria-label="设备名称">
@@ -123,13 +124,13 @@
         </div>
       </div>
       <div class="checkline">
-        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
           <input type="hidden" name="action" value="device_token">
           <input type="hidden" name="device" value="{{.ID}}">
           <button class="ghost" type="submit">生成 token</button>
         </form>
         <a class="ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank">预览</a>
-        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML">
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
           <input type="hidden" name="action" value="revoke_device">
           <input type="hidden" name="device" value="{{.ID}}">
           <button class="danger" type="submit">吊销</button>
@@ -148,7 +149,7 @@
     <span class="count">{{with index .Settings "firmware_version"}}{{.}}{{else}}未上传{{end}}</span>
   </div>
   <div class="settings">
-    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="innerHTML" hx-encoding="multipart/form-data" enctype="multipart/form-data">
+    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML" hx-encoding="multipart/form-data" enctype="multipart/form-data">
       <input type="hidden" name="action" value="upload_firmware">
       <input type="file" name="firmware" accept=".bin,application/octet-stream" required aria-label="固件文件">
       <input type="text" name="firmware_version" placeholder="版本标记（可选）" maxlength="40" aria-label="版本标记">
@@ -174,5 +175,6 @@
       <a href="/api/devices/dev1/preview.png?scale=2" target="_blank">打开 400×300 帧预览 ↗</a>
     </div>
   </div>
+</div>
 </div>
 {{end}}

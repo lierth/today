@@ -215,14 +215,20 @@ func (s *Store) PastItems(ctx context.Context, before string, limit int) ([]Item
 	return out, rows.Err()
 }
 
-func (s *Store) AllItems(ctx context.Context, limit int) ([]Item, error) {
+// AllItems lists every live item for the management page: today and later
+// first, soonest first, then past days newest first. Ordering by date alone
+// put materialized future occurrences above today, which buried the work.
+func (s *Store) AllItems(ctx context.Context, today string, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemSelect+` FROM items
 		WHERE deleted_at IS NULL
-		ORDER BY date_local DESC, pinned DESC, (status = 'done') ASC, sort_key ASC
-		LIMIT ?`, limit)
+		ORDER BY (date_local < ?) ASC,
+		         CASE WHEN date_local < ? THEN '' ELSE date_local END ASC,
+		         date_local DESC,
+		         pinned DESC, (status = 'done') ASC, sort_key ASC
+		LIMIT ?`, today, today, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items: %w", err)
 	}

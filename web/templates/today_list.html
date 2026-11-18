@@ -1,4 +1,5 @@
 {{define "today_list.html"}}
+{{if .HasProgress}}<p class="page-sub" id="today-progress" hx-swap-oob="true">{{.DateLabel}} · <span class="progress">{{.Done}} / {{.Total}}</span></p>{{end}}
 <section id="today-list" class="card">
   {{if .Items}}
   <ul class="items">

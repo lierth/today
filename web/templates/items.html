@@ -3,7 +3,7 @@
 <p class="page-sub">全部事项，含已完成与重复规则。重复实例由服务端每天物化。</p>
 
 <div class="card">
-  <form class="quick" hx-post="/api/items" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
+  <form class="quick" hx-post="/api/items" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}' hx-on::after-request="if (event.detail.successful) this.reset()">
     <input type="text" name="title" placeholder="新事项…" maxlength="200" required autocomplete="off" aria-label="标题">
     <input type="date" name="date" aria-label="日期">
     <input type="time" name="time" aria-label="时间">

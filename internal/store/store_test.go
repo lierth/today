@@ -452,3 +452,33 @@ func TestAllDayItemSortsBeforeTimed(t *testing.T) {
 		t.Fatalf("all-day should sort first: %+v", items)
 	}
 }
+
+func TestAllItemsPutsTodayAndUpcomingFirst(t *testing.T) {
+	st, loc := openTest(t)
+	ctx := context.Background()
+	start := time.Date(2026, 11, 18, 9, 0, 0, 0, loc)
+	master, err := st.CreateItem(ctx, Item{Title: "站会", StartsAt: &start, RRule: "FREQ=DAILY;COUNT=3"}, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Materialize(ctx, loc, start, 31); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Date(2026, 11, 17, 9, 0, 0, 0, loc)
+	if _, err := st.CreateItem(ctx, Item{Title: "昨天", StartsAt: &past}, loc); err != nil {
+		t.Fatal(err)
+	}
+	items, err := st.AllItems(ctx, "2026-11-18", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("items: %d %+v", len(items), items)
+	}
+	if items[0].ID != master.ID {
+		t.Fatalf("today should come first, got %+v", items[0])
+	}
+	if items[len(items)-1].DateLocal != "2026-11-17" {
+		t.Fatalf("past item should be last, got %+v", items[len(items)-1])
+	}
+}
