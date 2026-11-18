@@ -172,9 +172,14 @@ func (s *Server) nextWake(ctx context.Context, now time.Time) (time.Time, bool) 
 	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 5, 0, 0, local.Location()).AddDate(0, 0, 1)
 	wake := midnight
 	refresh := false
-	if next, err := s.st.NextStart(ctx, now); err == nil && next != nil {
-		event := next.In(local.Location()).Add(-5 * time.Minute)
-		if event.Before(wake) {
+	// Wake five minutes before the next event so the panel is current by the
+	// time it starts. Looking up the first event whose lead has not yet passed
+	// keeps an event inside the window from hiding the one after it, and keeps
+	// the device from waking every minute until that event starts.
+	lead := 5 * time.Minute
+	if next, err := s.st.NextStart(ctx, now.Add(lead)); err == nil && next != nil {
+		event := next.In(local.Location()).Add(-lead)
+		if event.After(now) && event.Before(wake) {
 			wake = event
 			refresh = true
 		}
@@ -183,8 +188,12 @@ func (s *Server) nextWake(ctx context.Context, now time.Time) (time.Time, bool) 
 		wake = capWake
 		refresh = false
 	}
-	if wake.Before(now) {
-		wake = now.Add(time.Minute)
+	// Both sides truncate to Unix seconds, so a wake less than a second away
+	// can arrive as next == now and the device treats it as "no deadline" and
+	// sleeps its own fallback of six hours. Keep a minute of lead, which is
+	// also the firmware's minimum sleep.
+	if minWake := now.Add(time.Minute); wake.Before(minWake) {
+		wake = minWake
 	}
 	return wake, refresh
 }
