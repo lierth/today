@@ -1,0 +1,21 @@
+# Third-party notices
+
+## Waveshare ESP32-S3-RLCD-4.2 demo
+
+`src/display.cpp` carries the ST7305 initialisation sequence and the landscape
+framebuffer layout from the vendor demo package:
+
+- https://github.com/waveshareteam/ESP32-S3-RLCD-4.2 (Apache License 2.0)
+- original file: `01_Arduino/examples/09_LVGL_V9_Test/display_bsp.cpp`
+
+Modifications: ported from `esp_lcd_panel_io_spi` to Arduino `SPI`, the
+framebuffer packing moved to `src/st7305.cpp` so it can be unit-tested on the
+host, and the pixel LUT was replaced with the closed-form `CellFor()`.
+
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+## github.com/6tail/lunar-go
+
+Server-side lunar date and solar terms, MIT License
+(https://github.com/6tail/lunar-go). Used only by the Go renderer; no code is
+linked into the firmware.

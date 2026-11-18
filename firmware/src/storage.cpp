@@ -1,5 +1,6 @@
 #include "storage.h"
 
+#include <LittleFS.h>
 #include <Preferences.h>
 #include <string.h>
 
@@ -9,6 +10,9 @@ namespace {
 Preferences prefs;
 constexpr const char* kNamespace = "today";
 constexpr const char* kOutbox = "outbox";
+// The 15 KB frame does not fit the 20 KB NVS partition next to credentials
+// and the outbox, so it lives in LittleFS. NVS keeps only small values.
+constexpr const char* kFramePath = "/frame.bin";
 
 String ReadString(const char* key, const char* fallback = "") {
   return prefs.getString(key, fallback);
@@ -16,7 +20,15 @@ String ReadString(const char* key, const char* fallback = "") {
 
 }  // namespace
 
-void Begin() { prefs.begin(kNamespace, false); }
+void Begin() {
+  prefs.begin(kNamespace, false);
+  // The partition is named "littlefs" in partitions.csv. LittleFS.begin's
+  // default label is "spiffs", so it must be passed explicitly or the mount
+  // silently fails and the cached frame is disabled (blank board on boot).
+  if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
+    Serial.println("storage: LittleFS mount failed; frame cache disabled");
+  }
+}
 
 Config LoadConfig() {
   Config cfg;
@@ -25,7 +37,6 @@ Config LoadConfig() {
   cfg.server = ReadString("server");
   cfg.device = ReadString("device", "dev1");
   cfg.token = ReadString("token");
-  cfg.mode = ReadString("mode", "battery");
   return cfg;
 }
 
@@ -35,11 +46,18 @@ void SaveConfig(const Config& cfg) {
   prefs.putString("server", cfg.server);
   prefs.putString("device", cfg.device);
   prefs.putString("token", cfg.token);
-  prefs.putString("mode", cfg.mode);
+}
+
+bool Configured() {
+  const Config cfg = LoadConfig();
+  return !cfg.wifiSsid.isEmpty() && !cfg.server.isEmpty() && !cfg.token.isEmpty();
 }
 
 uint8_t LoadCursor() { return prefs.getUChar("cursor", 0); }
 void SaveCursor(uint8_t row) { prefs.putUChar("cursor", row); }
+
+uint32_t LoadDoneMask() { return prefs.getUInt("done", 0); }
+void SaveDoneMask(uint32_t mask) { prefs.putUInt("done", mask); }
 
 uint32_t LoadSeq() { return prefs.getUInt("seq", 0); }
 void SaveSeq(uint32_t seq) { prefs.putUInt("seq", seq); }
@@ -47,17 +65,24 @@ void SaveSeq(uint32_t seq) { prefs.putUInt("seq", seq); }
 String LoadETag() { return ReadString("etag"); }
 void SaveETag(const String& etag) { prefs.putString("etag", etag); }
 
-uint32_t LoadDoneMask() { return prefs.getUInt("done", 0); }
-void SaveDoneMask(uint32_t mask) { prefs.putUInt("done", mask); }
-
 bool LoadFrame(uint8_t* out, size_t len) {
-  const size_t got = prefs.getBytesLength("frame");
-  if (got != len) return false;
-  return prefs.getBytes("frame", out, len) == len;
+  if (out == nullptr || !LittleFS.exists(kFramePath)) return false;
+  File f = LittleFS.open(kFramePath, "r");
+  if (!f || static_cast<size_t>(f.size()) != len) {
+    if (f) f.close();
+    return false;
+  }
+  const size_t got = f.read(out, len);
+  f.close();
+  return got == len;
 }
 
 bool SaveFrame(const uint8_t* data, size_t len) {
-  return prefs.putBytes("frame", data, len) == len;
+  File f = LittleFS.open(kFramePath, "w");
+  if (!f) return false;
+  const size_t put = f.write(data, len);
+  f.close();
+  return put == len;
 }
 
 uint8_t LoadRows(tbf::Row* out, uint8_t max) {
@@ -109,19 +134,8 @@ void ClearOutbox() {
   prefs.putUChar("outcount", 0);
 }
 
-void DropOutbox(uint8_t sent) {
-  OutboxOp ops[board::kMaxOutbox]{};
-  const size_t bytes = prefs.getBytes(kOutbox, ops, sizeof(ops));
-  const uint8_t count = static_cast<uint8_t>(bytes / sizeof(OutboxOp));
-  if (sent >= count) {
-    ClearOutbox();
-    return;
-  }
-  const uint8_t left = count - sent;
-  memmove(ops, ops + sent, static_cast<size_t>(left) * sizeof(OutboxOp));
-  prefs.putBytes(kOutbox, ops, static_cast<size_t>(left) * sizeof(OutboxOp));
-  prefs.putUChar("outcount", left);
-}
+int LoadUtcOffset() { return prefs.getInt("utcoff", 0); }
+void SaveUtcOffset(int seconds) { prefs.putInt("utcoff", seconds); }
 
 bool TakeForceFull() {
   const bool value = prefs.getBool("force", false);

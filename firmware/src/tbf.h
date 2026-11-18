@@ -1,4 +1,5 @@
-// TBF1 frame parser. The wire format is shared with internal/frame/frame.go.
+// TBF1 frame parser. The wire format is shared with internal/frame/frame.go
+// (format 3: widget table after the footer bindings).
 #pragma once
 
 #include <stddef.h>
@@ -7,8 +8,10 @@
 namespace tbf {
 
 constexpr size_t kMagicLen = 4;
+constexpr uint8_t kFormatVersion = 3;
 constexpr size_t kMaxRows = 16;
 constexpr size_t kMaxFooters = 8;
+constexpr size_t kMaxWidgets = 8;
 
 constexpr uint8_t kFlagForceFull = 1 << 0;
 
@@ -21,6 +24,11 @@ constexpr uint8_t kActionOK = 3;
 constexpr uint8_t kActionRefresh = 4;
 constexpr uint8_t kActionLongOK = 5;
 
+constexpr uint8_t kWidgetClock = 1;
+constexpr uint8_t kWidgetWifi = 2;
+constexpr uint8_t kWidgetClimate = 3;
+constexpr uint8_t kWidgetPower = 4;
+
 struct Row {
   uint8_t id[16];
   uint16_t y;
@@ -30,6 +38,14 @@ struct Row {
 struct FooterButton {
   uint8_t gpio;
   uint8_t action;
+};
+
+struct Widget {
+  uint8_t kind;
+  uint16_t x;
+  uint16_t y;
+  uint16_t w;
+  uint16_t h;
 };
 
 struct Frame {
@@ -47,6 +63,8 @@ struct Frame {
   Row rows[kMaxRows];
   uint8_t footerCount;
   FooterButton footers[kMaxFooters];
+  uint8_t widgetCount;
+  Widget widgets[kMaxWidgets];
   const uint8_t* bitmap;
   size_t bitmapLen;
 };
@@ -58,5 +76,8 @@ bool SameID(const uint8_t a[16], const uint8_t b[16]);
 void FormatID(const uint8_t id[16], char out[37]);
 uint32_t CRC32(const uint8_t* data, size_t len);
 const char* ParseError();
+
+// Finds one widget by kind; returns nullptr when the server did not send it.
+const Widget* Find(const Frame& frame, uint8_t kind);
 
 }  // namespace tbf

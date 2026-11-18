@@ -1,231 +1,234 @@
-// Today e-paper firmware. State machine:
-//   deep sleep -> button wake (local cursor/outbox, no Wi-Fi) -> sleep 60 s
-//              -> timer wake (Wi-Fi, fetch frame, send acks) -> sleep until
-//                 the server's X-Next-Wake-At.
+// Today firmware for the Waveshare ESP32-S3-RLCD-4.2.
 //
-// The wire format is defined by internal/frame/frame.go; do not change one
-// side without the other.
+// Always-on state machine: Wi-Fi stays up (modem sleep), a frame is fetched
+// every 60 s with an ETag, and the device draws its own cursor, local
+// strike-through and the four widgets. Keys never depend on the network: the
+// screen updates from the cached bitmap immediately, acks go out when a link
+// exists and queue in NVS otherwise.
+//
+// The wire format is defined by internal/frame/frame.go (fmt 3); do not
+// change one side without the other.
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <SPI.h>
 #include <WiFi.h>
-#include <esp_sleep.h>
 
 #include "board.h"
+#include "display.h"
 #include "net.h"
+#include "night.h"
+#include "portal.h"
+#include "sensors.h"
 #include "storage.h"
 #include "tbf.h"
+#include "widgets.h"
 
 namespace {
 
-board::Panel display(GxEPD2_420(board::kPinCs, board::kPinDC, board::kPinRst, board::kPinBusy));
-
 storage::Config cfg;
-String availableFirmware;
+tbf::Frame frame;
+uint8_t base[(board::kWidth / 8) * board::kHeight];   // server bitmap
+uint8_t work[(board::kWidth / 8) * board::kHeight];   // base + local overlays
 tbf::Row rows[tbf::kMaxRows];
 uint8_t rowCount = 0;
 uint8_t cursorRow = 0;
-uint32_t doneMask = 0;
-uint32_t frameSeq = 0;
+uint32_t doneMask = 0;   // local optimistic state, 1 bit per cursor row
 bool haveFrame = false;
 
-uint8_t baseBmp[board::kBitmapBytes];
-uint8_t workBmp[board::kBitmapBytes];
-uint8_t frameBuf[16800];
+uint32_t lastFrameAt = 0;
+uint32_t lastClimateAt = 0;
+uint32_t lastRetryAt = 0;
+uint32_t lastKeyAt = 0;
+int lastClockMinute = -1;
+uint8_t wifiFailures = 0;
+bool portalPending = false;
 
-uint32_t sleepSeconds = board::kFallbackSleepSeconds;
+float temperatureC = 0;
+float humidity = 0;
+bool climateOk = false;
+bool timeOk = false;
+int batteryMv = 0;
 
-void DeepSleep(uint32_t seconds);
+bool nightEnabled = false;
+int nightStart = 0;
+int nightEnd = 0;
+bool screenOff = false;   // DISPOFF has been sent
+bool nightDark = false;   // inside the night window: pushes keep the panel off
 
-uint32_t BatteryMillivolts() {
-  pinMode(board::kPinBattery, INPUT);
-  const uint32_t mv = analogReadMilliVolts(board::kPinBattery);
-  return mv * board::kBatteryScale;
-}
+int utcOffset = 0;
+String etag;
+String availableFirmware;
 
-void InitDisplay(bool fullInit) {
-  // GxEPD2's constructor pulls CS/DC/RST high before it sets them as outputs,
-  // which makes Arduino-ESP32 3.x log "IO n is not set as GPIO". Claim the pins
-  // first so a cold boot stays quiet.
-  pinMode(board::kPinCs, OUTPUT);
-  pinMode(board::kPinDC, OUTPUT);
-  pinMode(board::kPinRst, OUTPUT);
-  digitalWrite(board::kPinCs, HIGH);
-  digitalWrite(board::kPinDC, HIGH);
-  digitalWrite(board::kPinRst, HIGH);
-  display.init(115200, fullInit, 2, false);
-  display.setRotation(0);
-  display.setTextColor(GxEPD_BLACK);
-}
+void DrawWidgets();
 
-void DrawMessage(const String& title, const String& line1 = "", const String& line2 = "") {
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setTextSize(2);
-    display.setCursor(20, 46);
-    display.print(title);
-    display.setTextSize(1);
-    display.setCursor(20, 92);
-    display.print(line1);
-    display.setCursor(20, 112);
-    display.print(line2);
-  } while (display.nextPage());
-}
+void CaptureFrame() {
+  // Remember the focused item before the row table is replaced: the server
+  // sinks done rows, so the old index can point at a different item.
+  uint8_t previous[16] = {};
+  const bool hadCursor = haveFrame && rowCount > 0 && cursorRow < rowCount;
+  if (hadCursor) memcpy(previous, rows[cursorRow].id, sizeof(previous));
 
-void SetPixel(uint8_t* bmp, int x, int y, bool black) {
-  if (x < 0 || y < 0 || x >= board::kWidth || y >= board::kHeight) return;
-  const size_t index = static_cast<size_t>(y) * (board::kWidth / 8) + (x >> 3);
-  const uint8_t mask = 0x80 >> (x & 7);
-  if (black) {
-    bmp[index] |= mask;
-  } else {
-    bmp[index] &= static_cast<uint8_t>(~mask);
-  }
-}
+  rowCount = frame.rowCount;
+  for (uint8_t i = 0; i < rowCount; i++) rows[i] = frame.rows[i];
+  memcpy(base, frame.bitmap, sizeof(base));
+  haveFrame = true;
 
-void InvertRow(uint8_t* bmp, int y, int height) {
-  for (int row = y; row < y + height; row++) {
-    for (int x = 0; x < board::kWidth; x++) {
-      const size_t index = static_cast<size_t>(row) * (board::kWidth / 8) + (x >> 3);
-      bmp[index] ^= static_cast<uint8_t>(0x80 >> (x & 7));
+  // Follow the item by id; fall back to clamping when it disappeared (done
+  // items stay listed, but a deleted item or a +N summary row may not).
+  if (hadCursor && rowCount > 0) {
+    for (uint8_t i = 0; i < rowCount; i++) {
+      if (tbf::SameID(rows[i].id, previous)) {
+        cursorRow = i;
+        break;
+      }
     }
   }
-}
-
-void StrikeRow(uint8_t* bmp, int y, int height) {
-  const int lineY = y + height - 7;
-  for (int x = 24; x < board::kWidth - 16; x++) SetPixel(bmp, x, lineY, true);
-}
-
-void ComposeRow(int index) {
-  if (index < 0 || index >= rowCount) return;
-  const int y = rows[index].y;
-  const size_t offset = static_cast<size_t>(y) * (board::kWidth / 8);
-  const size_t bytes = static_cast<size_t>(board::kRowHeight) * (board::kWidth / 8);
-  memcpy(workBmp + offset, baseBmp + offset, bytes);
-  if (doneMask & (1UL << index)) StrikeRow(workBmp, y, board::kRowHeight);
-  if (index == cursorRow) InvertRow(workBmp, y, board::kRowHeight);
-}
-
-void DrawFull() {
-  if (!haveFrame) {
-    DrawMessage("Today", "还没有缓存画面", "连上 Wi-Fi 后自动取帧");
-    return;
+  if (rowCount == 0) {
+    cursorRow = 0;
+  } else if (cursorRow >= rowCount) {
+    cursorRow = rowCount - 1;
   }
-  memcpy(workBmp, baseBmp, sizeof(workBmp));
-  for (int i = 0; i < rowCount; i++) {
-    const int y = rows[i].y;
-    if (doneMask & (1UL << i)) StrikeRow(workBmp, y, board::kRowHeight);
-    if (i == cursorRow) InvertRow(workBmp, y, board::kRowHeight);
+  storage::SaveCursor(cursorRow);
+  // A fetched frame is authoritative for every row: once the server reflects
+  // the toggle, the optimistic bit has done its job.
+  uint32_t serverDone = 0;
+  for (uint8_t i = 0; i < rowCount && i < 32; i++) {
+    if (rows[i].flags & tbf::kRowDone) serverDone |= (1UL << i);
   }
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.drawBitmap(0, 0, workBmp, board::kWidth, board::kHeight, GxEPD_BLACK);
-  } while (display.nextPage());
+  doneMask = serverDone;
 }
 
-void ShowRow(int index) {
-  if (index < 0 || index >= rowCount) return;
-  const int y = rows[index].y;
-  ComposeRow(index);
-  const size_t offset = static_cast<size_t>(y) * (board::kWidth / 8);
-  // drawBitmap leaves zero bits untouched, so clear the row window first;
-  // otherwise moving the cursor would leave the old inversion behind.
-  display.fillRect(0, y, board::kWidth, board::kRowHeight, GxEPD_WHITE);
-  display.drawBitmap(0, y, workBmp + offset, board::kWidth, board::kRowHeight, GxEPD_BLACK);
-  display.displayWindow(0, y, board::kWidth, board::kRowHeight);
-}
+uint32_t RowBit(int index) { return index >= 0 && index < 32 ? (1UL << index) : 0; }
 
-const char* StatusName(uint8_t status) { return status ? "done" : "open"; }
-
-void ToggleCursor() {
-  if (cursorRow >= rowCount) return;
-  const uint32_t bit = 1UL << cursorRow;
-  const bool wasDone = (doneMask & bit) != 0;
-  const uint8_t status = wasDone ? 0 : 1;
-  const uint32_t opSeq = storage::LoadOpSeq() + 1;
-  if (!storage::AppendOutbox(rows[cursorRow].id, status, opSeq)) {
-    DrawMessage("Today", "本地队列已满", "下一次联网会先发送");
-    return;
+// ComposeLocal rebuilds `work` from the cached server bitmap and applies the
+// local overlays. It never touches the network.
+void ComposeLocal() {
+  if (!haveFrame) return;
+  memcpy(work, base, sizeof(work));
+  for (uint8_t i = 0; i < rowCount; i++) {
+    if (doneMask & RowBit(i)) widgets::StrikeRow(rows[i].y, board::kRowHeight);
   }
-  storage::SaveOpSeq(opSeq);
-  doneMask ^= bit;
-  storage::SaveDoneMask(doneMask);
-  ShowRow(cursorRow);
+  if (rowCount > 0 && cursorRow < rowCount) {
+    widgets::InvertRow(rows[cursorRow].y, board::kRowHeight);
+  }
 }
 
-int PressedButton() {
-  if (digitalRead(board::kPinOk) == board::kButtonActiveLevel) return board::kPinOk;
-  if (digitalRead(board::kPinRefresh) == board::kButtonActiveLevel) return board::kPinRefresh;
-  if (digitalRead(board::kPinUp) == board::kButtonActiveLevel) return board::kPinUp;
-  if (digitalRead(board::kPinDown) == board::kButtonActiveLevel) return board::kPinDown;
+// PushPanel sends the composed bitmap and the widgets. In night mode the
+// contents still go to the controller RAM, but the panel stays dark: no
+// DISPON and `screenOff` is left untouched.
+void PushPanel() {
+  if (!haveFrame) return;
+  display::ShowFrame(work);
+  DrawWidgets();
+  display::Flush();
+  if (!nightDark) display::On();
+}
+
+void DrawWidgets() {
+  struct tm now {};
+  const bool haveTime = timeOk && getLocalTime(&now, 0);
+  if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetClock)) {
+    if (haveTime) {
+      widgets::DrawClock(*w, now.tm_hour, now.tm_min);
+    } else {
+      widgets::DrawClockUnknown(*w);
+    }
+  }
+  if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetWifi)) {
+    widgets::DrawWifi(*w, net::Rssi(), !net::Connected() && wifiFailures > 0,
+                      portal::Active(), net::Connected());
+  }
+  if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetClimate)) {
+    widgets::DrawClimate(*w, temperatureC, humidity, climateOk);
+  }
+  if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetPower)) {
+    // No VBUS/CHG GPIO on this board: charging can only be guessed, so the
+    // widget never claims it. A reading below 2.5 V means "no battery".
+    widgets::DrawPower(*w, batteryMv, false, false);
+  }
+}
+
+// Paint repaints from cache (no fetch) and lights the panel. Only the key
+// wake-up and the end of the night window call it.
+void Paint() {
+  if (!haveFrame) return;
+  nightDark = false;
+  screenOff = false;
+  ComposeLocal();
+  PushPanel();
+}
+
+void PaintMessage(const char* line1, const char* line2, const char* line3) {
+  memset(work, 0, sizeof(work));
+  display::ShowFrame(work);
+  widgets::DrawString(16, 28, line1, 2);
+  widgets::DrawString(16, 76, line2, 1);
+  widgets::DrawString(16, 96, line3, 1);
+  display::Flush();
+  display::On();
+  nightDark = false;
+  screenOff = false;
+  // The cached frame stays in `base`: a later 304 repaints the board instead
+  // of leaving this message on screen forever.
+}
+
+uint32_t BatteryMillivolts() {
+  uint16_t samples[7];
+  for (uint16_t& s : samples) {
+    s = static_cast<uint16_t>(analogReadMilliVolts(board::kPinBattery));
+    delay(2);
+  }
+  // Median of seven rejects USB noise and panel-switching spikes.
+  for (size_t i = 1; i < 7; i++) {
+    for (size_t j = i; j > 0 && samples[j - 1] > samples[j]; j--) {
+      const uint16_t t = samples[j - 1];
+      samples[j - 1] = samples[j];
+      samples[j] = t;
+    }
+  }
+  return static_cast<uint32_t>(samples[3]) * board::kBatteryScale;
+}
+
+void ReadClimate() {
+  float t = 0;
+  float h = 0;
+  climateOk = sensors::ReadClimate(&t, &h);
+  if (climateOk) {
+    temperatureC = t;
+    humidity = h;
+  }
+  lastClimateAt = millis();
+}
+
+int PressedKey() {
+  if (digitalRead(board::kPinKey) == board::kButtonActiveLevel) return board::kPinKey;
+  if (digitalRead(board::kPinBoot) == board::kButtonActiveLevel) return board::kPinBoot;
   return -1;
 }
 
-void WaitRelease(int pin, uint32_t limitMs) {
+void WaitRelease(int pin) {
   const uint32_t start = millis();
-  while (digitalRead(pin) == board::kButtonActiveLevel && millis() - start < limitMs) delay(10);
+  while (digitalRead(pin) == board::kButtonActiveLevel && millis() - start < 4000) delay(10);
 }
 
-void MoveCursor(int delta) {
-  if (rowCount == 0) return;
-  const int old = cursorRow;
-  int next = static_cast<int>(cursorRow) + delta;
-  if (next < 0) next = rowCount - 1;
-  if (next >= rowCount) next = 0;
-  cursorRow = static_cast<uint8_t>(next);
-  storage::SaveCursor(cursorRow);
-  ShowRow(old);
-  ShowRow(cursorRow);
+void SyncClock(int64_t serverNow, int offset) {
+  if (serverNow <= 0) return;
+  utcOffset = offset;
+  storage::SaveUtcOffset(offset);
+  const time_t local = static_cast<time_t>(serverNow) + offset;
+  struct timeval tv = {local, 0};
+  settimeofday(&tv, nullptr);
+  timeOk = true;
+  struct tm localTm {};
+  gmtime_r(&local, &localTm);
+  sensors::RtcWrite(localTm);
 }
 
-void HandleButtons() {
-  pinMode(board::kPinUp, board::kButtonPinMode);
-  pinMode(board::kPinDown, board::kButtonPinMode);
-  pinMode(board::kPinOk, board::kButtonPinMode);
-  pinMode(board::kPinRefresh, board::kButtonPinMode);
-  delay(30);
-
-  const int button = PressedButton();
-  if (button < 0) return;
-
-  if (button == board::kPinOk) {
-    // A long press is a request for a full refresh plus a forced full frame
-    // on the next fetch; a short press toggles the cursor row.
-    const uint32_t start = millis();
-    while (digitalRead(button) == board::kButtonActiveLevel && millis() - start < 700) delay(10);
-    if (digitalRead(button) == board::kButtonActiveLevel) {
-      WaitRelease(button, 4000);
-      storage::SetForceFull(true);
-      DrawFull();
-      return;
-    }
-    ToggleCursor();
-    return;
-  }
-
-  if (button == board::kPinRefresh) {
-    WaitRelease(button, 2000);
-    storage::SetForceFull(true);
-    DrawFull();
-    return;
-  }
-
-  const int delta = button == board::kPinUp ? -1 : 1;
-  WaitRelease(button, 2000);
-  MoveCursor(delta);
-}
-
-String BuildAcksJson(uint32_t batteryMv) {
+String BuildAcksJson(const char* power) {
   JsonDocument doc;
-  doc["frame_seq"] = frameSeq;
-  doc["battery_mv"] = batteryMv;
+  doc["frame_seq"] = static_cast<uint32_t>(storage::LoadSeq());
+  if (batteryMv > 0) doc["battery_mv"] = batteryMv;
+  if (power != nullptr) doc["power"] = power;
   JsonArray ops = doc["ops"].to<JsonArray>();
   const uint8_t count = storage::OutboxCount();
   for (uint8_t i = 0; i < count; i++) {
@@ -240,102 +243,157 @@ String BuildAcksJson(uint32_t batteryMv) {
     JsonObject entry = ops.add<JsonObject>();
     entry["op_id"] = opId;
     entry["item_id"] = itemId;
-    entry["status"] = StatusName(op.status);
+    entry["status"] = op.status != 0 ? "done" : "open";
   }
   String out;
   serializeJson(doc, out);
   return out;
 }
 
-void MaybeUpdate(const String& version) {
-  if (version.isEmpty() || version == board::kFirmwareVersion) return;
-  Serial.printf("ota: %s -> %s\n", board::kFirmwareVersion, version.c_str());
-  DrawMessage("正在升级固件", version, "请保持供电");
-  if (net::DownloadFirmware(cfg)) {
-    Serial.println("ota: ok, rebooting");
-    delay(800);
-    ESP.restart();
-  }
-  Serial.println("ota: failed, keeping current firmware");
-}
-
+// SendAcks posts queued ops plus the battery reading. Empty ops are valid and
+// keep the settings page's battery figure fresh.
 void SendAcks() {
+  if (!net::Connected()) return;
   const uint8_t count = storage::OutboxCount();
-  const String payload = BuildAcksJson(BatteryMillivolts());
+  batteryMv = static_cast<int>(BatteryMillivolts());
+  const String payload = BuildAcksJson(nullptr);
   const int code = net::PostAcks(cfg, payload);
   if (code >= 200 && code < 300) {
-    storage::ClearOutbox();
+    if (count > 0) storage::ClearOutbox();
     Serial.printf("acks: sent %u\n", count);
   } else {
     Serial.printf("acks: failed %d, kept %u\n", code, count);
   }
 }
 
-void FetchFrame() {
-  const String etag = storage::LoadETag();
-  // A long OK press or the Refresh button asked for a full repaint; the flag
-  // is one-shot, taken here so the next wake can go back to plain 304s.
-  const bool force = storage::TakeForceFull();
-  tbf::Frame frame{};
-  const net::FetchResult result =
-      net::FetchFrame(cfg, etag, force, frameBuf, sizeof(frameBuf), &frame);
-  if (result.sleepSeconds > 0) {
-    sleepSeconds = static_cast<uint32_t>(result.sleepSeconds);
+void MaybeUpdate(const String& version) {
+  if (version.isEmpty() || version == board::kFirmwareVersion) return;
+  Serial.printf("ota: %s -> %s\n", board::kFirmwareVersion, version.c_str());
+  PaintMessage("UPDATING", version.c_str(), "KEEP POWER ON");
+  if (net::DownloadFirmware(cfg)) {
+    delay(800);
+    ESP.restart();
   }
-  if (result.status == 304) {
-    if (result.seq != 0) {
-      frameSeq = result.seq;
-      storage::SaveSeq(frameSeq);
-    }
-    if (result.refresh && haveFrame) DrawFull();
-    availableFirmware = result.firmwareVersion;
-    return;
-  }
-  if (!result.changed) {
-    Serial.printf("frame: http %d %s\n", result.status, tbf::ParseError());
-    if (!haveFrame) DrawMessage("Today", "取帧失败", String("HTTP ") + String(result.status));
-    sleepSeconds = 300;
-    return;
-  }
-  if (frame.width != board::kWidth || frame.height != board::kHeight ||
-      frame.bitmapLen != sizeof(baseBmp)) {
-    Serial.println("frame: panel geometry mismatch");
-    DrawMessage("Today", "帧尺寸不匹配", "检查 devices.panel 与固件");
-    sleepSeconds = 600;
-    return;
-  }
-
-  memcpy(baseBmp, frame.bitmap, sizeof(baseBmp));
-  haveFrame = true;
-  storage::SaveFrame(baseBmp, sizeof(baseBmp));
-
-  rowCount = frame.rowCount > tbf::kMaxRows ? tbf::kMaxRows : frame.rowCount;
-  memcpy(rows, frame.rows, sizeof(tbf::Row) * rowCount);
-  storage::SaveRows(rows, rowCount);
-
-  frameSeq = result.seq;
-  storage::SaveSeq(frameSeq);
-  if (!result.etag.isEmpty()) storage::SaveETag(result.etag);
-
-  doneMask = 0;
-  for (uint8_t i = 0; i < rowCount; i++) {
-    if (frame.rows[i].flags & tbf::kRowDone) doneMask |= 1UL << i;
-  }
-  storage::SaveDoneMask(doneMask);
-  if (rowCount > 0 && cursorRow >= rowCount) cursorRow = rowCount - 1;
-  storage::SaveCursor(cursorRow);
-
-  DrawFull();
-  Serial.printf("frame: seq %lu rows %u\n", static_cast<unsigned long>(frameSeq), rowCount);
-  availableFirmware = result.firmwareVersion;
+  Serial.println("ota: failed, keeping current firmware");
 }
 
-void SerialCommand(String line) {
-  line.trim();
-  if (line.isEmpty()) return;
+void ApplyFrame(const net::FetchResult& res) {
+  if (res.changed) {
+    CaptureFrame();
+    storage::SaveFrame(base, sizeof(base));
+    storage::SaveRows(rows, rowCount);
+    storage::SaveSeq(res.seq);
+    etag = res.etag;
+    storage::SaveETag(etag);
+    availableFirmware = res.firmwareVersion;
+  }
+  if (res.serverNow > 0) SyncClock(res.serverNow, res.utcOffset);
+  nightEnabled = res.night;
+  nightStart = res.nightStart;
+  nightEnd = res.nightEnd;
+}
+
+// Fetch refreshes from the server. During night mode the fresh bitmap is
+// composed into RAM but the panel is not lit.
+void Fetch(bool repaintAlways) {
+  const bool force = storage::TakeForceFull();
+  net::FetchResult res = net::FetchFrame(cfg, etag, force, work, sizeof(work), &frame);
+  lastFrameAt = millis();
+  if (res.status != 304 && res.status != 200) {
+    Serial.printf("fetch: %d\n", res.status);
+    return;
+  }
+  wifiFailures = 0;
+  ApplyFrame(res);
+  if (!haveFrame) return;
+  if (repaintAlways || res.changed || res.refresh || res.forceFull || force) {
+    ComposeLocal();
+    PushPanel();
+    return;
+  }
+  // 304: only the clock and the other widgets can have moved.
+  ComposeLocal();
+  PushPanel();
+}
+
+void HandleKeys() {
+  const int key = PressedKey();
+  if (key < 0) return;
+
+  // Measure the hold once: 0.6 s is the toggle threshold, a full 3 s on KEY
+  // opens the setup portal instead (so the two gestures cannot collide).
+  const uint32_t start = millis();
+  uint32_t held = 0;
+  while (digitalRead(key) == board::kButtonActiveLevel) {
+    delay(10);
+    held = millis() - start;
+    if (key == board::kPinKey && held >= board::kProvisionHoldMs) break;
+    if (held >= 4000) break;
+  }
+  if (digitalRead(key) == board::kButtonActiveLevel) WaitRelease(key);
+
+  if (key == board::kPinKey && held >= board::kProvisionHoldMs) {
+    Serial.println("key: setup portal");
+    portalPending = true;
+    return;
+  }
+
+  // Night: the first press only lights the board. In the dark the same press
+  // must not also move the cursor or toggle a row.
+  if (screenOff) {
+    Paint();
+    lastKeyAt = millis();
+    return;
+  }
+  lastKeyAt = millis();
+
+  if (key == board::kPinBoot) {
+    storage::SetForceFull(true);
+    SendAcks();
+    Fetch(true);
+    return;
+  }
+
+  const bool longPress = held >= board::kLongPressMs;
+  if (longPress) {
+    if (rowCount == 0) return;
+    tbf::Row& row = rows[cursorRow];
+    const bool wasDone = (doneMask & RowBit(cursorRow)) != 0 ||
+                         (row.flags & tbf::kRowDone) != 0;
+    const uint32_t seq = storage::LoadOpSeq() + 1;
+    if (!storage::AppendOutbox(row.id, wasDone ? 0 : 1, seq)) return;
+    storage::SaveOpSeq(seq);
+    // Optimistic local strike, independent of the network.
+    if (wasDone) {
+      doneMask &= ~RowBit(cursorRow);
+    } else {
+      doneMask |= RowBit(cursorRow);
+    }
+    storage::SaveDoneMask(doneMask);
+    ComposeLocal();
+    PushPanel();
+    // Then let the server catch up; the frame it returns is authoritative.
+    SendAcks();
+    Fetch(false);
+    return;
+  }
+
+  if (rowCount == 0) return;
+  cursorRow = static_cast<uint8_t>((cursorRow + 1) % rowCount);
+  storage::SaveCursor(cursorRow);
+  // Local only: moving the cursor must not need a request or touch the ETag.
+  ComposeLocal();
+  PushPanel();
+}
+
+void SerialCommand(const String& line) {
+  String command = line;
+  String rest;
   const int space = line.indexOf(' ');
-  String command = space < 0 ? line : line.substring(0, space);
-  String rest = space < 0 ? "" : line.substring(space + 1);
+  if (space >= 0) {
+    command = line.substring(0, space);
+    rest = line.substring(space + 1);
+  }
   if (command == "wifi") {
     const int split = rest.indexOf(' ');
     if (split < 0) {
@@ -346,6 +404,8 @@ void SerialCommand(String line) {
     cfg.wifiPass = rest.substring(split + 1);
     storage::SaveConfig(cfg);
     Serial.println("wifi saved");
+  } else if (command == "setup") {
+    portalPending = true;
   } else if (command == "server") {
     cfg.server = rest;
     storage::SaveConfig(cfg);
@@ -358,29 +418,22 @@ void SerialCommand(String line) {
     cfg.device = rest;
     storage::SaveConfig(cfg);
     Serial.println("device saved");
-  } else if (command == "mode") {
-    if (rest != "battery" && rest != "mains") {
-      Serial.println("usage: mode battery|mains");
-      return;
-    }
-    cfg.mode = rest;
-    storage::SaveConfig(cfg);
-    Serial.println("mode saved; reboot to apply");
   } else if (command == "show") {
-    Serial.printf("ssid=%s server=%s device=%s token=%s mode=%s\n", cfg.wifiSsid.c_str(),
+    Serial.printf("ssid=%s server=%s device=%s token=%s\n", cfg.wifiSsid.c_str(),
                   cfg.server.c_str(), cfg.device.c_str(),
-                  cfg.token.isEmpty() ? "(empty)" : "(set)", cfg.mode.c_str());
+                  cfg.token.isEmpty() ? "(empty)" : "(set)");
   } else if (command == "reboot") {
     ESP.restart();
   } else {
-    Serial.println("commands: wifi/server/token/device/mode/show/reboot");
+    Serial.println("wifi/setup/server/token/device/show/reboot");
   }
 }
 
-void SerialConfigWindow(uint32_t windowMs) {
+void SerialWindow(uint32_t windowMs) {
   Serial.println();
-  Serial.println("Today firmware");
-  Serial.println("wifi <ssid> <password> | server <url> | token <token> | device <id> | mode battery|mains | show | reboot");
+  Serial.println("Today firmware " + String(board::kFirmwareVersion));
+  Serial.println(
+      "wifi <ssid> <password> | setup | server <url> | token <token> | device <id> | show | reboot");
   String line;
   const uint32_t start = millis();
   while (millis() - start < windowMs) {
@@ -397,54 +450,27 @@ void SerialConfigWindow(uint32_t windowMs) {
   }
 }
 
-bool Configured() {
-  return !cfg.wifiSsid.isEmpty() && !cfg.server.isEmpty() && !cfg.token.isEmpty();
-}
-
-// Mains mode: stay awake, keep Wi-Fi up and pull every 60 s. Buttons are
-// handled in place; this is the fallback when deep-sleep current is too high.
-void RunMains() {
-  pinMode(board::kPinUp, board::kButtonPinMode);
-  pinMode(board::kPinDown, board::kButtonPinMode);
-  pinMode(board::kPinOk, board::kButtonPinMode);
-  pinMode(board::kPinRefresh, board::kButtonPinMode);
-  uint32_t last = 0;
-  while (true) {
-    if (WiFi.status() != WL_CONNECTED) {
-      if (!net::Connect(cfg, 20000)) {
-        Serial.println("wifi: reconnect failed");
-        delay(5000);
-        continue;
-      }
-    }
-    if (last == 0 || millis() - last >= 60000) {
-      FetchFrame();
-      SendAcks();
-      MaybeUpdate(availableFirmware);
-      last = millis();
-    }
-    HandleButtons();
-    delay(40);
+void RunPortal() {
+  const uint8_t failures = wifiFailures;
+  portal::Start();
+  char line[24];
+  snprintf(line, sizeof(line), "SSID %s", portal::Ssid().c_str());
+  PaintMessage("WIFI SETUP", line, portal::Password().c_str());
+  widgets::DrawString(16, 128, "http://192.168.4.1", 1);
+  display::Flush();
+  const uint32_t start = millis();
+  while (!portal::Submitted() && millis() - start < board::kPortalIdleMs) {
+    portal::Loop();
+    delay(5);
   }
-}
-
-void DeepSleep(uint32_t seconds) {
-  if (seconds < board::kMinSleepSeconds) seconds = board::kMinSleepSeconds;
-  // Never arm a level wake while a button is still held: the wake would fire
-  // again immediately and the device would spin.
-  for (int i = 0; i < 200 && PressedButton() >= 0; i++) delay(50);
-  Serial.printf("sleep %lu s\n", static_cast<unsigned long>(seconds));
-  display.hibernate();
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
-  // The buttons are low-active with internal pull-ups, so the RTC peripheral
-  // domain has to stay powered through sleep or the pull-ups (and with them the
-  // idle level) disappear. It costs a few microamps; measure before changing.
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
-  esp_sleep_enable_ext1_wakeup(board::ButtonMask(), board::WakeMode());
-  Serial.flush();
-  esp_deep_sleep_start();
+  portal::Stop();
+  if (portal::Submitted()) {
+    delay(400);
+    ESP.restart();
+  }
+  Serial.println("portal: closed by timeout");
+  wifiFailures = failures;  // do not loop straight back into the portal
+  PaintMessage("NO WIFI", "KEY 3S OR 'setup' OVER SERIAL", "");
 }
 
 }  // namespace
@@ -454,54 +480,119 @@ void setup() {
   delay(50);
   storage::Begin();
   cfg = storage::LoadConfig();
-  cursorRow = storage::LoadCursor();
-  frameSeq = storage::LoadSeq();
-  doneMask = storage::LoadDoneMask();
-  haveFrame = storage::LoadFrame(baseBmp, sizeof(baseBmp));
+  sensors::Begin();
+  display::Begin();
+  widgets::Begin();
+
+  pinMode(board::kPinKey, INPUT_PULLUP);
+  pinMode(board::kPinBoot, INPUT_PULLUP);
+  pinMode(board::kPinBattery, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(board::kPinBattery, ADC_11db);
+
+  utcOffset = storage::LoadUtcOffset();
+  struct tm rtc {};
+  timeOk = sensors::RtcRead(&rtc);
+  if (timeOk) {
+    const time_t local = mktime(&rtc);
+    struct timeval tv = {local, 0};
+    settimeofday(&tv, nullptr);
+  }
+  batteryMv = static_cast<int>(BatteryMillivolts());
+  ReadClimate();
+
+  haveFrame = storage::LoadFrame(base, sizeof(base));
   rowCount = storage::LoadRows(rows, tbf::kMaxRows);
-  if (!haveFrame) rowCount = 0;
+  cursorRow = storage::LoadCursor();
+  doneMask = storage::LoadDoneMask();
   if (rowCount > 0 && cursorRow >= rowCount) cursorRow = rowCount - 1;
-
-  const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  const bool buttonWake = board::IsButtonWake(cause);
-  const bool coldBoot = cause == ESP_SLEEP_WAKEUP_UNDEFINED;
-  InitDisplay(!buttonWake);
-  // A cold boot clears the panel; NVS still has the last frame, so paint it
-  // before the timer fetch. Otherwise a 304 would leave a blank screen.
-  if (coldBoot && haveFrame) DrawFull();
-
-  if (buttonWake) {
-    HandleButtons();
-    DeepSleep(board::kButtonSleepSeconds);
+  etag = storage::LoadETag();
+  if (haveFrame) {
+    // A cold boot repaints the cache, so a 304 never leaves the board blank.
+    Paint();
+  } else {
+    PaintMessage("TODAY", "WAITING FOR FIRST FRAME", "KEY 3S TO START SETUP");
   }
 
-  if (coldBoot) {
-    // A configured board only needs a short window. A blank one cannot do
-    // anything until it has Wi-Fi and a token, so hold the port open long
-    // enough for someone to attach a monitor and type.
-    SerialConfigWindow(Configured() ? board::kConfigWindowMs : board::kProvisionWindowMs);
+  if (!storage::Configured()) {
+    SerialWindow(10 * 60 * 1000);
     cfg = storage::LoadConfig();
   }
-
-  if (!Configured()) {
-    DrawMessage("Today", "通过 USB 串口配置：", "wifi / server / token / device");
-    DeepSleep(300);
-  }
-
-  if (cfg.mode == "mains") {
-    RunMains();
-  }
-
-  if (!net::Connect(cfg, 20000)) {
-    Serial.println("wifi: connect failed");
-    if (!haveFrame) DrawMessage("Today", "Wi-Fi 连接失败", cfg.wifiSsid);
-    DeepSleep(300);
-  }
-
-  FetchFrame();
-  SendAcks();
-  MaybeUpdate(availableFirmware);
-  DeepSleep(sleepSeconds);
 }
 
-void loop() {}
+void loop() {
+  if (portalPending) {
+    portalPending = false;
+    RunPortal();
+    return;
+  }
+
+  if (!net::Connected()) {
+    const uint32_t now = millis();
+    if (lastRetryAt == 0 || now - lastRetryAt >= board::kWifiRetryMs) {
+      lastRetryAt = now;
+      if (net::Connect(cfg, board::kWifiRetryMs)) {
+        wifiFailures = 0;
+        lastFrameAt = 0;
+      } else {
+        if (wifiFailures < 255) wifiFailures++;
+        if (wifiFailures >= board::kWifiFailuresBeforePortal) {
+          portalPending = true;
+          return;
+        }
+      }
+    }
+  }
+
+  const uint32_t now = millis();
+  if (net::Connected() && (lastFrameAt == 0 || now - lastFrameAt >= board::kFrameIntervalMs)) {
+    SendAcks();
+    Fetch(false);
+    MaybeUpdate(availableFirmware);
+  }
+  if (lastClimateAt == 0 || now - lastClimateAt >= board::kClimateIntervalMs) {
+    ReadClimate();
+  }
+
+  // The clock must move even when the network is down: redraw the widgets on
+  // a minute boundary. A dark panel only updates RAM.
+  struct tm minuteTm {};
+  if (getLocalTime(&minuteTm, 0)) {
+    const int minute = minuteTm.tm_hour * 60 + minuteTm.tm_min;
+    if (minute != lastClockMinute) {
+      lastClockMinute = minute;
+      if (haveFrame) PushPanel();
+    }
+  }
+
+  // Night window: DISPOFF keeps RAM. Any key lights the board for 30 s; the
+  // normal repaint path leaves the panel dark, it only refreshes RAM.
+  if (!nightEnabled) {
+    // The server turned night-off off (or never sent it): never stay dark.
+    nightDark = false;
+    if (screenOff) Paint();
+  } else {
+    struct tm local {};
+    if (getLocalTime(&local, 0)) {
+      const int minute = static_cast<int>(local.tm_hour) * 60 + local.tm_min;
+      const bool wantNight = night::Inside(minute, nightStart, nightEnd);
+      const bool wakeLit = millis() - lastKeyAt <= board::kNightWakeMs;
+      if (!wantNight) {
+        nightDark = false;
+        if (screenOff) Paint();
+      } else if (wakeLit) {
+        // A key lit the panel: keep RAM updates visible for the 30 s window.
+        nightDark = false;
+      } else {
+        nightDark = true;
+        if (!screenOff) {
+          display::Off();
+          screenOff = true;
+        }
+      }
+    }
+  }
+
+  HandleKeys();
+  delay(20);
+}

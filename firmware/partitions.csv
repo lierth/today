@@ -1,6 +1,15 @@
+# Shared by the bootloader, the Arduino OTA update layer and the firmware.
+#
+# The prefix is Arduino's standard layout on purpose:
+#   * PlatformIO writes boot_app0.bin at 0xe000 for any table with an OTA
+#     data partition, so otadata MUST live there or every USB flash would
+#     overwrite the start of NVS.
+#   * NVS therefore starts at 0x9000 and is only 20 KB: credentials, cursor,
+#     outbox and the row table. The 15 KB frame cache lives in LittleFS.
+#   * app0 starts at 0x10000, matching $ESP32_APP_OFFSET.
 # name,   type, subType, offset,   size,     flags
-nvs,      data, nvs,     0x9000,   0x10000,
-otadata,  data, ota,     0x19000,  0x2000,
-app0,     app,  ota_0,   0x20000,  0x1B0000,
-app1,     app,  ota_1,   0x1D0000, 0x1B0000,
-littlefs, data, spiffs,  0x380000, 0x80000,
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x300000,
+app1,     app,  ota_1,   0x310000, 0x300000,
+littlefs, data, spiffs,  0x610000, 0x100000,

@@ -53,7 +53,7 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
     SetError("null frame");
     return false;
   }
-  if (len < 24 + 1 + 4) {
+  if (len < 7 + 14 + 3 + 1 + 1 + 4) {
     SetError("short frame");
     return false;
   }
@@ -63,7 +63,7 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
   }
   const uint8_t version = data[4];
   const uint8_t bits = data[5];
-  if (version != 2 || bits != 1) {
+  if (version != kFormatVersion || bits != 1) {
     SetError("unsupported format");
     return false;
   }
@@ -109,7 +109,7 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
     SetError("too many footers");
     return false;
   }
-  if (static_cast<size_t>(p - data) + static_cast<size_t>(f.footerCount) * 2 + 4 > len) {
+  if (static_cast<size_t>(p - data) + static_cast<size_t>(f.footerCount) * 2 + 1 + 4 > len) {
     SetError("truncated footers");
     return false;
   }
@@ -117,6 +117,29 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
     f.footers[i].gpio = p[0];
     f.footers[i].action = p[1];
     p += 2;
+  }
+  f.widgetCount = *p++;
+  if (f.widgetCount > kMaxWidgets) {
+    SetError("too many widgets");
+    return false;
+  }
+  if (static_cast<size_t>(p - data) + static_cast<size_t>(f.widgetCount) * 9 + 4 > len) {
+    SetError("truncated widgets");
+    return false;
+  }
+  for (size_t i = 0; i < f.widgetCount; i++) {
+    Widget& w = f.widgets[i];
+    w.kind = p[0];
+    w.x = ReadBE16(p + 1);
+    w.y = ReadBE16(p + 3);
+    w.w = ReadBE16(p + 5);
+    w.h = ReadBE16(p + 7);
+    if (w.kind == 0 || static_cast<uint32_t>(w.x) + w.w > f.width ||
+        static_cast<uint32_t>(w.y) + w.h > f.height) {
+      SetError("bad widget");
+      return false;
+    }
+    p += 9;
   }
   f.bitmap = p;
   f.bitmapLen = (static_cast<size_t>(f.width) / 8) * f.height;
@@ -134,6 +157,13 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
   }
   *out = f;
   return true;
+}
+
+const Widget* Find(const Frame& frame, uint8_t kind) {
+  for (size_t i = 0; i < frame.widgetCount; i++) {
+    if (frame.widgets[i].kind == kind) return &frame.widgets[i];
+  }
+  return nullptr;
 }
 
 }  // namespace tbf

@@ -1,4 +1,4 @@
-// NVS-backed device state: credentials, last frame, cursor and outbox.
+// NVS-backed device state: credentials, cached frame, cursor and outbox.
 #pragma once
 
 #include <Arduino.h>
@@ -14,7 +14,6 @@ struct Config {
   String server;  // http://192.168.1.10:8787
   String device;  // dev1
   String token;
-  String mode;  // "battery" (deep sleep) or "mains" (always on)
 };
 
 struct OutboxOp {
@@ -26,8 +25,11 @@ struct OutboxOp {
 void Begin();
 Config LoadConfig();
 void SaveConfig(const Config& cfg);
+bool Configured();
 
 uint8_t LoadCursor();
+uint32_t LoadDoneMask();
+void SaveDoneMask(uint32_t mask);
 void SaveCursor(uint8_t row);
 
 uint32_t LoadSeq();
@@ -36,12 +38,10 @@ void SaveSeq(uint32_t seq);
 String LoadETag();
 void SaveETag(const String& etag);
 
-uint32_t LoadDoneMask();
-void SaveDoneMask(uint32_t mask);
-
+// The cached frame lives in LittleFS (15 KB is too big for the 20 KB NVS
+// partition); the row table stays in NVS.
 bool LoadFrame(uint8_t* out, size_t len);
 bool SaveFrame(const uint8_t* data, size_t len);
-
 uint8_t LoadRows(tbf::Row* out, uint8_t max);
 void SaveRows(const tbf::Row* rows, uint8_t count);
 
@@ -52,7 +52,9 @@ uint8_t OutboxCount();
 bool AppendOutbox(const uint8_t id[16], uint8_t status, uint32_t seq);
 bool LoadOutbox(uint8_t index, OutboxOp* out);
 void ClearOutbox();
-void DropOutbox(uint8_t sent);
+
+int LoadUtcOffset();
+void SaveUtcOffset(int seconds);
 
 bool TakeForceFull();
 void SetForceFull(bool value);

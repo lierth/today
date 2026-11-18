@@ -1,74 +1,62 @@
-// Board assumptions for the reference build (ESP32-S3-DevKitC-1 N16R8 with a
-// UC8176 4.2" panel). Change pins here, not in the driver code.
+// Board assumptions for the Waveshare ESP32-S3-RLCD-4.2 (ST7305 reflective
+// LCD, always-on build). Change pins here, not in the driver code.
 //
-// ESP32-S3 facts that shape this file:
-//   * GPIO 22-25 do not exist on the package (SOC_GPIO_VALID_GPIO_MASK clears
-//     them), so the classic-ESP32 map (MOSI 23, OK 25) cannot be reused.
-//   * Deep-sleep wake pins are RTC GPIO 0-21 only.
-//   * ADC1 is GPIO 1-10, so the battery divider has to sit there.
-//   * Unlike the classic ESP32, ext1 offers ANY_LOW, so plain
-//     "button to GND plus internal pull-up" wakes on a single press.
+// Verified against the vendor schematic and demo package:
+//   * display: ST7305 over SPI3, no BUSY line, 400x300 landscape mapping
+//   * keys: KEY = GPIO18, BOOT = GPIO0, both active low
+//   * I2C: SDA 13, SCL 14 (SHTC3 0x70, PCF85063 0x51, ES8311 0x18, ES7210 0x40)
+//   * battery: BAT_ADC on GPIO4 / ADC1_CH3 through a 1:3 divider
+//   * GPIO15 is the PCF85063 INT line (open drain, no external pull-up)
 #pragma once
 
 #include <Arduino.h>
-#include <GxEPD2_BW.h>
-#include <esp_sleep.h>
 
 namespace board {
 
-// SPI: the ESP32-S3 DevKitC-1 defaults (SCK 12, MOSI 11) with the panel chip
-// select and control lines on pins that are free on the header.
-constexpr int kPinCs = 10;
-constexpr int kPinDC = 17;
-constexpr int kPinRst = 16;
-constexpr int kPinBusy = 4;
-constexpr int kPinSck = 12;
-constexpr int kPinMosi = 11;
-
-// Buttons: wired to GND, internal pull-up, all on RTC GPIO 0-21 so ext1 can
-// watch them in deep sleep. None of them is a strapping pin.
-constexpr int kPinUp = 6;
-constexpr int kPinDown = 7;
-constexpr int kPinOk = 15;
-constexpr int kPinRefresh = 21;
-
-constexpr int kButtonActiveLevel = LOW;
-constexpr int kButtonPinMode = INPUT_PULLUP;
-
-// Battery divider: 100k/100k, so ADC millivolts are doubled. ADC1 channel 0.
-constexpr int kPinBattery = 1;
-constexpr int kBatteryScale = 2;
-
-// Bump when the firmware changes so devices fetch a newly uploaded image.
-constexpr char kFirmwareVersion[] = "0.2.0";
+// Display (SPI3; Arduino SPI, mode 0, 10 MHz).
+constexpr int kPinSck = 11;
+constexpr int kPinMosi = 12;
+constexpr int kPinCs = 40;
+constexpr int kPinDc = 5;
+constexpr int kPinRst = 41;
+constexpr int kPinTe = 6;  // tearing effect, unused
 
 constexpr uint16_t kWidth = 400;
 constexpr uint16_t kHeight = 300;
-constexpr uint16_t kRowHeight = 24;
-constexpr size_t kBitmapBytes = (kWidth / 8) * kHeight;
+constexpr uint16_t kRowHeight = 24;  // frame rows are 24 px apart
+constexpr size_t kBitmapBytes = (kWidth / 2) * (kHeight / 4);  // 15,000
 
-constexpr uint32_t kButtonSleepSeconds = 60;
-constexpr uint32_t kFallbackSleepSeconds = 6 * 60 * 60;
-constexpr uint32_t kMinSleepSeconds = 60;
-constexpr uint16_t kMaxOutbox = 32;
+// Keys. BOOT is a strapping pin: only read it at runtime, never use it as a
+// wake or power key.
+constexpr int kPinKey = 18;
+constexpr int kPinBoot = 0;
+constexpr int kButtonActiveLevel = LOW;
+constexpr uint32_t kLongPressMs = 600;
+constexpr uint32_t kDebounceMs = 25;
+constexpr uint32_t kProvisionHoldMs = 3000;
 
-// Cold-boot serial windows: short for a board that is already provisioned,
-// effectively open-ended for a blank one (the port stays usable until reset).
-constexpr uint32_t kConfigWindowMs = 4000;
-constexpr uint32_t kProvisionWindowMs = 10 * 60 * 1000;
+// I2C.
+constexpr int kPinSda = 13;
+constexpr int kPinScl = 14;
+constexpr uint8_t kAddrShtc3 = 0x70;
+constexpr uint8_t kAddrPcf85063 = 0x51;
+constexpr int kPinRtcInt = 15;
 
-using Panel = GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT>;
+// Battery: 100k/100k -> 1:3 divider, ADC1 channel 3.
+constexpr int kPinBattery = 4;
+constexpr int kBatteryScale = 3;
+constexpr float kTemperatureOffsetC = 0.0f;  // panel/board self-heating trim
 
-inline uint64_t ButtonMask() {
-  return (1ULL << kPinUp) | (1ULL << kPinDown) | (1ULL << kPinOk) | (1ULL << kPinRefresh);
-}
+// Cadence.
+constexpr size_t kMaxOutbox = 32;
+constexpr uint32_t kFrameIntervalMs = 60 * 1000;
+constexpr uint32_t kClimateIntervalMs = 60 * 1000;
+constexpr uint32_t kWifiRetryMs = 20 * 1000;
+constexpr uint8_t kWifiFailuresBeforePortal = 5;
+constexpr uint32_t kPortalIdleMs = 5 * 60 * 1000;
+constexpr uint32_t kNightWakeMs = 30 * 1000;
 
-// Pressing any button pulls its pin low, so ANY_LOW is exactly the condition
-// we want. The internal pull-ups only survive deep sleep while the RTC
-// peripheral domain stays powered (see DeepSleep in main.cpp).
-inline esp_sleep_ext1_wakeup_mode_t WakeMode() { return ESP_EXT1_WAKEUP_ANY_LOW; }
-
-// True when the boot was caused by a button rather than the timer.
-inline bool IsButtonWake(esp_sleep_wakeup_cause_t cause) { return cause == ESP_SLEEP_WAKEUP_EXT1; }
+// Firmware identity for OTA.
+constexpr char kFirmwareVersion[] = "0.3.0";
 
 }  // namespace board
