@@ -247,26 +247,20 @@ func (s *Server) handleAcks(w http.ResponseWriter, r *http.Request) {
 			resp.Skipped++
 			continue
 		}
-		fresh, err := s.st.RecordOp(ctx, op.OpID, id, op.ItemID, op.Status)
+		result, err := s.st.ApplyOp(ctx, op.OpID, id, op.ItemID, op.Status)
 		if err != nil {
 			s.log.Printf("server: ack op: %v", err)
 			resp.Skipped++
 			continue
 		}
-		if !fresh {
+		switch result {
+		case store.AckApplied:
+			resp.Applied++
+		case store.AckDuplicate:
 			resp.Duplicates++
-			continue
-		}
-		if err := s.st.SetStatus(ctx, op.ItemID, op.Status); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				resp.Skipped++
-				continue
-			}
-			s.log.Printf("server: ack status: %v", err)
+		default:
 			resp.Skipped++
-			continue
 		}
-		resp.Applied++
 	}
 	if req.BatteryMV > 0 {
 		_ = s.st.TouchDevice(ctx, id, req.BatteryMV)

@@ -7,23 +7,61 @@ import (
 	"time"
 )
 
-// RecordOp remembers an applied device operation. It reports false when the
-// op_id was already applied, which makes acks safely replayable.
-func (s *Store) RecordOp(ctx context.Context, opID, deviceID, itemID, status string) (bool, error) {
+// AckResult classifies one device acknowledgement.
+type AckResult string
+
+const (
+	AckApplied   AckResult = "applied"
+	AckDuplicate AckResult = "duplicate"
+	AckSkipped   AckResult = "skipped"
+)
+
+// ApplyOp records a device operation and its status change in one transaction.
+// Recording first and updating second is not enough: a failed update would
+// leave the op_id on file, so every retry would report duplicate and the
+// button press would be lost forever. An item that no longer exists rolls the
+// op back and reports skipped, which is also what the caller wants for a
+// retryable failure.
+func (s *Store) ApplyOp(ctx context.Context, opID, deviceID, itemID, status string) (AckResult, error) {
 	if opID == "" {
-		return false, errors.New("store: op_id is required")
+		return AckSkipped, errors.New("store: op_id is required")
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO ops
+	now := timeStr(time.Now())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AckSkipped, fmt.Errorf("store: apply op: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO ops
 		(op_id, device_id, item_id, status, applied_at) VALUES (?,?,?,?,?)`,
-		opID, deviceID, itemID, status, timeStr(time.Now()))
+		opID, deviceID, itemID, status, now)
 	if err != nil {
-		return false, fmt.Errorf("store: record op: %w", err)
+		return AckSkipped, fmt.Errorf("store: record op: %w", err)
 	}
-	n, err := res.RowsAffected()
+	inserted, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("store: record op: %w", err)
+		return AckSkipped, fmt.Errorf("store: record op: %w", err)
 	}
-	return n > 0, nil
+	if inserted == 0 {
+		if err := tx.Commit(); err != nil {
+			return AckSkipped, fmt.Errorf("store: apply op: %w", err)
+		}
+		return AckDuplicate, nil
+	}
+
+	upd, err := tx.ExecContext(ctx, `UPDATE items SET status=?, updated_at=?
+		WHERE id = ? AND deleted_at IS NULL`, status, now, itemID)
+	if err != nil {
+		return AckSkipped, fmt.Errorf("store: set status: %w", err)
+	}
+	if n, _ := upd.RowsAffected(); n == 0 {
+		return AckSkipped, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return AckSkipped, fmt.Errorf("store: apply op: %w", err)
+	}
+	return AckApplied, nil
 }
 
 // PruneOps drops operation records older than the retention window.

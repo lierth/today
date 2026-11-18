@@ -273,20 +273,21 @@ func runSim(args []string) error {
 			fmt.Fprintf(os.Stderr, "skip %q: %v\n", line, err)
 			continue
 		}
-		fresh, err := st.RecordOp(context.Background(), "sim", "sim", op.ItemID, op.Status)
+		result, err := st.ApplyOp(context.Background(), op.OpID, "sim", op.ItemID, op.Status)
 		if err != nil {
-			return err
-		}
-		if !fresh {
-			dup++
-			continue
-		}
-		if err := st.SetStatus(context.Background(), op.ItemID, op.Status); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "apply %s: %v\n", op.ItemID, err)
 			continue
 		}
-		applied++
+		switch result {
+		case store.AckApplied:
+			applied++
+		case store.AckDuplicate:
+			dup++
+		default:
+			failed++
+			fmt.Fprintf(os.Stderr, "skip %s: no such open item\n", op.ItemID)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return err

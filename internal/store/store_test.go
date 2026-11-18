@@ -240,13 +240,31 @@ func TestDevicesAndOps(t *testing.T) {
 		t.Fatalf("EnsureDevice should keep the device revoked: %+v %v", other, err)
 	}
 
-	fresh, err := st.RecordOp(ctx, "op-1", "dev1", "item-1", StatusDone)
-	if err != nil || !fresh {
-		t.Fatalf("first op: fresh=%v err=%v", fresh, err)
+	// ApplyOp records the op and the status change together, so a retry is
+	// answered with duplicate and an unknown item leaves no op behind.
+	later := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	it, err := st.CreateItem(ctx, Item{Title: "勾选我", StartsAt: &later}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
 	}
-	fresh, err = st.RecordOp(ctx, "op-1", "dev1", "item-1", StatusDone)
-	if err != nil || fresh {
-		t.Fatalf("duplicate op: fresh=%v err=%v", fresh, err)
+	res, err := st.ApplyOp(ctx, "op-1", "dev1", it.ID, StatusDone)
+	if err != nil || res != AckApplied {
+		t.Fatalf("first op: %v %v", res, err)
+	}
+	if got, _ := st.Item(ctx, it.ID); got.Status != StatusDone {
+		t.Fatalf("status after apply: %q", got.Status)
+	}
+	if res, err := st.ApplyOp(ctx, "op-1", "dev1", it.ID, StatusOpen); err != nil || res != AckDuplicate {
+		t.Fatalf("duplicate op: %v %v", res, err)
+	}
+	if got, _ := st.Item(ctx, it.ID); got.Status != StatusDone {
+		t.Fatalf("replay changed the status to %q", got.Status)
+	}
+	if res, err := st.ApplyOp(ctx, "op-2", "dev1", "missing", StatusDone); err != nil || res != AckSkipped {
+		t.Fatalf("unknown item: %v %v", res, err)
+	}
+	if res, err := st.ApplyOp(ctx, "op-2", "dev1", it.ID, StatusDone); err != nil || res != AckApplied {
+		t.Fatalf("skipped op must be retryable: %v %v", res, err)
 	}
 }
 
