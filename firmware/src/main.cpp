@@ -152,16 +152,16 @@ void ToggleCursor() {
 }
 
 int PressedButton() {
-  if (digitalRead(board::kPinOk) == LOW) return board::kPinOk;
-  if (digitalRead(board::kPinRefresh) == LOW) return board::kPinRefresh;
-  if (digitalRead(board::kPinUp) == LOW) return board::kPinUp;
-  if (digitalRead(board::kPinDown) == LOW) return board::kPinDown;
+  if (digitalRead(board::kPinOk) == board::kButtonActiveLevel) return board::kPinOk;
+  if (digitalRead(board::kPinRefresh) == board::kButtonActiveLevel) return board::kPinRefresh;
+  if (digitalRead(board::kPinUp) == board::kButtonActiveLevel) return board::kPinUp;
+  if (digitalRead(board::kPinDown) == board::kButtonActiveLevel) return board::kPinDown;
   return -1;
 }
 
 void WaitRelease(int pin, uint32_t limitMs) {
   const uint32_t start = millis();
-  while (digitalRead(pin) == LOW && millis() - start < limitMs) delay(10);
+  while (digitalRead(pin) == board::kButtonActiveLevel && millis() - start < limitMs) delay(10);
 }
 
 void MoveCursor(int delta) {
@@ -177,10 +177,10 @@ void MoveCursor(int delta) {
 }
 
 void HandleButtons() {
-  pinMode(board::kPinUp, INPUT_PULLUP);
-  pinMode(board::kPinDown, INPUT_PULLUP);
-  pinMode(board::kPinOk, INPUT_PULLUP);
-  pinMode(board::kPinRefresh, INPUT_PULLUP);
+  pinMode(board::kPinUp, board::kButtonPinMode);
+  pinMode(board::kPinDown, board::kButtonPinMode);
+  pinMode(board::kPinOk, board::kButtonPinMode);
+  pinMode(board::kPinRefresh, board::kButtonPinMode);
   delay(30);
 
   const int button = PressedButton();
@@ -190,8 +190,8 @@ void HandleButtons() {
     // A long press is a request for a full refresh plus a forced full frame
     // on the next fetch; a short press toggles the cursor row.
     const uint32_t start = millis();
-    while (digitalRead(button) == LOW && millis() - start < 700) delay(10);
-    if (digitalRead(button) == LOW) {
+    while (digitalRead(button) == board::kButtonActiveLevel && millis() - start < 700) delay(10);
+    if (digitalRead(button) == board::kButtonActiveLevel) {
       WaitRelease(button, 4000);
       storage::SetForceFull(true);
       DrawFull();
@@ -395,10 +395,10 @@ bool Configured() {
 // Mains mode: stay awake, keep Wi-Fi up and pull every 60 s. Buttons are
 // handled in place; this is the fallback when deep-sleep current is too high.
 void RunMains() {
-  pinMode(board::kPinUp, INPUT_PULLUP);
-  pinMode(board::kPinDown, INPUT_PULLUP);
-  pinMode(board::kPinOk, INPUT_PULLUP);
-  pinMode(board::kPinRefresh, INPUT_PULLUP);
+  pinMode(board::kPinUp, board::kButtonPinMode);
+  pinMode(board::kPinDown, board::kButtonPinMode);
+  pinMode(board::kPinOk, board::kButtonPinMode);
+  pinMode(board::kPinRefresh, board::kButtonPinMode);
   uint32_t last = 0;
   while (true) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -421,7 +421,7 @@ void RunMains() {
 
 void DeepSleep(uint32_t seconds) {
   if (seconds < board::kMinSleepSeconds) seconds = board::kMinSleepSeconds;
-  // Never arm ext1 while a button is still held: the level wake would fire
+  // Never arm a level wake while a button is still held: the wake would fire
   // again immediately and the device would spin.
   for (int i = 0; i < 200 && PressedButton() >= 0; i++) delay(50);
   Serial.printf("sleep %lu s\n", static_cast<unsigned long>(seconds));
@@ -429,7 +429,17 @@ void DeepSleep(uint32_t seconds) {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
-  esp_sleep_enable_ext1_wakeup(board::ButtonMask(), ESP_EXT1_WAKEUP_ALL_LOW);
+  // Classic ESP32 note: ext1 only has ALL_LOW and ANY_HIGH. Active-high buttons
+  // make ANY_HIGH fire on a single press; with active-low wiring no ext1 mode
+  // can watch one low level, so fall back to ext0 on a single RTC pin.
+  if (board::kButtonsActiveHigh) {
+    esp_sleep_enable_ext1_wakeup(board::ButtonMask(), board::WakeMode());
+  } else {
+    // ext0 runs off the RTC peripheral, so that domain (and its internal
+    // pull-ups) has to stay powered through sleep. It costs some microamps.
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(board::kWakePin), board::kButtonActiveLevel);
+  }
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -450,7 +460,7 @@ void setup() {
   if (rowCount > 0 && cursorRow >= rowCount) cursorRow = rowCount - 1;
 
   const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  const bool buttonWake = cause == ESP_SLEEP_WAKEUP_EXT1;
+  const bool buttonWake = board::IsButtonWake(cause);
   const bool coldBoot = cause == ESP_SLEEP_WAKEUP_UNDEFINED;
   InitDisplay(!buttonWake);
   // A cold boot clears the panel; NVS still has the last frame, so paint it

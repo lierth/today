@@ -17,10 +17,10 @@ is shared between the Go server and this C++ code.
 | EPD BUSY | GPIO4 | |
 | EPD SCK | GPIO18 | VSPI |
 | EPD MOSI | GPIO23 | VSPI |
-| Button up | GPIO32 | to GND, internal pull-up, RTC GPIO |
-| Button down | GPIO33 | to GND |
-| Button OK | GPIO25 | to GND |
-| Button refresh | GPIO26 | to GND |
+| Button up | GPIO32 | to 3V3, external 100k to GND, RTC GPIO |
+| Button down | GPIO33 | to 3V3, 100k to GND |
+| Button OK | GPIO25 | to 3V3, 100k to GND |
+| Button refresh | GPIO26 | to 3V3, 100k to GND |
 | Battery | GPIO34 | 100k/100k divider, ×2 in software |
 
 Panel: 4.2" 400×300, UC8176 (`GDEW042T2`) by default. If the silkscreen says
@@ -29,6 +29,20 @@ SSD1619 (`GYE042A3`), change the panel type in `include/board.h` to
 
 Buttons must stay on RTC GPIOs (0, 2, 4, 12–15, 25–27, 32–39) for `ext1` wake.
 The reference map uses 25/26/32/33.
+
+**The buttons are active high on purpose.** The classic ESP32 has only two
+`ext1` wake modes, `ALL_LOW` and `ANY_HIGH`. With the common "button to GND plus
+internal pull-up" wiring, `ALL_LOW` would need all four buttons pressed at once,
+so a single press could never wake the board — the device would only ever wake
+on its timer. Wiring the buttons to 3V3 with external pull-downs lets
+`ANY_HIGH` fire on the first press, and the pull-downs keep the pins at a
+defined level while the RTC domain is off.
+
+If you already soldered the active-low wiring, set `board::kButtonsActiveHigh`
+to `false` in `include/board.h`. Sleep then falls back to `ext0` on
+`board::kWakePin` only: the OK button wakes the device, up/down/refresh work
+once it is awake. `ext0` needs `ESP_PD_DOMAIN_RTC_PERIPH` kept on, which costs a
+few microamps, so fix the wiring when you can.
 
 ## Build and flash
 
@@ -104,6 +118,12 @@ Measure deep-sleep current before optimizing the UI. The plan's order is:
 
 The reference code calls `display.hibernate()`, turns Wi-Fi off and sleeps, but
 does not yet hold the SPI pins. Add that after measuring the board.
+
+The ext1 wake mask is armed `ANY_HIGH` over all four buttons, so the pull-downs
+draw no current at rest and any single press wakes the board. If you keep the
+active-low wiring, `kButtonsActiveHigh = false` switches to `ext0` on one pin and
+keeps `ESP_PD_DOMAIN_RTC_PERIPH` powered — that domain stays on for the whole
+sleep, so expect a few extra microamps.
 
 `mode mains` keeps Wi-Fi up and pulls every 60 s instead of sleeping; use it
 when the board runs from USB or when deep-sleep current cannot be brought

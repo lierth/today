@@ -54,6 +54,7 @@ go tool mygo build             # dist/darwin-arm64/Today.app + dmg
 - 定时唤醒：连 Wi-Fi，`GET /v1/devices/<id>/frame`（ETag），按 `X-Next-Wake-At` 休眠
 - 长按 OK 或按 Refresh：下次取帧带 `?force=1`，即使 ETag 命中也要 200 全帧，用于重画空白屏
 - 按键唤醒：不连 Wi-Fi，本地移动光标/勾选，写入 NVS outbox，60 秒后再睡
+- 按键接 3V3、外接下拉（高有效），因为经典 ESP32 的 `ext1` 只有 `ALL_LOW` 和 `ANY_HIGH`；低电平接线需把 `board::kButtonsActiveHigh` 设为 `false`，退化成 `ext0` 单键唤醒
 - 下一次定时唤醒把 outbox POST 到 `/v1/devices/<id>/acks`，服务端按 `op_id` 去重
 - 电池毫伏随 acks 上报
 
