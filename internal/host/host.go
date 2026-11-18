@@ -178,6 +178,11 @@ type Host struct {
 	stranger string
 	base     string
 
+	funnel       FunnelVerdict
+	funnelTries  int
+	funnelNextAt time.Time
+	funnelBusy   bool
+
 	wake      chan struct{}
 	firstPass string
 
@@ -283,6 +288,7 @@ func (h *Host) ready() {
 		h.kick()
 		if h.funnelEnabled() && !h.dev {
 			go h.probeFunnel()
+			h.scheduleFunnelRetry()
 		}
 	})
 
@@ -323,10 +329,13 @@ func (h *Host) ready() {
 	h.srv.OnSettingsChanged(func(old, new map[string]string) {
 		if old["funnel"] != new["funnel"] {
 			if new["funnel"] == "true" {
-				go h.startFunnel()
+				go h.continueFunnel()
 			} else {
 				go h.stopFunnel()
 			}
+		}
+		if old["funnel_request"] != new["funnel_request"] && new["funnel"] == "true" {
+			go h.continueFunnel()
 		}
 		h.kick()
 	})
@@ -451,6 +460,32 @@ func (h *Host) setting(key string) string {
 
 func (h *Host) funnelEnabled() bool { return h.setting("funnel") == "true" }
 
+func (h *Host) funnelVerdict() FunnelVerdict {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.funnel
+}
+
+func (h *Host) setFunnelVerdict(v FunnelVerdict) {
+	h.mu.Lock()
+	if h.funnel == v {
+		h.mu.Unlock()
+		return
+	}
+	h.funnel = v
+	h.mu.Unlock()
+	go func() {
+		_, err := h.srv.UpdateSettings(context.Background(), map[string]string{
+			"funnel_state":  string(v.State),
+			"funnel_action": v.ActionURL,
+			"funnel_detail": v.Detail,
+		})
+		if err != nil {
+			h.log.Printf("host: funnel state: %v", err)
+		}
+	}()
+}
+
 func (h *Host) applyLoginItem(on bool) {
 	if mygo.App.OpenAtLogin() == on {
 		return
@@ -478,9 +513,15 @@ func (h *Host) title() string {
 
 func (h *Host) iconForState() []byte {
 	h.mu.Lock()
-	ok, tailnet := h.funnelOK, h.tailnet
+	ok := h.funnelOK
+	state := h.funnel.State
 	h.mu.Unlock()
-	if h.dev || !h.funnelEnabled() || ok || tailnet == "missing" {
+	if h.dev || !h.funnelEnabled() || ok {
+		return h.iconNormal
+	}
+	// A missing binary is not an error until the user turns the feature on;
+	// every other enabled-but-not-connected state gets the alert badge.
+	if state == FunnelMissing || state == "" {
 		return h.iconNormal
 	}
 	return h.iconError
@@ -715,18 +756,23 @@ func (h *Host) buildMenu() *mygo.Menu {
 		statusLabel = "服务：原端口被占用，已改用 " + h.srv.Port()
 	}
 	h.mu.Lock()
-	ok, tailnet, stranger := h.funnelOK, h.tailnet, h.stranger
+	stranger := h.stranger
 	h.mu.Unlock()
 	if stranger != "" {
 		statusLabel = "服务：端口被占用（" + stranger + "）"
 	}
+	verdict := h.funnelVerdict()
 	funnelLabel := "外网：关闭"
 	switch {
 	case h.dev:
 		funnelLabel = "外网：开发模式不接管"
-	case tailnet == "missing":
-		funnelLabel = "外网：未安装 Tailscale"
-	case funnelOn && ok:
+	case verdict.State == FunnelMissing:
+		funnelLabel = "外网：未安装/不支持的 Tailscale（点击安装）"
+	case verdict.State == FunnelLoggedOut:
+		funnelLabel = "外网：Tailscale 未登录（点击授权）"
+	case verdict.State == FunnelNeedsSetup:
+		funnelLabel = "外网：需要开启 HTTPS/Funnel（点击继续）"
+	case funnelOn && verdict.State == FunnelOn:
 		funnelLabel = "外网：已开启"
 	case funnelOn:
 		funnelLabel = "外网：正在连接"
@@ -751,6 +797,10 @@ func (h *Host) buildMenu() *mygo.Menu {
 				}
 				h.kick()
 			},
+		},
+		{
+			Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() },
 		},
 		{
 			Label: "外网地址", Disabled: funnelHost == "",
@@ -836,12 +886,33 @@ func drawIcon(alert bool) []byte {
 	return b.Bytes()
 }
 
+// collectFunnel gathers the two command outputs the state machine needs.
+func (h *Host) collectFunnel() FunnelInput {
+	bin, err := tailscaleBinary()
+	in := FunnelInput{BinaryFound: err == nil, BinaryPath: bin}
+	if err != nil {
+		return in
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, bin, "status", "--json").Output(); err == nil {
+		in.StatusJSON = out
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	out, err := exec.CommandContext(ctx2, bin, "funnel", "status").CombinedOutput()
+	in.FunnelOutput = string(out)
+	in.FunnelErr = err != nil
+	return in
+}
+
+// startFunnel only runs `funnel --bg` when the state machine says the setup
+// is complete. Repeated --bg calls after a missing login/capability are what
+// burn the Let's Encrypt certificate rate limit.
 func (h *Host) startFunnel() {
 	if h.dev {
 		return
 	}
-	// Tailscale dials 127.0.0.1 for this port; if another program answers
-	// there, the public URL would serve that program instead of Today.
 	if hp := h.strangerOn(); hp != "" {
 		h.log.Printf("host: funnel refused: %s answers but is not Today", hp)
 		h.mu.Lock()
@@ -851,11 +922,29 @@ func (h *Host) startFunnel() {
 		h.kick()
 		return
 	}
+	in := h.collectFunnel()
+	verdict := DiagnoseFunnel(in)
+	if verdict.State != FunnelConnecting && verdict.State != FunnelOn {
+		h.setFunnelVerdict(verdict)
+		h.mu.Lock()
+		h.funnelOK = false
+		h.mu.Unlock()
+		h.kick()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	out, err := h.runTailscale(ctx, "funnel", "--bg", h.port())
+	bin, err := tailscaleBinary()
 	if err != nil {
-		h.log.Printf("host: funnel on: %v: %s", err, strings.TrimSpace(out))
+		h.setFunnelVerdict(FunnelVerdict{State: FunnelMissing, ActionURL: funnelDownloadURL(), Detail: "未找到 Tailscale CLI"})
+		return
+	}
+	out, err := exec.CommandContext(ctx, bin, "funnel", "--bg", h.port()).CombinedOutput()
+	if err != nil {
+		h.log.Printf("host: funnel on: %v: %s", err, strings.TrimSpace(string(out)))
+		in.FunnelOutput = string(out)
+		in.FunnelErr = true
+		h.setFunnelVerdict(DiagnoseFunnel(in))
 		h.mu.Lock()
 		h.funnelOK = false
 		h.mu.Unlock()
@@ -863,6 +952,61 @@ func (h *Host) startFunnel() {
 		return
 	}
 	h.probeFunnel()
+}
+
+// continueFunnel is the single click path shared by the tray and the settings
+// page: it opens whatever URL the current failure needs, or starts the retry
+// when the tailnet is ready.
+func (h *Host) continueFunnel() {
+	if h.dev {
+		return
+	}
+	in := h.collectFunnel()
+	verdict := DiagnoseFunnel(in)
+	h.setFunnelVerdict(verdict)
+	switch verdict.State {
+	case FunnelMissing:
+		if verdict.ActionURL != "" {
+			_ = mygo.Shell.OpenExternal(verdict.ActionURL)
+		}
+	case FunnelLoggedOut:
+		go h.beginLogin(verdict.ActionURL)
+	case FunnelNeedsSetup:
+		if verdict.ActionURL != "" {
+			_ = mygo.Shell.OpenExternal(verdict.ActionURL)
+		}
+	case FunnelOn:
+		if verdict.ActionURL != "" {
+			_ = mygo.Shell.OpenExternal(verdict.ActionURL)
+		}
+	default:
+		go h.startFunnel()
+	}
+	h.kick()
+}
+
+// beginLogin runs `tailscale up` off the main loop, then opens the auth URL
+// from its output or from the status JSON it leaves behind.
+func (h *Host) beginLogin(fallback string) {
+	bin, err := tailscaleBinary()
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, bin, "up").CombinedOutput()
+	if m := loginURL.FindString(string(out)); m != "" {
+		_ = mygo.Shell.OpenExternal(m)
+		return
+	}
+	in := h.collectFunnel()
+	if v := DiagnoseFunnel(in); v.ActionURL != "" {
+		_ = mygo.Shell.OpenExternal(v.ActionURL)
+		return
+	}
+	if fallback != "" {
+		_ = mygo.Shell.OpenExternal(fallback)
+	}
 }
 
 // port is the port Tailscale should forward, taken from the live listener so a
@@ -886,6 +1030,7 @@ func (h *Host) stopFunnel() {
 	h.mu.Lock()
 	h.funnelOK = false
 	h.mu.Unlock()
+	h.setFunnelVerdict(FunnelVerdict{})
 	if _, err := h.srv.UpdateSettings(context.Background(), map[string]string{"funnel_host": ""}); err != nil {
 		h.log.Printf("host: clear funnel host: %v", err)
 	}
@@ -893,28 +1038,37 @@ func (h *Host) stopFunnel() {
 }
 
 func (h *Host) probeFunnel() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := h.runTailscale(ctx, "funnel", "status")
+	in := h.collectFunnel()
+	verdict := DiagnoseFunnel(in)
+	h.setFunnelVerdict(verdict)
 	url := ""
-	if m := funnelURL.FindString(out); m != "" {
-		url = m
+	if verdict.State == FunnelOn {
+		url = funnelStatusURL.FindString(in.FunnelOutput)
+		if url == "" {
+			url = verdict.ActionURL
+		}
 	}
 	h.mu.Lock()
-	prevOK, prevFails := h.funnelOK, h.fails
-	if err != nil || url == "" {
-		h.fails++
-		h.funnelOK = false
-	} else {
-		h.fails = 0
+	prevOK := h.funnelOK
+	if verdict.State == FunnelOn && url != "" {
 		h.funnelOK = true
+		h.fails = 0
+		h.funnelTries = 0
+		h.funnelNextAt = time.Time{}
+	} else {
+		h.funnelOK = false
+		h.fails++
 	}
-	ok, fails := h.funnelOK, h.fails
+	ok := h.funnelOK
 	h.mu.Unlock()
 	if h.tray != nil {
 		h.tray.SetIcon(h.iconForState(), true)
 	}
-	if prevOK != ok || (url != "" && url != h.setting("funnel_host")) || (err != nil && prevFails < 3 && fails >= 3) {
+	changed := prevOK != ok
+	if url != "" && url != h.setting("funnel_host") {
+		changed = true
+	}
+	if changed {
 		diff := map[string]string{}
 		if url != "" {
 			diff["funnel_host"] = url
@@ -926,6 +1080,44 @@ func (h *Host) probeFunnel() {
 		}
 		h.kick()
 	}
+}
+
+// scheduleFunnelRetry implements 1 -> 2 -> 5 min backoff for a box that is
+// checked on but not connected yet. `funnel reset` is never called here.
+func (h *Host) scheduleFunnelRetry() {
+	if h.dev || !h.funnelEnabled() {
+		return
+	}
+	h.mu.Lock()
+	v := h.funnel
+	busy := h.funnelBusy
+	h.mu.Unlock()
+	if busy || v.State == FunnelOn || v.State == FunnelMissing || v.State == FunnelLoggedOut || v.State == FunnelNeedsSetup {
+		return
+	}
+	now := time.Now()
+	if !h.funnelNextAt.IsZero() && now.Before(h.funnelNextAt) {
+		return
+	}
+	h.mu.Lock()
+	h.funnelBusy = true
+	tries := h.funnelTries
+	h.funnelTries++
+	delay := []time.Duration{time.Minute, 2 * time.Minute, 5 * time.Minute}
+	step := tries
+	if step >= len(delay) {
+		step = len(delay) - 1
+	}
+	h.funnelNextAt = now.Add(delay[step])
+	h.mu.Unlock()
+	go func() {
+		defer func() {
+			h.mu.Lock()
+			h.funnelBusy = false
+			h.mu.Unlock()
+		}()
+		h.startFunnel()
+	}()
 }
 
 func (h *Host) runTailscale(ctx context.Context, args ...string) (string, error) {
