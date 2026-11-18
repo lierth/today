@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -138,9 +139,12 @@ func runPreview(args []string) error {
 			return err
 		}
 	}
+	items = displayOrder(items)
 	in := frame.Input{Now: now, Items: frameItems(items), CursorRow: -1, CursorStyle: frame.CursorStyleInvert}
 	if *demo {
-		in.CursorRow, in.CursorStyle = 1, frame.CursorStyleStrike
+		// Match the device: the cursor is a whole-row inversion, not a strike
+		// (a strike means done).
+		in.CursorRow, in.CursorStyle = 1, frame.CursorStyleInvert
 	}
 	f, err := frame.Build(in)
 	if err != nil {
@@ -158,8 +162,25 @@ func runPreview(args []string) error {
 	} else if _, err := file.Write(f.Encoded); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %dx%d rows=%d bitmap=%dB\n", *out, f.Width, f.Height, len(f.Rows), len(f.Bitmap))
+	fmt.Printf("%s: %dx%d rows=%d widgets=%d bitmap=%dB\n", *out, f.Width, f.Height, len(f.Rows), len(f.Widgets), len(f.Bitmap))
 	return nil
+}
+
+// displayOrder mirrors the store's SQL ordering (pinned first, done last,
+// then start time) so preview --demo matches a real frame.
+func displayOrder(items []store.Item) []store.Item {
+	out := append([]store.Item(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Pinned != b.Pinned {
+			return a.Pinned
+		}
+		if ad, bd := a.Done(), b.Done(); ad != bd {
+			return !ad
+		}
+		return a.SortKey < b.SortKey
+	})
+	return out
 }
 
 func frameItems(items []store.Item) []frame.Item {
@@ -182,12 +203,14 @@ func demoItems(now time.Time) []store.Item {
 		t := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
 		return &t
 	}
+	// Deliberately unsorted: the preview must apply the same order a frame
+	// does (pinned, then open before done, then start time).
 	return []store.Item{
-		{ID: "1", Title: "晨会：同步本周排期", StartsAt: at(9, 30), AllDay: false, Status: store.StatusOpen},
-		{ID: "2", Title: "写完墨水屏帧协议的文档和示例", StartsAt: at(10, 0), Status: store.StatusOpen},
-		{ID: "3", Title: "给服务端补上 ETag / 304 的逻辑", StartsAt: at(14, 30), Status: store.StatusOpen},
-		{ID: "4", Title: "一个特别特别长的标题，用来验证截断和省略号是否正常", Status: store.StatusDone, StartsAt: at(9, 0)},
-		{ID: "5", Title: "晚饭后散步 30 分钟", StartsAt: at(19, 0), Status: store.StatusOpen},
+		{ID: "4", Title: "一个特别特别长的标题，用来验证截断和省略号是否正常", Status: store.StatusDone, StartsAt: at(9, 0), SortKey: at(9, 0).Unix()},
+		{ID: "5", Title: "晚饭后散步 30 分钟", StartsAt: at(19, 0), Status: store.StatusOpen, Pinned: true, SortKey: at(19, 0).Unix()},
+		{ID: "1", Title: "晨会：同步本周排期", StartsAt: at(9, 30), AllDay: false, Status: store.StatusOpen, SortKey: at(9, 30).Unix()},
+		{ID: "3", Title: "给服务端补上 ETag / 304 的逻辑", StartsAt: at(14, 30), Status: store.StatusOpen, SortKey: at(14, 30).Unix()},
+		{ID: "2", Title: "写完墨水屏帧协议的文档和示例", StartsAt: at(10, 0), Status: store.StatusOpen, SortKey: at(10, 0).Unix()},
 	}
 }
 
@@ -203,6 +226,17 @@ func runDecode(args []string) error {
 	if err != nil {
 		return err
 	}
+	type widget struct {
+		Kind string `json:"kind"`
+		X    int    `json:"x"`
+		Y    int    `json:"y"`
+		W    int    `json:"w"`
+		H    int    `json:"h"`
+	}
+	names := map[uint8]string{
+		frame.WidgetClock: "clock", frame.WidgetWifi: "wifi",
+		frame.WidgetClimate: "climate", frame.WidgetPower: "power",
+	}
 	out := struct {
 		Width    int      `json:"width"`
 		Height   int      `json:"height"`
@@ -211,6 +245,7 @@ func runDecode(args []string) error {
 		Style    int      `json:"cursor_style"`
 		Rows     int      `json:"row_count"`
 		Footer   int      `json:"footer_count"`
+		Widgets  []widget `json:"widgets"`
 		Bitmap   int      `json:"bitmap_bytes"`
 		Checksum uint32   `json:"crc32"`
 		RowIDs   []string `json:"row_ids"`
@@ -219,6 +254,11 @@ func runDecode(args []string) error {
 		Cursor: int(f.CursorRow), Style: int(f.CursorStyle),
 		Rows: len(f.Rows), Footer: len(f.Footer),
 		Bitmap: len(f.Bitmap), Checksum: f.EncodedChecksum,
+	}
+	for _, w := range f.Widgets {
+		out.Widgets = append(out.Widgets, widget{
+			Kind: names[w.Kind], X: int(w.X), Y: int(w.Y), W: int(w.W), H: int(w.H),
+		})
 	}
 	for _, row := range f.Rows {
 		out.RowIDs = append(out.RowIDs, shortID(row.UUID))

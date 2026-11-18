@@ -113,6 +113,17 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	if got.CursorRow != f.CursorRow || got.CursorStyle != f.CursorStyle {
 		t.Fatalf("cursor: got %d/%d want %d/%d", got.CursorRow, got.CursorStyle, f.CursorRow, f.CursorStyle)
 	}
+	if f.FooterH != 0 || f.HeaderH != 44 {
+		t.Fatalf("v2 geometry: header %d footer %d", f.HeaderH, f.FooterH)
+	}
+	if len(f.Widgets) != 4 || len(got.Widgets) != len(f.Widgets) {
+		t.Fatalf("widgets: got %d want %d", len(got.Widgets), len(f.Widgets))
+	}
+	for i := range f.Widgets {
+		if got.Widgets[i] != f.Widgets[i] {
+			t.Fatalf("widget %d: got %+v want %+v", i, got.Widgets[i], f.Widgets[i])
+		}
+	}
 }
 
 func TestDecodeRejectsCorruption(t *testing.T) {
@@ -132,6 +143,36 @@ func TestDecodeRejectsCorruption(t *testing.T) {
 	flipped[len(flipped)/2] ^= 0xFF
 	if _, err := Decode(flipped); err == nil {
 		t.Fatal("corrupt payload decoded")
+	}
+}
+
+// The server must leave every widget rectangle blank: the device draws those
+// pixels, and a preview-only sample must never change the encoded frame.
+func TestWidgetRectsAreBlank(t *testing.T) {
+	f, err := Build(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stride := f.Stride()
+	for _, w := range f.Widgets {
+		for y := int(w.Y); y < int(w.Y+w.H); y++ {
+			for x := int(w.X); x < int(w.X+w.W); x++ {
+				if f.Bitmap[y*stride+x/8]&(1<<(7-uint(x%8))) != 0 {
+					t.Fatalf("widget %d pixel (%d,%d) is black in the encoded frame", w.Kind, x, y)
+				}
+			}
+		}
+	}
+}
+
+// The header height dropped to 44 and the footer is gone in v2; ten rows must
+// still fit above the bottom edge.
+func TestLayoutV2FitsTenRows(t *testing.T) {
+	if HeaderHeight+maxRows*RowHeight > Height {
+		t.Fatalf("header %d + %d rows x %d exceeds panel height %d", HeaderHeight, maxRows, RowHeight, Height)
+	}
+	if FooterHeight != 0 {
+		t.Fatalf("footer height: got %d want 0", FooterHeight)
 	}
 }
 

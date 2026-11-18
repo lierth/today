@@ -14,19 +14,42 @@ import (
 // Contract constants, shared with the firmware (docs/PLAN.md §5.2).
 const (
 	Magic         = "TBF1"
-	FormatVersion = 2
+	FormatVersion = 3
 	BitDepth      = 1
 
 	Width  = 400
 	Height = 300
 
 	RowHeight    = 24
-	HeaderHeight = 32
-	FooterHeight = 28
+	HeaderHeight = 44
+	FooterHeight = 0
 
 	ContentX     = 16
 	ContentWidth = 368
 )
+
+// Widget kinds. The device fills these rectangles itself; the server leaves
+// them blank so minute-level updates never change the ETag (PLAN §5.2).
+const (
+	WidgetClock   = 1 // HH:MM
+	WidgetWifi    = 2
+	WidgetClimate = 3 // temperature + humidity
+	WidgetPower   = 4 // battery / USB
+)
+
+// WidgetRects is the v2 layout: clock on the far right, wifi and power share
+// the row above climate on its left (spec-statusbar.md "定稿版式 v2").
+//
+//	clock   (320, 6, 64, 32)
+//	wifi    (232, 4, 40, 14)
+//	power   (276, 4, 40, 14)
+//	climate (232, 20, 84, 14)
+var WidgetRects = []Widget{
+	{Kind: WidgetClock, X: 320, Y: 6, W: 64, H: 32},
+	{Kind: WidgetWifi, X: 232, Y: 4, W: 40, H: 14},
+	{Kind: WidgetPower, X: 276, Y: 4, W: 40, H: 14},
+	{Kind: WidgetClimate, X: 232, Y: 20, W: 84, H: 14},
+}
 
 // Frame flag bits.
 const (
@@ -62,6 +85,13 @@ const (
 	ActionLongOK  = actionLongOK
 )
 
+// Widget reserves a rectangle the device draws locally.
+type Widget struct {
+	Kind uint8
+	X, Y uint16
+	W, H uint16
+}
+
 // Row binds a bitmap row to an item UUID.
 type Row struct {
 	UUID  [16]byte
@@ -90,6 +120,7 @@ type Frame struct {
 	CursorStyle     uint8
 	Rows            []Row
 	Footer          []Footer
+	Widgets         []Widget
 	Bitmap          []byte
 	Encoded         []byte
 	EncodedChecksum uint32
@@ -110,6 +141,7 @@ func NewFrame() *Frame {
 		ContentW:    ContentWidth,
 		CursorRow:   CursorNone,
 		CursorStyle: CursorStyleInvert,
+		Widgets:     append([]Widget(nil), WidgetRects...),
 	}
 }
 
@@ -119,7 +151,7 @@ func (f *Frame) Encode() ([]byte, error) {
 		return nil, err
 	}
 	var buf bytes.Buffer
-	buf.Grow(64 + len(f.Rows)*20 + len(f.Footer)*2 + int(f.Height)*f.Stride() + 4)
+	buf.Grow(64 + len(f.Rows)*20 + len(f.Footer)*2 + len(f.Widgets)*9 + int(f.Height)*f.Stride() + 4)
 	buf.WriteString(Magic)
 	buf.WriteByte(FormatVersion)
 	buf.WriteByte(BitDepth)
@@ -140,6 +172,13 @@ func (f *Frame) Encode() ([]byte, error) {
 	for _, b := range f.Footer {
 		buf.WriteByte(b.GPIO)
 		buf.WriteByte(b.Action)
+	}
+	buf.WriteByte(byte(len(f.Widgets)))
+	for _, w := range f.Widgets {
+		buf.WriteByte(w.Kind)
+		for _, v := range []uint16{w.X, w.Y, w.W, w.H} {
+			_ = binary.Write(&buf, binary.BigEndian, v)
+		}
 	}
 	buf.Write(f.Bitmap)
 	sum := crc32.ChecksumIEEE(buf.Bytes())
@@ -210,6 +249,23 @@ func Decode(data []byte) (*Frame, error) {
 		f.Footer[i] = Footer{GPIO: data[p], Action: data[p+1]}
 		p += 2
 	}
+	nWidgets := int(data[p])
+	p++
+	need = p + nWidgets*9
+	if len(payload) < need {
+		return nil, errors.New("frame: truncated widgets")
+	}
+	f.Widgets = make([]Widget, nWidgets)
+	for i := range f.Widgets {
+		f.Widgets[i] = Widget{
+			Kind: data[p],
+			X:    binary.BigEndian.Uint16(data[p+1:]),
+			Y:    binary.BigEndian.Uint16(data[p+3:]),
+			W:    binary.BigEndian.Uint16(data[p+5:]),
+			H:    binary.BigEndian.Uint16(data[p+7:]),
+		}
+		p += 9
+	}
 	bitmapLen := f.Stride() * int(f.Height)
 	if len(payload) != p+bitmapLen {
 		return nil, fmt.Errorf("frame: bitmap size %d, want %d", len(payload)-p, bitmapLen)
@@ -229,6 +285,17 @@ func (f *Frame) validate() error {
 	}
 	if len(f.Footer) > 255 {
 		return errors.New("frame: too many footer buttons")
+	}
+	if len(f.Widgets) > 255 {
+		return errors.New("frame: too many widgets")
+	}
+	for _, w := range f.Widgets {
+		if w.Kind == 0 {
+			return errors.New("frame: widget kind 0")
+		}
+		if int(w.X)+int(w.W) > int(f.Width) || int(w.Y)+int(w.H) > int(f.Height) {
+			return fmt.Errorf("frame: widget %d outside panel", w.Kind)
+		}
 	}
 	if got, want := len(f.Bitmap), f.Stride()*int(f.Height); got != want {
 		return fmt.Errorf("frame: bitmap is %d bytes, want %d", got, want)

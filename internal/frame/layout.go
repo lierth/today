@@ -12,9 +12,10 @@ import (
 // Typography (logical pixels; docs/PLAN.md §6).
 const (
 	bodyFontSize   = 18
-	headerFontSize = 22
+	dateFontSize   = 20
+	headerFontSize = 13 // second header line: lunar + progress
 	timeFontSize   = 14
-	footerFontSize = 13
+	emptyHintFont  = 14
 
 	timeColumnWidth = 56
 	gutterWidth     = 6
@@ -58,7 +59,7 @@ func Build(in Input) (*Frame, error) {
 	if err != nil {
 		return nil, err
 	}
-	footer, err := faceAt(px(footerFontSize))
+	hint, err := faceAt(px(emptyHintFont))
 	if err != nil {
 		return nil, err
 	}
@@ -69,10 +70,12 @@ func Build(in Input) (*Frame, error) {
 		f.Flags |= FlagForceFull
 	}
 
-	drawHeader(c, header, timeFace, in.Now)
+	date, err := faceAt(px(dateFontSize))
+	if err != nil {
+		return nil, err
+	}
+	drawHeader(c, date, header, in)
 	c.hlineLogical(0, Width, HeaderHeight, 1, 0)
-	c.hlineLogical(0, Width, Height-FooterHeight, 1, 0)
-	drawFooter(c, footer, in)
 
 	items := in.Items
 	summary := 0
@@ -111,7 +114,7 @@ func Build(in Input) (*Frame, error) {
 		drawSummaryRow(c, body, summary, y, cursor, in.CursorStyle)
 	}
 	if rowCount == 0 {
-		drawEmpty(c, body)
+		drawEmpty(c, body, hint)
 	}
 
 	if in.CursorRow < 0 || in.CursorRow >= rowCount {
@@ -121,11 +124,14 @@ func Build(in Input) (*Frame, error) {
 	}
 	f.CursorStyle = in.CursorStyle
 	f.Rows = rows
+	// The v2 board has two keys: KEY (GPIO18) short = next row, KEY long =
+	// toggle, BOOT (GPIO0) short = forced refresh. The footer strip is not
+	// drawn, but the bindings stay in the frame so the firmware is
+	// layout-agnostic.
 	f.Footer = []Footer{
-		{GPIO: 0, Action: ActionUp},
-		{GPIO: 1, Action: ActionDown},
-		{GPIO: 2, Action: ActionOK},
-		{GPIO: 3, Action: ActionRefresh},
+		{GPIO: 18, Action: ActionDown},
+		{GPIO: 18, Action: ActionLongOK},
+		{GPIO: 0, Action: ActionRefresh},
 	}
 	f.Bitmap = c.bitmap(Width, Height)
 	encoded, err := f.Encode()
@@ -136,29 +142,41 @@ func Build(in Input) (*Frame, error) {
 	return f, nil
 }
 
-func drawHeader(c *canvas, header, small font.Face, now time.Time) {
-	right := fmt.Sprintf("%d月%d日 %s", int(now.Month()), now.Day(), weekdayZH(now.Weekday()))
-	right = truncate(small, sanitize(right), px(ContentWidth/2))
-	c.textBold(header, "今天", px(ContentX), baseline(header, 0, HeaderHeight), 0)
-	w := font.MeasureString(small, right).Ceil()
-	c.text(small, right, px(ContentX+ContentWidth)-w, baseline(small, 0, HeaderHeight), 0)
-}
+func drawHeader(c *canvas, date, small font.Face, in Input) {
+	// Line 1: 11月18日 周三, 20 px bold.
+	// Use the weekday that belongs to "today", not the locale's week start.
+	line1 := fmt.Sprintf("%d月%d日 %s", int(in.Now.Month()), in.Now.Day(), weekdayZH(in.Now.Weekday()))
+	line1 = truncate(date, sanitize(line1), px(200))
+	c.textBold(date, line1, px(ContentX), baseline(date, 0, 24), 0)
 
-func drawFooter(c *canvas, face font.Face, in Input) {
-	hint := sanitize("↑↓ 选择   OK 勾选   刷新")
-	hint = truncate(face, hint, px(ContentWidth-64))
-	base := baseline(face, Height-FooterHeight, FooterHeight)
-	c.text(face, hint, px(ContentX), base, 0)
-
+	// Line 2: 农历十月廿八 · 小雪 · 2/6, 13 px.
+	lunar := LunarFor(in.Now)
+	line2 := lunar.Label
+	if lunar.Tag != "" {
+		line2 += " · " + lunar.Tag
+	} else if lunar.Festival != "" {
+		line2 += " · " + lunar.Festival
+	}
+	line2 = sanitize(line2)
 	done := 0
 	for _, it := range in.Items {
 		if it.Done {
 			done++
 		}
 	}
-	progress := fmt.Sprintf("%d/%d", done, len(in.Items))
-	w := font.MeasureString(face, progress).Ceil()
-	c.text(face, progress, px(ContentX+ContentWidth)-w, base, 0)
+	// The progress rides at the end of the lunar line: "农历十月十四 · 小雪 · 2/6".
+	// An empty board would read "0/0", which says nothing; omit it.
+	if len(in.Items) > 0 {
+		line2 = fmt.Sprintf("%s · %d/%d", line2, done, len(in.Items))
+	}
+	line2 = truncate(small, line2, px(212))
+	c.text(small, line2, px(ContentX), baseline(small, 22, 18), 0)
+
+	// Widget rectangles are left blank in the real frame; the preview fills
+	// them with sample values (drawWidgetSamples).
+	for _, w := range WidgetRects {
+		c.fillLogical(int(w.X), int(w.Y), int(w.X+w.W), int(w.Y+w.H), 0xFF)
+	}
 }
 
 func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor bool, style uint8, y int) {
@@ -173,13 +191,20 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 	}
 
 	base := baseline(body, y, RowHeight)
+	// Timed and all-day rows share one title column; all-day rows carry a
+	// short marker there instead of a time so the alignment stays obvious.
 	x := ContentX + gutterWidth + gutterGap
+	slot := ""
 	if it.StartsAt != nil && !it.AllDay {
-		ts := it.StartsAt.Format("15:04")
-		tw := font.MeasureString(timeFace, ts).Ceil()
-		c.text(timeFace, ts, px(x+timeColumnWidth)-tw, baseline(timeFace, y, RowHeight), fg)
-		x += timeColumnWidth + timeGap
+		slot = it.StartsAt.Format("15:04")
+	} else if it.AllDay {
+		slot = "全天"
 	}
+	if slot != "" {
+		tw := font.MeasureString(timeFace, slot).Ceil()
+		c.text(timeFace, slot, px(x+timeColumnWidth)-tw, baseline(timeFace, y, RowHeight), fg)
+	}
+	x += timeColumnWidth + timeGap
 	title := truncate(body, sanitize(it.Title), px(ContentX+ContentWidth-x))
 	if title == "" {
 		title = " "
@@ -206,10 +231,19 @@ func drawSummaryRow(c *canvas, face font.Face, n, y int, cursor bool, style uint
 	c.text(face, label, px(ContentX+gutterWidth+gutterGap), baseline(face, y, RowHeight), fg)
 }
 
-func drawEmpty(c *canvas, face font.Face) {
+func drawEmpty(c *canvas, body, hint font.Face) {
 	label := "今天没有事项"
-	w := font.MeasureString(face, label).Ceil()
-	c.text(face, label, px(Width)/2-w/2, baseline(face, 130, RowHeight), 0)
+	w := font.MeasureString(body, label).Ceil()
+	c.text(body, label, px(Width)/2-w/2, baseline(body, 110, RowHeight), 0)
+
+	// The footer strip is gone; the empty board carries the key legend once.
+	keys, err := faceAt(px(emptyHintFont))
+	if err != nil {
+		keys = hint
+	}
+	line := sanitize("KEY 下一项 · 长按勾选 · BOOT 刷新")
+	kw := font.MeasureString(keys, line).Ceil()
+	c.text(keys, line, px(Width)/2-kw/2, baseline(keys, 160, 20), 0)
 }
 
 func baseline(face font.Face, top, height int) int {
