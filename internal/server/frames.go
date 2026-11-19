@@ -58,9 +58,28 @@ func (s *Server) ForceFullRefresh() {
 	s.refreshMu.Unlock()
 }
 
+// ForceRefresh marks one device for a full repaint on its next poll. A test
+// tone uses it so the board paints and rings now instead of waiting for the
+// bitmap to change.
+func (s *Server) ForceRefresh(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	s.refreshMu.Lock()
+	if s.refreshOne == nil {
+		s.refreshOne = make(map[string]bool)
+	}
+	s.refreshOne[deviceID] = true
+	s.refreshMu.Unlock()
+}
+
 func (s *Server) takeForcedRefresh(deviceID string) bool {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	if s.refreshOne[deviceID] {
+		delete(s.refreshOne, deviceID)
+		return true
+	}
 	if !s.refreshAll || s.refreshDone[deviceID] {
 		return false
 	}
@@ -88,7 +107,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	forced := s.takeForcedRefresh(device.ID)
 	clientForce := r.URL.Query().Get("force") == "1"
 	force := clientForce || forced
-	fr, err := s.buildFrame(ctx, now, -1, force)
+	fr, err := s.buildFrame(ctx, r, now, -1, force)
 	if err != nil {
 		s.log.Printf("server: frame: %v", err)
 		http.Error(w, "render", http.StatusInternalServerError)
@@ -134,6 +153,17 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.Set("X-Refresh", "0")
 	}
+	// Reminders and sound settings ride in headers: they change far more often
+	// than the bitmap and must not disturb the ETag.
+	h.Set("X-Alarms", s.alarmList(ctx, now))
+	h.Set("X-Sound", s.soundPolicy(ctx))
+	// A test tone the settings page or the tray asked for on this device.
+	if s.takePreview(id) {
+		h.Set("X-Sound-Preview", "1")
+		// The board should hear it now, not in a minute: mark it for a
+		// refresh on this very response.
+		h.Set("X-Refresh", "1")
+	}
 	h.Set("Cache-Control", "no-cache")
 
 	_ = s.st.TouchDevice(ctx, id, 0)
@@ -177,7 +207,11 @@ func minutesOfDay(hhmm string) (int, bool) {
 }
 
 // buildFrame renders today's board. GET never writes to the database.
-func (s *Server) buildFrame(ctx context.Context, now time.Time, cursor int, force bool) (*frame.Frame, error) {
+func (s *Server) buildFrame(ctx context.Context, r *http.Request, now time.Time, cursor int, force bool) (*frame.Frame, error) {
+	deviceID := ""
+	if r != nil {
+		deviceID = r.PathValue("id")
+	}
 	items, err := s.st.ItemsOn(ctx, now.Format(store.DateLayout))
 	if err != nil {
 		return nil, err
@@ -194,7 +228,13 @@ func (s *Server) buildFrame(ctx context.Context, now time.Time, cursor int, forc
 			AllDay:   it.AllDay,
 			Pinned:   it.Pinned,
 			StartsAt: it.StartsAt,
+			Carried:  it.CarriedFrom != "",
 		})
+	}
+	// Weather is best effort: a failure here must never stop the frame.
+	var w frame.Weather
+	if r != nil {
+		w = s.headerWeather(ctx, r, deviceID)
 	}
 	return frame.Build(frame.Input{
 		Now:         now,
@@ -202,6 +242,7 @@ func (s *Server) buildFrame(ctx context.Context, now time.Time, cursor int, forc
 		CursorRow:   cursor,
 		CursorStyle: frame.CursorStyleInvert,
 		ForceFull:   force,
+		Weather:     w,
 	})
 }
 
@@ -241,6 +282,8 @@ type ackRequest struct {
 	FrameSeq  int64   `json:"frame_seq"`
 	BatteryMV int     `json:"battery_mv,omitempty"`
 	Power     string  `json:"power,omitempty"` // usb | battery | charging
+	TempC     float64 `json:"temp_c,omitempty"`
+	Humidity  float64 `json:"humidity,omitempty"`
 	Ops       []ackOp `json:"ops"`
 }
 
@@ -308,6 +351,9 @@ func (s *Server) handleAcks(w http.ResponseWriter, r *http.Request) {
 	if req.Power != "" {
 		_, _ = s.UpdateSettings(ctx, map[string]string{"power_state": req.Power})
 	}
+	if req.TempC != 0 || req.Humidity != 0 {
+		_ = s.st.TouchClimate(ctx, id, req.TempC, req.Humidity)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -327,7 +373,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cursor, _ = strconv.Atoi(raw)
 	}
-	fr, err := s.buildFrame(ctx, time.Now().In(loc), cursor, false)
+	fr, err := s.buildFrame(ctx, r, time.Now().In(loc), cursor, false)
 	if err != nil {
 		http.Error(w, "render", http.StatusInternalServerError)
 		return

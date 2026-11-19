@@ -41,7 +41,7 @@ func TestConfigFileSetsListenAddr(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a, _, err := Boot(ctx, Config{DBPath: db, Dev: true, Logger: quietLogger()})
+	a, _, err := Boot(ctx, Config{DBPath: db, Dev: true, Logger: quietLogger(), SkipCloud: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestFlagBeatsConfigFile(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a, _, err := Boot(ctx, Config{Addr: "127.0.0.1:0", DBPath: db, Dev: true, Logger: quietLogger()})
+	a, _, err := Boot(ctx, Config{Addr: "127.0.0.1:0", DBPath: db, Dev: true, Logger: quietLogger(), SkipCloud: true})
 	if err != nil {
 		t.Fatalf("flag should win over a bad config port: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestBrokenConfigFileFailsLoudly(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, _, err := Boot(ctx, Config{DBPath: db, Dev: true, Logger: quietLogger()}); err == nil {
+	if _, _, err := Boot(ctx, Config{DBPath: db, Dev: true, Logger: quietLogger(), SkipCloud: true}); err == nil {
 		t.Fatal("want an error for a broken config file")
 	}
 }
@@ -107,7 +107,7 @@ func TestSetListenAddrPersistsAndRebinds(t *testing.T) {
 	db := filepath.Join(dir, "today.db")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a, _, err := Boot(ctx, Config{Addr: freeAddr(t), DBPath: db, Dev: true, Logger: quietLogger()})
+	a, _, err := Boot(ctx, Config{Addr: freeAddr(t), DBPath: db, Dev: true, Logger: quietLogger(), SkipCloud: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"image/png"
 	"log"
 	"net"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"today/internal/keychain"
 	"today/internal/server"
 )
 
@@ -172,11 +172,15 @@ type Host struct {
 
 	mu       sync.Mutex
 	settings map[string]string
+	devices  []server.HostDevice // last fetched, for the alert dot and the menu
 	funnelOK bool
 	fails    int
 	tailnet  string
 	stranger string
 	base     string
+
+	localNet   LocalNetworkState
+	localNetAt time.Time
 
 	funnel       FunnelVerdict
 	funnelTries  int
@@ -189,6 +193,11 @@ type Host struct {
 	updating  bool
 	latest    string
 	updateURL string
+	updater   updater
+	// quit and verify are hooks for the update tests: nil means the real
+	// mygo.App.Quit and release.VerifyDesignatedRequirement.
+	quit   func()
+	verify func(newApp, currentApp string) error
 
 	release  func()
 	shutdown func() error
@@ -232,8 +241,8 @@ func (h *Host) Run() error {
 }
 
 func (h *Host) ready() {
-	h.iconNormal = drawIcon(false)
-	h.iconError = drawIcon(true)
+	h.iconNormal = trayIcon(trayPNG, false)
+	h.iconError = trayIcon(trayPNG, true)
 	settings, err := h.srv.Settings(context.Background())
 	if err != nil {
 		h.log.Printf("host: settings: %v", err)
@@ -280,6 +289,9 @@ func (h *Host) ready() {
 		if e.SessionEnding {
 			reason = "session end"
 		}
+		// Quitting is also when a verified update gets installed, if one is
+		// waiting: the script waits for this PID, so starting it here is safe.
+		h.maybeInstallOnQuit()
 		h.close(reason)
 	})
 
@@ -315,16 +327,26 @@ func (h *Host) ready() {
 	}
 	h.tray = tray
 	if h.firstPass != "" {
-		mygo.Clipboard.WriteText(h.firstPass)
+		pw := h.firstPass
+		h.firstPass = ""
+		// The plaintext lives in the keychain from here on; the database only
+		// keeps its hash. The notification deliberately carries no password:
+		// notification history survives on the lock screen and in Notification
+		// Centre, which is exactly where a login secret must not be.
+		if err := keychain.Set(context.Background(), pw); err != nil {
+			h.log.Printf("host: %v", err)
+		}
+		mygo.Clipboard.WriteText(pw)
+		h.scheduleClipboardClear(pw)
 		if mygo.NotificationsSupported() {
 			mygo.NewNotification(mygo.NotificationOptions{
 				ID:    "today-first-run",
 				Title: "Today 已就绪",
-				Body:  "首次启动口令已复制到剪贴板：" + h.firstPass,
+				Body:  "首次启动口令已复制到剪贴板，60 秒后自动清除；之后可从托盘菜单再复制。",
 			}).Show()
 		}
-		h.open("/login")
-		h.firstPass = ""
+		// The person is at this Mac: skip the password form entirely.
+		h.openLocal("/app")
 	}
 	h.srv.OnSettingsChanged(func(old, new map[string]string) {
 		if old["funnel"] != new["funnel"] {
@@ -337,12 +359,121 @@ func (h *Host) ready() {
 		if old["funnel_request"] != new["funnel_request"] && new["funnel"] == "true" {
 			go h.continueFunnel()
 		}
+		if old["localnet_request"] != new["localnet_request"] {
+			h.openLocalNetworkSettings()
+		}
 		h.kick()
 	})
 	if settings["funnel"] == "true" && !h.dev {
 		go h.startFunnel()
 	}
+	// A password reset from the web page rotates the hash; mirror the new
+	// plaintext into the keychain in the same breath, or the copy button would
+	// go stale until the next launch.
+	h.srv.SetPasswordHook(func(pw string) {
+		if err := keychain.Set(context.Background(), pw); err != nil {
+			h.log.Printf("host: %v", err)
+		}
+	})
+
+	// A leftover Today.app.old from the previous update is removed once this
+	// version has been running for a while (the check is cheap and idempotent).
+	go h.signalStarted()
+	// Ask for local network access on first launch instead of the first time a
+	// board times out: the alert belongs to the person's first minute with the
+	// app, and macOS only asks when the app dials a LAN address (TN3179).
+	go h.probeLocalNetwork(true)
 	go h.loop()
+	go h.updateLoop()
+}
+
+// probeLocalNetwork dials our own LAN address. With `announce` the result goes
+// to the log and (once) to the settings page; the recurring probe stays quiet.
+func (h *Host) probeLocalNetwork(announce bool) {
+	if h.dev {
+		// A command-line process is not subject to local network privacy.
+		h.setLocalNetwork(LocalNetworkOK, time.Time{})
+		return
+	}
+	timeout := time.Second
+	if announce {
+		// The first probe waits for the alert: macOS holds the connection
+		// until the person answers, and a short timeout would record "unknown"
+		// while the dialog is still on screen.
+		timeout = 2 * time.Minute
+	}
+	state, target := TriggerLocalNetwork(h.srv.Port(), timeout)
+	if state == LocalNetworkUnknown && !announce {
+		// A transient timeout (sleep, Wi-Fi reassociating) must not replace a
+		// known-good answer with a warning.
+		h.mu.Lock()
+		prev := h.localNet
+		h.mu.Unlock()
+		if prev == LocalNetworkOK {
+			return
+		}
+	}
+	h.setLocalNetwork(state, time.Now())
+	if announce {
+		h.log.Printf("host: local network access: %s (%s)", state, target)
+	}
+}
+
+func (h *Host) setLocalNetwork(s LocalNetworkState, at time.Time) {
+	h.mu.Lock()
+	prev := h.localNet
+	h.localNet = s
+	if !at.IsZero() {
+		h.localNetAt = at
+	}
+	h.mu.Unlock()
+	if prev == s {
+		return
+	}
+	_, err := h.srv.UpdateSettings(context.Background(), map[string]string{
+		"localnet_state":  string(s),
+		"localnet_detail": LocalNetworkExplanation(s, LocalNetworkTarget()),
+		"localnet_adhoc":  boolString(AdhocSigned()),
+	})
+	if err != nil {
+		h.log.Printf("host: local network state: %v", err)
+	}
+}
+
+func (h *Host) localNetworkState() LocalNetworkState {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.localNet
+}
+
+// RequestLocalNetwork is the one path behind the menu item and the settings
+// button: trigger again, and if the answer is still no, open the pane where
+// the switch lives. macOS cannot show the alert twice.
+func (h *Host) RequestLocalNetwork() {
+	if h.dev {
+		return
+	}
+	state, _ := TriggerLocalNetwork(h.srv.Port(), time.Second)
+	h.setLocalNetwork(state, time.Now())
+	if state == LocalNetworkOK {
+		h.notify("本地网络已允许", "手机和显示屏现在可以连入。")
+		h.kick()
+		return
+	}
+	_ = mygo.Shell.OpenExternal(localNetworkURL)
+	h.kick()
+}
+
+// openLocalNetworkSettings is what the settings page's button pokes through.
+func (h *Host) openLocalNetworkSettings() {
+	go func() {
+		state, _ := TriggerLocalNetwork(h.srv.Port(), time.Second)
+		h.setLocalNetwork(state, time.Now())
+		if state != LocalNetworkOK {
+			_ = mygo.Shell.OpenExternal(localNetworkURL)
+		}
+		h.kick()
+	}()
 }
 
 // cachedBase is the last verified loopback prefix. Menu building must never
@@ -413,6 +544,7 @@ func (h *Host) loop() {
 			if h.funnelEnabled() && !h.dev {
 				go h.probeFunnel()
 			}
+			go h.probeLocalNetwork(false)
 			h.refresh()
 		case <-h.wake:
 			h.refresh()
@@ -430,6 +562,15 @@ func (h *Host) refresh() {
 	if changed {
 		h.applyLoginItem(settings["open_at_login"] == "true")
 	}
+	// Cache the device list the menu will show; the alert dot and the menu
+	// then agree without a second database read.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if devices, err := h.srv.Devices(ctx); err == nil {
+		h.mu.Lock()
+		h.devices = devices
+		h.mu.Unlock()
+	}
+	cancel()
 	if h.tray != nil {
 		h.tray.SetTitle(h.title())
 		h.tray.SetIcon(h.iconForState(), true)
@@ -486,6 +627,70 @@ func (h *Host) setFunnelVerdict(v FunnelVerdict) {
 	}()
 }
 
+// scheduleClipboardClear empties the clipboard after a minute, but only if it
+// still holds what we put there. A person who copied a URL in between keeps it.
+func (h *Host) scheduleClipboardClear(copied string) {
+	go func() {
+		select {
+		case <-h.done:
+			return
+		case <-time.After(60 * time.Second):
+		}
+		if clipboardClearDue(mygo.Clipboard.ReadText(), copied) {
+			mygo.Clipboard.WriteText("")
+		}
+	}()
+}
+
+// CopyPassword is the tray action: copy, schedule the wipe, and say so
+// without repeating the secret.
+func (h *Host) CopyPassword() {
+	pw, err := CopyablePassword(context.Background(), h.srv)
+	if err != nil {
+		h.log.Printf("host: copy password: %v", err)
+		return
+	}
+	mygo.Clipboard.WriteText(pw)
+	h.scheduleClipboardClear(pw)
+	if mygo.NotificationsSupported() {
+		mygo.NewNotification(mygo.NotificationOptions{
+			ID:    "today-copy-password",
+			Title: "登录口令已复制",
+			Body:  "60 秒后自动清除剪贴板；口令在钥匙串里，随时可从菜单再复制。",
+		}).Show()
+	}
+}
+
+// openLocal opens a page through a one-shot link instead of a password prompt.
+// Falling back to /login keeps the menu working when signing fails.
+func (h *Host) openLocal(path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	link, err := h.srv.LocalLoginToken(ctx, path, time.Now())
+	if err != nil {
+		h.log.Printf("host: local link: %v", err)
+		h.open(path)
+		return
+	}
+	if err := mygo.Shell.OpenExternal(h.baseURL() + link); err != nil {
+		h.log.Printf("host: open %s: %v", path, err)
+	}
+}
+
+func (h *Host) passwordUsable() bool {
+	_, err := CopyablePassword(context.Background(), h.srv)
+	return err == nil
+}
+
+// loginLabel spells out why the copy item is grey: a stale keychain copy is
+// repaired from the settings page, and the label says which page.
+func loginLabel(usable bool) string {
+	if usable {
+		return "复制登录口令"
+	}
+	return "复制登录口令（不可用：口令已在别处修改，到设置页重设一次即可）"
+}
+
 func (h *Host) applyLoginItem(on bool) {
 	if mygo.App.OpenAtLogin() == on {
 		return
@@ -497,12 +702,76 @@ func (h *Host) applyLoginItem(on bool) {
 
 // title is "done/total" padded with figure spaces so the menu bar does not
 // jitter between one- and two-digit counts.
-func (h *Host) title() string {
+// trayMode resolves the menu-bar title style. tray_mode is the current key;
+// the old boolean tray_title is still read so an existing database keeps its
+// choice after the upgrade.
+func (h *Host) trayMode() string {
+	if v := h.setting("tray_mode"); v != "" {
+		return v
+	}
 	if h.setting("tray_title") == "false" {
+		return "icon"
+	}
+	return "progress"
+}
+
+// nextItem is the first item that is neither done nor overdue: "10:00 站会".
+// It returns "" when everything is done (the caller shows ✓) or the list is
+// empty.
+func (h *Host) nextItem(items []server.HostItem) string {
+	now := time.Now()
+	var best *server.HostItem
+	for i := range items {
+		it := items[i]
+		if it.Done || it.At == nil {
+			continue
+		}
+		if it.At.Before(now) {
+			continue
+		}
+		if best == nil || it.At.Before(*best.At) {
+			best = &items[i]
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	label := best.Title
+	if r := []rune(label); len(r) > 8 {
+		label = string(r[:8]) + "…"
+	}
+	return best.At.Format("15:04") + " " + label
+}
+
+func (h *Host) title() string {
+	mode := h.trayMode()
+	if mode == "icon" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	if mode == "next" {
+		items, err := h.srv.TodayItems(ctx)
+		if err != nil {
+			return "!"
+		}
+		if next := h.nextItem(items); next != "" {
+			return next
+		}
+		// Nothing timed is still ahead: show ✓ only when everything is done,
+		// otherwise the count, so an all-day-only list is not a lie.
+		done, total := 0, 0
+		for _, it := range items {
+			total++
+			if it.Done {
+				done++
+			}
+		}
+		if total > 0 && done == total {
+			return "✓"
+		}
+		return strings.ReplaceAll(fmt.Sprintf("%2d/%2d", done, total), " ", "\u2007")
+	}
 	done, total, err := h.srv.TodaySummary(ctx)
 	if err != nil {
 		return "!"
@@ -511,20 +780,56 @@ func (h *Host) title() string {
 	return strings.ReplaceAll(text, " ", "\u2007")
 }
 
+// iconForState chooses the menu-bar glyph. The alert dot appears for the
+// three states the person can act on: a board missing for a while, the local
+// network permission refused, and the funnel switched on but not connected.
 func (h *Host) iconForState() []byte {
 	h.mu.Lock()
 	ok := h.funnelOK
 	state := h.funnel.State
+	localNet := h.localNet
 	h.mu.Unlock()
-	if h.dev || !h.funnelEnabled() || ok {
-		return h.iconNormal
+	alert := false
+	if !h.dev {
+		if !ok && h.funnelEnabled() && state != FunnelMissing && state != "" {
+			alert = true
+		}
+		if LocalNetworkNeedsAttention(localNet) {
+			alert = true
+		}
+		if h.staleDevices() {
+			alert = true
+		}
 	}
-	// A missing binary is not an error until the user turns the feature on;
-	// every other enabled-but-not-connected state gets the alert badge.
-	if state == FunnelMissing || state == "" {
-		return h.iconNormal
+	if alert {
+		return h.iconError
 	}
-	return h.iconError
+	return h.iconNormal
+}
+
+// staleDeviceAfter is how long a board may miss its one-minute poll before the
+// menu bar says something is wrong. Three misses is the same window the menu
+// and the settings card call "online".
+const staleDeviceAfter = server.OnlineWindow
+
+// staleDevices reports whether any live board has been missing longer than
+// staleDeviceAfter. It reads the cached device list the refresh loop already
+// fetches, so the 2 s tick does not hit the database.
+func (h *Host) staleDevices() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, d := range h.devices {
+		if d.Online {
+			continue
+		}
+		if d.LastSeen == nil {
+			return true
+		}
+		if time.Since(*d.LastSeen) > staleDeviceAfter {
+			return true
+		}
+	}
+	return false
 }
 
 // baseURL returns the loopback prefix that demonstrably reaches this process.
@@ -681,7 +986,9 @@ func (h *Host) checkUpdate() {
 		h.notify("Today 更新", "还没有配置更新源，先在设置里填写。")
 		return
 	}
-	rel, err := fetchRelease(context.Background(), feed, nil)
+	// The update feed is an internet request: it goes through the proxy the
+	// person configured, the same client WeatherAPI uses.
+	rel, err := fetchRelease(context.Background(), feed, h.srv.OutboundAPIClient())
 	if err != nil {
 		h.finishUpdate("", "")
 		h.notify("检查更新失败", err.Error())
@@ -744,12 +1051,23 @@ func (h *Host) close(reason string) {
 	}
 }
 
+// buildMenu renders the tray menu. It is rebuilt on every open and every 60 s,
+// so the checkboxes and the device subtitles stay current.
 func (h *Host) buildMenu() *mygo.Menu {
-	funnelHost := h.setting("funnel_host")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	items, _ := h.srv.TodayItems(ctx)
+	devices, _ := h.srv.Devices(ctx)
+	settings := map[string]string{}
+	if st, err := h.srv.Settings(ctx); err == nil {
+		settings = st
+	}
+
+	funnelHost := settings["funnel_host"]
 	funnelOn := h.funnelEnabled()
-	trayTitle := h.setting("tray_title") != "false"
-	login := h.setting("open_at_login") == "true"
-	done, total, _ := h.srv.TodaySummary(context.Background())
+	login := settings["open_at_login"] == "true"
+	trayMode := h.trayMode()
+	done, total, _ := h.srv.TodaySummary(ctx)
 
 	statusLabel := "服务：运行中"
 	if note := h.srv.BindNote(); note != "" {
@@ -757,130 +1075,348 @@ func (h *Host) buildMenu() *mygo.Menu {
 	}
 	h.mu.Lock()
 	stranger := h.stranger
+	localNet := h.localNet
 	h.mu.Unlock()
 	if stranger != "" {
 		statusLabel = "服务：端口被占用（" + stranger + "）"
 	}
+	localNetWarn := !h.dev && LocalNetworkNeedsAttention(localNet)
+	localNetHide := localNet == LocalNetworkOK
+	passwordOK := h.passwordUsable()
 	verdict := h.funnelVerdict()
-	funnelLabel := "外网：关闭"
-	switch {
-	case h.dev:
-		funnelLabel = "外网：开发模式不接管"
-	case verdict.State == FunnelMissing:
-		funnelLabel = "外网：未安装/不支持的 Tailscale（点击安装）"
-	case verdict.State == FunnelLoggedOut:
-		funnelLabel = "外网：Tailscale 未登录（点击授权）"
-	case verdict.State == FunnelNeedsSetup:
-		funnelLabel = "外网：需要开启 HTTPS/Funnel（点击继续）"
-	case funnelOn && verdict.State == FunnelOn:
-		funnelLabel = "外网：已开启"
-	case funnelOn:
-		funnelLabel = "外网：正在连接"
+
+	// Header: date, then lunar + weather as the subtitle.
+	now := time.Now()
+	lunar := lunarLabel(now)
+	subtitle := lunar
+	if h.dev {
+		subtitle += " · 开发模式"
+	}
+	if w := h.weatherLine(ctx); w != "" {
+		subtitle += " · " + w
+	}
+	header := &mygo.MenuItem{
+		Label:    "今天 " + now.Format("1月2日") + " " + weekdayZH[now.Weekday()],
+		Subtitle: subtitle,
+		Disabled: true,
 	}
 
-	items := []*mygo.MenuItem{
-		{Label: "打开今日页面", Submenu: []*mygo.MenuItem{
-			{Label: "在浏览器打开", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/app") }},
-			{Label: "快速面板（只读）", Click: func(*mygo.MenuItem, *mygo.Window) { h.togglePanel() }},
-		}},
-		{Label: "管理事项", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/items") }},
-		{Label: "设置…", Click: func(*mygo.MenuItem, *mygo.Window) { h.open("/settings") }},
-		mygo.Separator(),
-		{
-			ID: "funnel", Label: "外网访问", Type: mygo.MenuItemCheckbox, Checked: funnelOn,
-			KeepOpen: true, Disabled: h.dev,
+	// Item checkboxes: at most eight, plus a link to the full page.
+	itemMenu := make([]*mygo.MenuItem, 0, 9)
+	const maxTrayItems = 8
+	for i, it := range items {
+		if i >= maxTrayItems {
+			break
+		}
+		label := it.Title
+		if it.At != nil && !it.AllDay {
+			label = it.At.Format("15:04") + " " + label
+		}
+		id := it.ID
+		doneNow := it.Done
+		itemMenu = append(itemMenu, &mygo.MenuItem{
+			Label: label, Type: mygo.MenuItemCheckbox, Checked: doneNow, KeepOpen: true,
 			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
-				on := item.Checked
-				if _, err := h.srv.UpdateSettings(context.Background(), map[string]string{"funnel": boolString(on)}); err != nil {
+				// The menu toggles Checked before Click runs; the store is the
+				// authority and a failure re-syncs the next rebuild.
+				if err := h.srv.SetItemDone(context.Background(), id, item.Checked); err != nil {
+					h.log.Printf("host: toggle item: %v", err)
+				}
+				h.kick()
+			},
+		})
+	}
+	if len(items) > maxTrayItems {
+		itemMenu = append(itemMenu, &mygo.MenuItem{
+			Label: fmt.Sprintf("还有 %d 项…", len(items)-maxTrayItems),
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app") },
+		})
+	}
+	if len(itemMenu) == 0 {
+		itemMenu = append(itemMenu, &mygo.MenuItem{Label: "今天没有事项", Disabled: true})
+	}
+
+	// Devices submenu: one row per board, with preview / refresh / test tone.
+	deviceItems := make([]*mygo.MenuItem, 0, len(devices)*4)
+	for _, d := range devices {
+		deviceItems = append(deviceItems, &mygo.MenuItem{
+			Label:    deviceLabel(d),
+			Subtitle: deviceSubtitle(d),
+			Submenu: []*mygo.MenuItem{
+				{Label: "预览", Click: func(*mygo.MenuItem, *mygo.Window) {
+					go h.openLocal("/settings#devices")
+				}},
+				{Label: "立即刷新", Click: func(*mygo.MenuItem, *mygo.Window) {
+					h.srv.ForceRefresh(d.ID)
+					h.notify("已请求刷新", deviceLabel(d)+" 会在 1 分钟内重画。")
+					h.kick()
+				}},
+				{Label: "试听提示音", Click: func(*mygo.MenuItem, *mygo.Window) {
+					h.srv.RequestPreview(d.ID)
+					h.notify("试听已排队", d.ID+" 会在 1 分钟内响一声。")
+					h.kick()
+				}},
+			},
+		})
+	}
+	if len(deviceItems) == 0 {
+		deviceItems = append(deviceItems, &mygo.MenuItem{Label: "还没有设备", Disabled: true})
+	}
+
+	funnelLabel := "外网访问"
+	funnelSub := "关闭"
+	switch {
+	case h.dev:
+		funnelSub = "开发模式不接管"
+	case verdict.State == FunnelMissing:
+		funnelSub = "未安装/不支持的 Tailscale（点击安装）"
+	case verdict.State == FunnelLoggedOut:
+		funnelSub = "Tailscale 未登录（点击授权）"
+	case verdict.State == FunnelNeedsSetup:
+		funnelSub = "需要开启 HTTPS/Funnel（点击继续）"
+	case funnelOn && verdict.State == FunnelOn:
+		funnelSub = "已开启"
+	case funnelOn:
+		funnelSub = "正在连接"
+	}
+
+	menu := []*mygo.MenuItem{
+		header,
+		mygo.Separator(),
+	}
+	menu = append(menu, itemMenu...)
+	menu = append(menu,
+		&mygo.MenuItem{Label: "添加事项…", Accelerator: "CmdOrCtrl+N",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app?focus=add") }},
+		mygo.Separator(),
+		&mygo.MenuItem{Label: "打开今日页面", Accelerator: "CmdOrCtrl+O",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app") }},
+		&mygo.MenuItem{Label: "快速面板",
+			Click: func(*mygo.MenuItem, *mygo.Window) { h.togglePanel() }},
+		&mygo.MenuItem{Label: "管理事项",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/items") }},
+		mygo.Separator(),
+		&mygo.MenuItem{Label: "设备", Submenu: deviceItems},
+		&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub,
+			Type: mygo.MenuItemCheckbox, Checked: funnelOn, KeepOpen: true, Disabled: h.dev,
+			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
+				if _, err := h.srv.UpdateSettings(context.Background(),
+					map[string]string{"funnel": boolString(item.Checked)}); err != nil {
 					h.log.Printf("host: funnel setting: %v", err)
 					return
 				}
 				h.kick()
-			},
-		},
-		{
-			Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() },
-		},
-		{
-			Label: "外网地址", Disabled: funnelHost == "",
+			}},
+		&mygo.MenuItem{Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() }},
+		&mygo.MenuItem{Label: "外网地址", Disabled: funnelHost == "",
 			Submenu: []*mygo.MenuItem{
-				{Label: "复制地址", Badge: funnelHost, Disabled: funnelHost == "", Click: func(*mygo.MenuItem, *mygo.Window) {
-					mygo.Clipboard.WriteText(funnelHost)
-				}},
-				{Label: "在浏览器打开", Disabled: funnelHost == "", Click: func(*mygo.MenuItem, *mygo.Window) {
-					_ = mygo.Shell.OpenExternal(funnelHost)
-				}},
-			},
-		},
+				{Label: "复制地址", Badge: funnelHost, Disabled: funnelHost == "",
+					Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(funnelHost) }},
+				{Label: "在浏览器打开", Disabled: funnelHost == "",
+					Click: func(*mygo.MenuItem, *mygo.Window) { _ = mygo.Shell.OpenExternal(funnelHost) }},
+			}},
+		&mygo.MenuItem{Label: "⚠ 设备无法连入：允许本地网络…",
+			Disabled: !localNetWarn, Hidden: localNetHide,
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.RequestLocalNetwork() }},
 		mygo.Separator(),
-		{
-			ID: "autostart", Label: "开机自启", Type: mygo.MenuItemCheckbox, Checked: login, KeepOpen: true,
-			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
-				if err := mygo.App.SetOpenAtLogin(item.Checked); err != nil {
-					h.log.Printf("host: open at login: %v", err)
+		&mygo.MenuItem{Label: loginLabel(passwordOK), Disabled: !passwordOK,
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				if passwordOK {
+					h.CopyPassword()
 				}
-				if _, err := h.srv.UpdateSettings(context.Background(), map[string]string{"open_at_login": boolString(item.Checked)}); err != nil {
-					h.log.Printf("host: autostart setting: %v", err)
-				}
-				h.kick()
-			},
-		},
-		{
-			ID: "title", Label: "状态栏显示进度", Type: mygo.MenuItemCheckbox, Checked: trayTitle, KeepOpen: true,
-			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
-				if _, err := h.srv.UpdateSettings(context.Background(), map[string]string{"tray_title": boolString(item.Checked)}); err != nil {
-					h.log.Printf("host: title setting: %v", err)
-				}
-				h.kick()
-			},
-		},
-		{Label: "复制局域网地址", Click: func(*mygo.MenuItem, *mygo.Window) {
-			mygo.Clipboard.WriteText(h.lanAddr() + "/app")
+			}},
+		&mygo.MenuItem{Label: "复制局域网地址",
+			Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr() + "/app") }},
+		&mygo.MenuItem{Label: "设置…", Accelerator: "CmdOrCtrl+,",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/settings") }},
+		&mygo.MenuItem{Label: "偏好", Submenu: []*mygo.MenuItem{
+			{ID: "autostart", Label: "开机自启", Type: mygo.MenuItemCheckbox, Checked: login,
+				KeepOpen: true, Click: func(item *mygo.MenuItem, _ *mygo.Window) {
+					if err := mygo.App.SetOpenAtLogin(item.Checked); err != nil {
+						h.log.Printf("host: open at login: %v", err)
+					}
+					if _, err := h.srv.UpdateSettings(context.Background(),
+						map[string]string{"open_at_login": boolString(item.Checked)}); err != nil {
+						h.log.Printf("host: autostart setting: %v", err)
+					}
+					h.kick()
+				}},
+			{Label: "菜单栏显示", Submenu: trayModeItems(h, trayMode)},
+		}},
+		h.updateMenuItem(),
+		&mygo.MenuItem{Label: "服务状态", Submenu: []*mygo.MenuItem{
+			{Label: statusLabel, Disabled: true},
+			{Label: fmt.Sprintf("今日：%d/%d", done, total), Disabled: true},
+			{Label: funnelSub, Disabled: true},
+			{Label: "监听 " + h.srv.Addr(), Disabled: true},
+			{Label: "内网链接 " + h.cachedBase(), Disabled: true},
 		}},
 		mygo.Separator(),
-		{
-			Label: "服务状态",
-			Submenu: []*mygo.MenuItem{
-				{Label: statusLabel, Disabled: true},
-				{Label: fmt.Sprintf("今日：%d/%d", done, total), Disabled: true},
-				{Label: funnelLabel, Disabled: true},
-				{Label: "监听 " + h.srv.Addr(), Disabled: true},
-				{Label: "内网链接 " + h.cachedBase(), Disabled: true},
-			},
-		},
-		updateItem(h),
-		mygo.Separator(),
-		{Role: mygo.RoleQuit, Label: "退出 Today"},
-	}
-	return mygo.NewMenu(items)
+		&mygo.MenuItem{Role: mygo.RoleQuit, Label: "退出 Today"},
+	)
+	return mygo.NewMenu(menu)
 }
 
-func drawIcon(alert bool) []byte {
-	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
-	ink := color.NRGBA{A: 255}
-	if alert {
-		draw.Draw(img, image.Rect(4, 4, 28, 28), image.NewUniform(ink), image.Point{}, draw.Src)
-		// Punch an exclamation mark out of the filled badge.
-		for y := 10; y < 20; y++ {
-			for x := 14; x < 18; x++ {
-				img.SetNRGBA(x, y, color.NRGBA{A: 0})
+// trayModeItems is the three-way "菜单栏显示" picker. Choosing writes
+// tray_mode, so the choice survives and the old boolean is no longer consulted.
+func trayModeItems(h *Host, current string) []*mygo.MenuItem {
+	modes := []struct{ value, label string }{
+		{"progress", "进度 2/6"},
+		{"next", "下一项"},
+		{"icon", "仅图标"},
+	}
+	out := make([]*mygo.MenuItem, 0, len(modes))
+	for _, m := range modes {
+		value := m.value
+		out = append(out, &mygo.MenuItem{
+			Label: m.label, Type: mygo.MenuItemRadio, Checked: current == value, KeepOpen: true,
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				if _, err := h.srv.UpdateSettings(context.Background(),
+					map[string]string{"tray_mode": value}); err != nil {
+					h.log.Printf("host: tray mode: %v", err)
+				}
+				h.kick()
+			},
+		})
+	}
+	return out
+}
+
+func deviceLabel(d server.HostDevice) string {
+	if d.Name != "" {
+		return d.Name
+	}
+	return d.ID
+}
+
+// deviceSubtitle is the one line under a device in the menu:
+// "在线 · 76% · 23° 45%" or "离线 2 小时".
+func deviceSubtitle(d server.HostDevice) string {
+	if !d.Online {
+		if d.LastSeen == nil {
+			return "从未连接"
+		}
+		return "离线 " + humanSince(time.Since(*d.LastSeen))
+	}
+	if d.LastSeen != nil && time.Since(*d.LastSeen) > staleDeviceAfter {
+		// The online flag is recomputed by server.Devices; this branch only
+		// fires when the cached row was built before the window ran out.
+		return "离线 " + humanSince(time.Since(*d.LastSeen))
+	}
+	parts := []string{"在线"}
+	if d.BatteryP >= 0 {
+		parts = append(parts, fmt.Sprintf("%d%%", d.BatteryP))
+	}
+	if d.TempC != 0 || d.Humidity != 0 {
+		parts = append(parts, fmt.Sprintf("%.0f° %.0f%%", d.TempC, d.Humidity))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// humanSince is the short Chinese form the menu uses.
+func humanSince(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "刚刚"
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d 小时", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d 天", int(d.Hours()/24))
+	}
+}
+
+// weatherLine is the short forecast the header subtitle carries, read from the
+// same cache the frame uses (no network here).
+func (h *Host) weatherLine(ctx context.Context) string {
+	return h.srv.WeatherLine(ctx)
+}
+
+var weekdayZH = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+
+// trayIcon returns the menu-bar image the tray shows: the embedded artwork
+// when it decodes, otherwise the hand-drawn fallback. `alert` adds the small
+// solid dot at the top-right, which is the only "needs attention" mark.
+func trayIcon(base []byte, alert bool) []byte {
+	if img, err := png.Decode(bytes.NewReader(base)); err == nil {
+		if !alert {
+			var b bytes.Buffer
+			if err := png.Encode(&b, img); err == nil {
+				return b.Bytes()
 			}
 		}
-		for y := 23; y < 26; y++ {
-			for x := 14; x < 18; x++ {
-				img.SetNRGBA(x, y, color.NRGBA{A: 0})
+		// The artwork is 18x18; the dot sits in the corner, outside the
+		// rounded frame, so it never covers the tick.
+		bounds := img.Bounds()
+		out := image.NewNRGBA(bounds)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				out.Set(x, y, img.At(x, y))
 			}
 		}
-	} else {
-		for _, r := range []image.Rectangle{
-			image.Rect(6, 7, 26, 10),
-			image.Rect(6, 14, 20, 17),
-			image.Rect(6, 21, 23, 24),
-		} {
-			draw.Draw(img, r, image.NewUniform(ink), image.Point{}, draw.Src)
+		ink := color.NRGBA{A: 255}
+		cx, cy := float64(bounds.Max.X)-3, 2.5
+		for y := bounds.Min.Y; y < 5; y++ {
+			for x := bounds.Max.X - 5; x < bounds.Max.X; x++ {
+				dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
+				if dx*dx+dy*dy <= 5.5 {
+					out.SetNRGBA(x, y, ink)
+				}
+			}
+		}
+		var b bytes.Buffer
+		if err := png.Encode(&b, out); err == nil {
+			return b.Bytes()
 		}
 	}
+	return drawTrayGlyph(alert)
+}
+
+func drawTrayGlyph(alert bool) []byte {
+	const size = 18
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	ink := color.NRGBA{A: 255}
+	clear := color.NRGBA{}
+
+	// Rounded frame from (2.5,3.5) to (15.5,14.5), radius 2.5, stroke 1.6.
+	// Drawn as a 1-px box plus corners approximated with two pixels each,
+	// which is what survives at 18 px.
+	for x := 4; x <= 14; x++ {
+		img.SetNRGBA(x, 3, ink)
+		img.SetNRGBA(x, 4, ink)
+		img.SetNRGBA(x, 14, ink)
+		img.SetNRGBA(x, 15, ink)
+	}
+	for y := 5; y <= 13; y++ {
+		img.SetNRGBA(2, y, ink)
+		img.SetNRGBA(3, y, ink)
+		img.SetNRGBA(14, y, ink)
+		img.SetNRGBA(15, y, ink)
+	}
+	// Round the corners: drop the outermost pair on each diagonal.
+	for _, p := range [][2]int{{2, 5}, {2, 13}, {15, 5}, {15, 13}, {3, 3}, {14, 3}, {3, 15}, {14, 15}} {
+		img.SetNRGBA(p[0], p[1], clear)
+	}
+
+	// Tick inside the screen: (6,9) -> (8,11) -> (12,6.5), 2 px wide.
+	for _, p := range [][2]int{{6, 9}, {7, 9}, {7, 10}, {8, 10}, {8, 11}, {9, 10}, {9, 9}, {10, 8}, {10, 7}, {11, 7}, {11, 6}, {12, 6}} {
+		img.SetNRGBA(p[0], p[1], ink)
+	}
+
+	if alert {
+		// 5 px dot at the top-right, sitting outside the frame like a badge.
+		for y := 0; y < 5; y++ {
+			for x := 13; x < 18; x++ {
+				dx, dy := float64(x)-15.0, float64(y)-2.0
+				if dx*dx+dy*dy <= 6.25 {
+					img.SetNRGBA(x, y, ink)
+				}
+			}
+		}
+	}
+
 	var b bytes.Buffer
 	_ = png.Encode(&b, img)
 	return b.Bytes()

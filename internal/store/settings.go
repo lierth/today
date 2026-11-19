@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ import (
 var KnownSettings = []string{
 	"open_at_login",
 	"tray_title",
+	"tray_mode",
 	"timezone",
 	"funnel",
 	"funnel_host",
@@ -20,6 +22,7 @@ var KnownSettings = []string{
 	"auth_session_key",
 	"device_token_hint",
 	"firmware_version",
+	"firmware_pending_version",
 	"update_feed",
 	"night_off",
 	"night_start",
@@ -29,31 +32,76 @@ var KnownSettings = []string{
 	"funnel_action",
 	"funnel_detail",
 	"funnel_request",
+	"localnet_state",
+	"localnet_detail",
+	"localnet_adhoc",
+	"localnet_request",
+	"weather_api_key",
+	"weather_city",
+	"weather_ip_fallback",
+	"sound_volume",
+	"sound_keys",
+	"sound_alarm",
+	"alarm_lead_minutes",
+	"auto_carry",
+	"proxy_mode",
+	"proxy_url",
+	"update_auto_check",
+	"update_auto_download",
+	"update_skip_version",
+	"backup_icloud",
 }
 
 // DefaultSettings returns the values used when a key is absent.
 func DefaultSettings() map[string]string {
 	return map[string]string{
-		"open_at_login":      "false",
-		"tray_title":         "true",
-		"timezone":           time.Local.String(),
-		"funnel":             "false",
-		"funnel_host":        "",
-		"auth_password_hash": "",
-		"auth_session_key":   "",
-		"device_token_hint":  "",
-		"night_off":          "true",
-		"night_start":        "23:00",
-		"night_end":          "07:00",
-		"power_state":        "",
-		"funnel_state":       "",
-		"funnel_action":      "",
-		"funnel_detail":      "",
-		"funnel_request":     "",
+		"open_at_login":            "false",
+		"tray_title":               "true",
+		"tray_mode":                "progress",
+		"timezone":                 time.Local.String(),
+		"funnel":                   "false",
+		"funnel_host":              "",
+		"auth_password_hash":       "",
+		"auth_session_key":         "",
+		"device_token_hint":        "",
+		"firmware_pending_version": "",
+		"night_off":                "true",
+		"night_start":              "23:00",
+		"night_end":                "07:00",
+		"power_state":              "",
+		"funnel_state":             "",
+		"funnel_action":            "",
+		"funnel_detail":            "",
+		"funnel_request":           "",
+		"localnet_state":           "",
+		"localnet_detail":          "",
+		"localnet_adhoc":           "false",
+		"localnet_request":         "",
+		"weather_api_key":          "",
+		"weather_city":             "",
+		"weather_ip_fallback":      "true",
+		"sound_volume":             "60",
+		"sound_keys":               "true",
+		"sound_alarm":              "true",
+		"alarm_lead_minutes":       "0",
+		"auto_carry":               "false",
+		"proxy_mode":               "on",
+		"proxy_url":                "",
+		"update_auto_check":        "true",
+		"update_auto_download":     "false",
+		"update_skip_version":      "",
+		"backup_icloud":            "true",
 	}
 }
 
+// deviceCityPrefix scopes a city to one device: weather_city_dev1. The suffix
+// is a device id, so the list of known keys cannot name them in advance.
+const deviceCityPrefix = "weather_city_"
+
 func knownSetting(key string) bool {
+	if strings.HasPrefix(key, deviceCityPrefix) && len(key) > len(deviceCityPrefix) {
+		return true
+	}
 	for _, k := range KnownSettings {
 		if k == key {
 			return true

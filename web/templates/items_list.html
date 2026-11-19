@@ -2,23 +2,49 @@
 <section id="items-list" class="card">
   <div class="card-head">
     <h2>全部事项</h2>
-    <span class="count">{{len .All}}</span>
   </div>
-  {{if .All}}
-  {{range .All}}
-  <div class="list-row">
+  {{if .Upcoming}}
+  {{range .Upcoming}}
+  {{if eq .Label "已完成（近 30 天）"}}
+  <details class="group done-group">
+    <summary>{{.Label}} <span class="count">{{len .Items}}</span></summary>
+    {{template "item_rows.html" .Items}}
+  </details>
+  {{else}}
+  <div class="group">
+    <h3 class="group-title">{{.Label}} <span class="count">{{len .Items}}</span></h3>
+    {{template "item_rows.html" .Items}}
+  </div>
+  {{end}}
+  {{end}}
+  {{else}}
+  <p class="empty">还没有任何事项</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "item_rows.html"}}
+<div class="list-rows">
+  {{range .}}
+  <div class="list-row{{if .Done}} done{{end}}">
     <form hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
       <input type="hidden" name="status" value="{{if .Done}}open{{else}}done{{end}}">
       <button class="check" type="submit" aria-pressed="{{if .Done}}true{{else}}false{{end}}" aria-label="{{if .Done}}标记为未完成：{{else}}标记为完成：{{end}}{{.Title}}">{{if .Done}}✓{{end}}</button>
     </form>
     <div class="row-main">
-      <div class="row-title"><a href="/items/{{.ID}}">{{.Title}}</a></div>
-      <div class="meta">{{dateLabel .}} · {{timeLabel .}} · {{statusLabel .}}{{if .RRule}} · {{.RRule}}{{end}}{{if .SeriesID}} · 重复实例{{end}}</div>
+      <div class="row-title">
+        <a href="/items/{{.ID}}">{{.Title}}</a>
+        {{if .SeriesID}}<span class="badge">重复</span>{{end}}
+        {{if .Pinned}}<span class="badge">置顶</span>{{end}}
+        {{if .Description}}<span class="note-mark" title="{{noteFirstLine .}}">📝</span>{{end}}
+      </div>
+      <div class="meta">{{dateLabel .}} · {{timeLabel .}} · {{statusLabel .}}{{if .CarriedFrom}} · 从 {{.CarriedFrom}} 顺延{{end}}</div>
       <details class="edit">
         <summary class="ghost-button">编辑</summary>
         <form class="edit-form" hx-patch="/api/items/{{.ID}}" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>
           <input type="hidden" name="full" value="1">
           <input class="wide" type="text" name="title" value="{{.Title}}" maxlength="200" required aria-label="标题">
+          <textarea class="wide" name="description" maxlength="2000" rows="2" placeholder="备注（只在网页上显示）" aria-label="备注">{{.Description}}</textarea>
           <input type="date" name="date" value="{{dateValue .}}" aria-label="日期">
           <input type="time" name="time" value="{{timeValue .}}" aria-label="时间">
           <select name="status" aria-label="状态">
@@ -31,7 +57,7 @@
           {{if .SeriesID}}
           <div class="hint wide">重复实例：这里只改这一天。要改整个系列，请打开原始事项。</div>
           {{else}}
-          <input class="wide" type="text" name="rrule" value="{{.RRule}}" placeholder="FREQ=WEEKLY;INTERVAL=1 或留空" aria-label="重复规则">
+          {{template "rrule_editor.html" .}}
           {{end}}
           <div class="edit-actions">
             <button class="danger" type="button" aria-label="删除：{{.Title}}" hx-delete="/api/items/{{.ID}}" hx-confirm="删除这件事？" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}'>删除</button>
@@ -42,8 +68,5 @@
     </div>
   </div>
   {{end}}
-  {{else}}
-  <p class="empty">还没有任何事项</p>
-  {{end}}
-</section>
+</div>
 {{end}}

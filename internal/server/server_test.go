@@ -24,6 +24,7 @@ import (
 
 	"today/internal/frame"
 	"today/internal/store"
+	"today/internal/weather"
 )
 
 type testEnv struct {
@@ -37,13 +38,31 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvCloud(t, "")
+}
+
+// newTestEnvCloud is newTestEnv with an injected iCloud folder. Every test that
+// exercises the cloud path must use a temp directory: the real one belongs to
+// the person, not to a test.
+func newTestEnvCloud(t *testing.T, cloudDocs string) *testEnv {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "today.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv, err := New(st, Config{Addr: "127.0.0.1:0", DataDir: dir, Dev: true, Logger: log.New(io.Discard, "", 0)})
+	srv, err := New(st, Config{
+		Addr: "127.0.0.1:0", DataDir: dir, Dev: true,
+		Logger: log.New(io.Discard, "", 0),
+		Paths: Paths{
+			Root: dir, DB: filepath.Join(dir, "today.db"),
+			Backups: filepath.Join(dir, "backups"), Firmware: filepath.Join(dir, "firmware"),
+			// No iCloud in tests unless the caller injects a temp folder:
+			// "" means none.
+			CloudDocs: cloudDocs,
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +78,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err := st.PutSettings(context.Background(), map[string]string{"timezone": "Asia/Shanghai"}); err != nil {
 		t.Fatal(err)
 	}
-	return &testEnv{t: t, st: st, srv: srv, ts: ts, loc: loc, client: &http.Client{Jar: jar}}
+	// The test client is a script: it sends the header that checkWriteOrigin
+	// requires from a caller with no Sec-Fetch-Site and no Origin. A real
+	// browser supplies one of those instead.
+	plain := &http.Client{Jar: jar}
+	client := &http.Client{Jar: jar, Transport: clientHeaderTransport{base: plain.Transport}}
+	return &testEnv{t: t, st: st, srv: srv, ts: ts, loc: loc, client: client}
 }
 
 func (e *testEnv) password() string {
@@ -377,7 +401,7 @@ func TestSettingsUpdateRotatesSessions(t *testing.T) {
 		lastOld, lastNew = old, new
 	})
 
-	form := url.Values{"action": {"general"}, "timezone": {"Asia/Shanghai"}}
+	form := url.Values{"action": {"general"}, "timezone": {"Asia/Shanghai"}, "tray_mode": {"icon"}}
 	resp, err := e.client.PostForm(e.ts.URL+"/api/settings", form)
 	if err != nil {
 		t.Fatal(err)
@@ -389,11 +413,11 @@ func TestSettingsUpdateRotatesSessions(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("callback calls: %d", calls)
 	}
-	if lastOld["tray_title"] != "true" || lastNew["tray_title"] != "false" {
+	if lastOld["tray_mode"] != "progress" || lastNew["tray_mode"] != "icon" {
 		t.Fatalf("callback diff: old=%v new=%v", lastOld, lastNew)
 	}
-	if v, _ := e.st.Setting(context.Background(), "tray_title"); v != "false" {
-		t.Fatalf("stored tray_title: %q", v)
+	if v, _ := e.st.Setting(context.Background(), "tray_mode"); v != "icon" {
+		t.Fatalf("stored tray_mode: %q", v)
 	}
 
 	page := e.get("/settings")
@@ -515,6 +539,79 @@ func TestFunnelContinuePokesHost(t *testing.T) {
 	}
 }
 
+func TestLocalNetworkRequestPokesHost(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(e.password())
+	req := e.req(http.MethodPost, e.ts.URL+"/api/settings",
+		strings.NewReader(url.Values{
+			"action": {"localnet_request"},
+		}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := e.do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("localnet_request: %d", resp.StatusCode)
+	}
+	st, err := e.st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["localnet_request"] == "" {
+		t.Fatalf("host was not poked: request=%q", st["localnet_request"])
+	}
+}
+
+// A denied local network permission is invisible from the browser; the page
+// must say so above the device list, and stay quiet once it is granted.
+func TestSettingsShowsLocalNetworkWarning(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(e.password())
+	if err := e.st.PutSettings(context.Background(), map[string]string{
+		"localnet_state":  "denied",
+		"localnet_detail": "macOS 拒绝了本地网络访问（10.0.0.2）。",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := e.get("/settings")
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("设备无法连入")) {
+		t.Fatalf("denied state should warn: %s", body)
+	}
+	if !bytes.Contains(body, []byte("申请本地网络权限")) {
+		t.Fatalf("denied state should offer the button: %s", body)
+	}
+	if err := e.st.PutSettings(context.Background(), map[string]string{
+		"localnet_state": "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp = e.get("/settings")
+	body, _ = io.ReadAll(resp.Body)
+	if bytes.Contains(body, []byte("设备无法连入")) {
+		t.Fatalf("granted state must be silent: %s", body)
+	}
+}
+
+// A web password reset must reach the host so its keychain copy is replaced;
+// the server cannot import the keychain, so the hook is the seam.
+func TestSetPasswordCallsHook(t *testing.T) {
+	e := newTestEnv(t)
+	var got string
+	e.srv.SetPasswordHook(func(pw string) { got = pw })
+	if err := e.srv.SetPassword(context.Background(), "new-password-123"); err != nil {
+		t.Fatal(err)
+	}
+	if got != "new-password-123" {
+		t.Fatalf("hook got %q", got)
+	}
+	ok, err := e.srv.CheckPassword(context.Background(), "new-password-123")
+	if err != nil || !ok {
+		t.Fatalf("CheckPassword: %v %v", ok, err)
+	}
+	if ok, _ := e.srv.CheckPassword(context.Background(), "old-password-123"); ok {
+		t.Fatal("the old password must stop working")
+	}
+}
+
 func TestSettingsGetHidesSecrets(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(e.password())
@@ -557,7 +654,7 @@ func TestFirmwareUploadAndDownload(t *testing.T) {
 		msg, _ := io.ReadAll(resp.Body)
 		t.Fatalf("upload: %d %s", resp.StatusCode, msg)
 	}
-	if _, err := os.Stat(filepath.Join(e.srv.cfg.DataDir, "firmware.bin")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.srv.cfg.Paths.Firmware, "firmware.bin")); err != nil {
 		t.Fatalf("firmware file: %v", err)
 	}
 
@@ -660,6 +757,31 @@ func TestPanelToken(t *testing.T) {
 	defer old.Body.Close()
 	if old.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expired panel token: %d", old.StatusCode)
+	}
+}
+
+// The panel token is read-only but carries no session; a leaked link must not
+// be readable through the public Funnel just because tailscaled proxies it
+// from 127.0.0.1.
+func TestPanelRejectsFunnelProxy(t *testing.T) {
+	e := newTestEnv(t)
+	token, err := e.srv.PanelToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, e.ts.URL+"/panel?t="+url.QueryEscape(token), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Tailscale-Funnel-Request", "?1")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("panel through Funnel: %d", resp.StatusCode)
 	}
 }
 
@@ -832,4 +954,95 @@ func TestPreviewLinkFollowsTheDevice(t *testing.T) {
 	if !bytes.Contains(set, []byte("/api/devices/desk/preview.png")) {
 		t.Fatalf("settings should preview the live device: %s", set)
 	}
+}
+
+// Weather must never be able to break the frame: no key, a bad key and a dead
+// API all still return 200 with a renderable bitmap.
+func TestFrameRendersWithoutWeather(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	if _, err := e.st.EnsureDevice(ctx, "dev1", "测试设备"); err != nil {
+		t.Fatal(err)
+	}
+	token := "test-device-token"
+	sum := sha256.Sum256([]byte(token))
+	if err := e.st.SetDeviceToken(ctx, "dev1", hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	fetch := func() int {
+		req := e.req(http.MethodGet, e.ts.URL+"/v1/devices/dev1/frame", nil)
+		req.Header.Set("X-Device-Token", token)
+		resp := e.do(req)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := fetch(); code != http.StatusOK {
+		t.Fatalf("no key: %d", code)
+	}
+	if err := e.st.PutSettings(ctx, map[string]string{
+		"weather_api_key": "k", "weather_city": "北京",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old := weather.BaseURL
+	weather.BaseURL = "http://127.0.0.1:1/forecast.json"
+	t.Cleanup(func() { weather.BaseURL = old })
+	if code := fetch(); code != http.StatusOK {
+		t.Fatalf("dead API: %d", code)
+	}
+}
+
+// The key is never echoed: neither the settings JSON nor the page's HTML may
+// contain it, and posting the mask back must leave it alone.
+func TestWeatherKeyIsMasked(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(e.password())
+	const key = "abcdef0123456789"
+	if err := e.st.PutSettings(context.Background(), map[string]string{"weather_api_key": key}); err != nil {
+		t.Fatal(err)
+	}
+	resp := e.get("/api/settings")
+	body, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(body, []byte(key)) {
+		t.Fatalf("settings JSON leaked the key: %s", body)
+	}
+	if !bytes.Contains(body, []byte("••••6789")) {
+		t.Fatalf("expected a mask, got %s", body)
+	}
+	html := e.body("/settings")
+	if bytes.Contains(html, []byte(key)) {
+		t.Fatal("settings page leaked the key")
+	}
+	form := url.Values{"action": {"weather"}, "weather_api_key": {"••••6789"}, "weather_ip_fallback": {"1"}}
+	req := e.req(http.MethodPost, e.ts.URL+"/api/settings", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	e.do(req)
+	st, err := e.st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["weather_api_key"] != key {
+		t.Fatalf("mask overwrote the key: %q", st["weather_api_key"])
+	}
+	form.Set("weather_api_key", "")
+	req = e.req(http.MethodPost, e.ts.URL+"/api/settings", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	e.do(req)
+	if st, _ := e.st.Settings(context.Background()); st["weather_api_key"] != "" {
+		t.Fatal("an empty field should clear the key")
+	}
+}
+
+// clientHeaderTransport marks the test client as the app's own front end,
+// which is what the CSRF guard expects from a non-browser caller.
+type clientHeaderTransport struct{ base http.RoundTripper }
+
+func (c clientHeaderTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Today-Client", "1")
+	base := c.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
 }

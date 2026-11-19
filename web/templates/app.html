@@ -1,16 +1,23 @@
 {{define "app.html"}}{{template "head" .}}
 <h1 class="page-title">今天</h1>
-<p class="page-sub" id="today-progress">{{.DateLabel}} · <span class="progress">{{.Done}} / {{.Total}}</span></p>
+<p class="page-sub" id="today-progress">{{.DateLabel}} · <span class="progress">{{.Done}} / {{.Total}}</span>{{if .WeatherLine}} · <span class="weather-line">{{.WeatherLine}}</span>{{end}}</p>
 
-<div class="card">
-  <form class="quick quick-today" hx-post="/api/items" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}' hx-on::after-request="if (event.detail.successful) this.reset()">
-    <input type="text" name="title" placeholder="添加一件事…" maxlength="200" required autocomplete="off" aria-label="标题">
-    <input type="time" name="time" aria-label="时间">
-    <button type="submit">添加</button>
-  </form>
+<div id="carry-swap">
+{{if .CarriedAt}}
+{{template "carry_block.html" .}}
+{{end}}
+{{template "today_list.html" .}}
 </div>
 
-{{template "today_list.html" .}}
+<div class="card">
+  <form class="quick quick-today" id="quick-add" hx-post="/api/items" hx-target="#today-list" hx-swap="outerHTML" hx-vals='{"view":"today"}' hx-on::after-request="if (event.detail.elt === this &amp;&amp; event.detail.successful) { this.reset(); document.getElementById('quick-tags').innerHTML=''; }">
+    <input id="add-title" type="text" name="raw" placeholder="添加一件事…试试「明天 10点 站会」" maxlength="220" required autocomplete="off" aria-label="标题"{{if .FocusAdd}} autofocus{{end}}
+           hx-post="/api/items/parse" hx-trigger="keyup changed delay:300ms" hx-swap="none">
+    <input type="time" name="time_manual" aria-label="时间">
+    <button type="submit">添加</button>
+    <div id="quick-tags" class="quick-tags" aria-live="polite"></div>
+  </form>
+</div>
 
 <div class="card device-preview">
   <div class="card-head">

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -38,9 +39,12 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	ctx := context.Background()
+	// busy_timeout comes first: journal_mode needs an exclusive moment, and
+	// without a wait window a second opener fails at once with "database is
+	// locked" instead of waiting for the first connection.
 	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
+		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",
 	} {
@@ -78,6 +82,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			rrule       TEXT NOT NULL DEFAULT '',
 			series_id   TEXT,
 			sort_key    INTEGER NOT NULL DEFAULT 0,
+			carried_from TEXT NOT NULL DEFAULT '',
+			manual_rank INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT NOT NULL,
 			updated_at  TEXT NOT NULL,
 			deleted_at  TEXT
@@ -95,6 +101,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			buttons_json TEXT NOT NULL DEFAULT '',
 			tz           TEXT NOT NULL DEFAULT '',
 			battery_mv   INTEGER NOT NULL DEFAULT 0,
+			temp_c       REAL NOT NULL DEFAULT 0,
+			humidity     REAL NOT NULL DEFAULT 0,
 			last_seen_at TEXT,
 			revoked_at   TEXT,
 			created_at   TEXT NOT NULL
@@ -147,6 +155,48 @@ func (s *Store) migrate(ctx context.Context) error {
 		} {
 			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("store: migrate series index: %w", err)
+			}
+		}
+	}
+	if version < 2 {
+		// Device climate arrives with the acks payload. ALTER TABLE cannot say
+		// IF NOT EXISTS, so the duplicate-column error is expected on a fresh
+		// database that already has them from the CREATE above.
+		for _, stmt := range []string{
+			`ALTER TABLE devices ADD COLUMN temp_c REAL NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN humidity REAL NOT NULL DEFAULT 0`,
+			`PRAGMA user_version = 2`,
+		} {
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil &&
+				!strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("store: migrate device climate: %w", err)
+			}
+		}
+	}
+	if version < 3 {
+		// A carried item remembers the day it slipped from, so the page can say
+		// "from 11月12日" and the device can draw the ↻ mark.
+		for _, stmt := range []string{
+			`ALTER TABLE items ADD COLUMN carried_from TEXT NOT NULL DEFAULT ''`,
+			`PRAGMA user_version = 3`,
+		} {
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil &&
+				!strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("store: migrate carried_from: %w", err)
+			}
+		}
+	}
+	if version < 4 {
+		// A manual drag order is a separate axis from the clock: sort_key is
+		// the start time, manual_rank is the position a person chose. 0 means
+		// "never dragged" and falls back to the time ordering.
+		for _, stmt := range []string{
+			`ALTER TABLE items ADD COLUMN manual_rank INTEGER NOT NULL DEFAULT 0`,
+			`PRAGMA user_version = 4`,
+		} {
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil &&
+				!strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("store: migrate manual_rank: %w", err)
 			}
 		}
 	}

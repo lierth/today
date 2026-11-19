@@ -18,6 +18,8 @@ import (
 
 	"today/internal/app"
 	"today/internal/frame"
+	"today/internal/keychain"
+	"today/internal/release"
 	"today/internal/server"
 	"today/internal/store"
 )
@@ -39,6 +41,14 @@ func main() {
 		err = runSim(os.Args[2:])
 	case "passwd":
 		err = runPasswd(os.Args[2:])
+	case "release-keygen":
+		err = runReleaseKeygen(os.Args[2:])
+	case "release-sign":
+		err = runReleaseSign(os.Args[2:])
+	case "pbm2png":
+		err = runPBM2PNG(os.Args[2:])
+	case "release-verify":
+		err = runReleaseVerify(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -59,6 +69,10 @@ func usage() {
   todayd decode  <frame.bin>
   todayd sim     [--db path] <ops.jsonl>
   todayd passwd  [--db path]        (new password on stdin)
+  todayd pbm2png <in.pbm> <out.png>            (firmware host-test previews)
+  todayd release-keygen [--out path]            (prints the public key; writes the private one 0600)
+  todayd release-sign   [--key-file k] <dir>   (writes SHA256SUMS and its .sig)
+  todayd release-verify <dir> [--public-key K]  (checks a release directory)
 `)
 }
 
@@ -98,6 +112,119 @@ func runServe(args []string) error {
 			pw, portSuffix(a.Server.Addr()))
 	}
 	<-ctx.Done()
+	return nil
+}
+
+// runReleaseKeygen makes an ed25519 key pair. The private key goes to a file
+// with mode 0600 and is never printed: an operator pastes the file into the CI
+// secret store, and the public key goes into -ldflags.
+func runReleaseKeygen(args []string) error {
+	fs := flag.NewFlagSet("release-keygen", flag.ExitOnError)
+	out := fs.String("out", "", "private key file (default: "+release.DefaultKeyPath()+")")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pub, priv, err := release.GenerateKey()
+	if err != nil {
+		return err
+	}
+	path := *out
+	if path == "" {
+		path = release.DefaultKeyPath()
+	}
+	if err := release.WriteKeyFile(path, priv); err != nil {
+		return err
+	}
+	fmt.Printf("private key written to %s (mode 0600, do not commit)\n", path)
+	fmt.Printf("public key (pass to -ldflags -X today/internal/release.PublicKey=%s):\n%s\n", pub, pub)
+	fmt.Printf("\nCI secrets:\n  TODAY_RELEASE_KEY=<contents of %s>\n", path)
+	return nil
+}
+
+// runReleaseSign makes SHA256SUMS and SHA256SUMS.sig for a directory of
+// artifacts. The key comes from --key-env (the default is TODAY_RELEASE_KEY),
+// so a CI secret is read without it landing in the process list.
+func runReleaseSign(args []string) error {
+	fs := flag.NewFlagSet("release-sign", flag.ExitOnError)
+	keyEnv := fs.String("key-env", release.SigningKeyEnv, "environment variable holding the private key")
+	keyFile := fs.String("key-file", "", "read the private key from this file instead")
+	// A directory given before any flag ends flag parsing; keep it aside.
+	dirArg := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		dirArg = args[0]
+		args = args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	args = fs.Args()
+	if len(args) == 0 {
+		// The directory may also have been the first argument, before the
+		// flags: Go's flag package stops at the first non-flag, so a caller
+		// that wrote `release-sign <dir> --key-file k` left it in os.Args.
+		args = []string{dirArg}
+	}
+	if len(args) != 1 || args[0] == "" {
+		return fmt.Errorf("usage: todayd release-sign [--key-file k] <dir>")
+	}
+	dir := args[0]
+	key := *keyFile
+	keyText := ""
+	if key != "" {
+		b, err := os.ReadFile(key)
+		if err != nil {
+			return err
+		}
+		keyText = string(b)
+	} else {
+		keyText = os.Getenv(*keyEnv)
+		if keyText == "" {
+			return fmt.Errorf("环境变量 %s 是空的（或用 --key-file 指定文件）", *keyEnv)
+		}
+	}
+	sums, sig, err := release.SignDir(dir, keyText)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("signed %d artifact(s) in %s\n%s\n", strings.Count(string(sums), "\n"),
+		dir, strings.TrimSpace(sig))
+	return nil
+}
+
+// runReleaseVerify checks a directory against a public key (the built-in one by
+// default). CI runs it after signing; a person can run it before installing.
+func runReleaseVerify(args []string) error {
+	fs := flag.NewFlagSet("release-verify", flag.ExitOnError)
+	pub := fs.String("public-key", "", "base64 public key (default: the built-in one)")
+	// One directory argument, but flags may come after it: Go's flag package
+	// stops at the first non-flag, so pull the argument out first.
+	var dir string
+	var rest []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || (len(rest) > 0 && rest[len(rest)-1] == "--public-key") {
+			rest = append(rest, a)
+			continue
+		}
+		if dir == "" {
+			dir = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	args = rest
+	if dir == "" && fs.NArg() == 1 {
+		dir = fs.Arg(0)
+	}
+	if dir == "" {
+		return fmt.Errorf("usage: todayd release-verify <dir> [--public-key K]")
+	}
+	if err := release.CheckDir(dir, *pub); err != nil {
+		return err
+	}
+	fmt.Printf("verified %s\n", dir)
 	return nil
 }
 
@@ -359,6 +486,13 @@ func runPasswd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Keep the tray's copy button working: the plaintext goes to the login
+	// keychain (never the database), exactly like the app does.
+	srv.SetPasswordHook(func(pw string) {
+		if err := keychain.Set(context.Background(), pw); err != nil {
+			fmt.Fprintln(os.Stderr, "warning:", err)
+		}
+	})
 	if err := srv.SetPassword(context.Background(), pw); err != nil {
 		return err
 	}

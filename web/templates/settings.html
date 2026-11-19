@@ -1,5 +1,17 @@
 {{define "settings.html"}}{{template "head" .}}
 <h1 class="page-title">设置</h1>
 <p class="page-sub">口令、设备与宿主行为。改动立即生效。</p>
-{{template "settings_panel.html" .}}
+<div class="settings-layout">
+  <nav class="anchor-nav" aria-label="设置分节">
+    <a href="#general">常规</a>
+    <a href="#display">显示与声音</a>
+    <a href="#weather">天气</a>
+    <a href="#funnel">外网</a>
+    <a href="#devices">设备</a>
+    <a href="#backup">备份</a>
+    <a href="#security">安全</a>
+    <a href="#firmware">固件</a>
+  </nav>
+  {{template "settings_panel.html" .}}
+</div>
 {{template "foot" .}}{{end}}

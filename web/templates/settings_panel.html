@@ -2,7 +2,8 @@
 <div id="settings-panel">
 {{if .Message}}<p class="flash">{{.Message}}</p>{{end}}
 {{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
-<div class="card">
+
+<div class="card" id="general">
   <div class="card-head"><h2>常规</h2></div>
   <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
     <input type="hidden" name="action" value="general">
@@ -24,13 +25,52 @@
       </div>
     </div>
     <div class="field">
-      <label for="tray_title">状态栏</label>
+      <label>更新</label>
       <div>
         <div class="checkline">
-          <input id="tray_title" type="checkbox" name="tray_title" value="1" {{if eq .Settings.tray_title "true"}}checked{{end}}>
-          <span>菜单栏标题显示今日进度</span>
+          <input type="hidden" name="update_auto_check_present" value="1">
+          <input id="update_auto_check" type="checkbox" name="update_auto_check" value="1" {{if ne .Settings.update_auto_check "false"}}checked{{end}}>
+          <span>启动 5 分钟后检查一次，之后每 6 小时检查（托盘里也能手动检查）</span>
         </div>
-        <div class="hint">关闭后只显示图标，不显示数字。</div>
+        <div class="checkline">
+          <input type="hidden" name="update_auto_download_present" value="1">
+          <input id="update_auto_download" type="checkbox" name="update_auto_download" value="1" {{if eq .Settings.update_auto_download "true"}}checked{{end}}>
+          <span>闲时自动下载（离开 10 分钟以上且接着电源时；不会自动重启）</span>
+        </div>
+        {{if .UpdateStatus}}<div class="hint"><strong>{{.UpdateStatus}}</strong></div>{{end}}
+        <div class="hint">下载用 ed25519 校验发布清单，校验不过就不安装；新版本必须与当前版本用同一张证书签名。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="tray_mode">菜单栏显示</label>
+      <div>
+        {{$mode := .Settings.tray_mode}}
+        {{if eq $mode ""}}{{$mode = "progress"}}{{end}}
+        <select id="tray_mode" name="tray_mode">
+          <option value="progress" {{if eq $mode "progress"}}selected{{end}}>进度 2/6</option>
+          <option value="next" {{if eq $mode "next"}}selected{{end}}>下一项：10:00 站会</option>
+          <option value="icon" {{if eq $mode "icon"}}selected{{end}}>仅图标</option>
+        </select>
+        <div class="hint">「下一项」显示最近一个还没到点的事项，超过 8 个字会省略；今天全部完成时显示 ✓。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="proxy_mode">代理</label>
+      <div>
+        <div class="checkline">
+          <input type="hidden" name="proxy_mode_present" value="1">
+          <input id="proxy_mode" type="checkbox" name="proxy_mode" value="1" {{if ne .Settings.proxy_mode "off"}}checked{{end}}>
+          <span>外网请求走代理（检查更新、下载、天气）</span>
+        </div>
+        <div class="checkline">
+          <input id="proxy_url" type="text" name="proxy_url" value="{{.Settings.proxy_url}}" placeholder="留空则使用系统代理" autocomplete="off" spellcheck="false">
+          <button class="ghost" type="submit" name="proxy_test" value="1">测试连接</button>
+        </div>
+        <div class="hint">
+          支持 <code>http://host:port</code>、<code>https://host:port</code>、<code>socks5://host:port</code>。
+          {{if .ProxySummary}}当前：{{.ProxySummary}}{{end}}
+          {{if .ProxyTest}}<br><strong>{{.ProxyTest}}</strong>{{end}}
+        </div>
       </div>
     </div>
     <div class="field">
@@ -50,6 +90,16 @@
         <div class="hint">IANA 名称（如 Asia/Shanghai）。留空或 Local 时按系统时区；决定“今天”的边界、重复物化和帧里的日期。</div>
       </div>
     </div>
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" id="display">
+  <div class="card-head"><h2>显示与声音</h2></div>
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+    <input type="hidden" name="action" value="general">
     <div class="field">
       <label for="night_off">夜间熄屏</label>
       <div>
@@ -66,11 +116,116 @@
       </div>
     </div>
     <div class="field">
-      <label for="funnel">外网访问</label>
+      <label for="auto_carry">未完成顺延</label>
+      <div>
+        <div class="checkline">
+          <input id="auto_carry" type="checkbox" name="auto_carry" value="1" {{if eq .Settings.auto_carry "true"}}checked{{end}}>
+          <span>每天自动把过去 14 天没做完的事项移到今天</span>
+        </div>
+        <div class="hint">重复事项过去的实例不顺延；在今日页也能手动「全部移到今天」。</div>
+      </div>
+    </div>
+    <div class="edit-actions">
+      <button type="submit">保存熄屏时间</button>
+    </div>
+  </form>
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+    <input type="hidden" name="action" value="sound">
+    <div class="field">
+      <label for="sound_volume">音量</label>
+      <div>
+        <input id="sound_volume" type="range" name="sound_volume" min="0" max="100" step="5" value="{{.Settings.sound_volume}}" oninput="document.getElementById('vol-out').textContent=this.value">
+        <span id="vol-out">{{.Settings.sound_volume}}</span>
+        <div class="hint">0 为静音。设备只在响的时候才打开功放。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>提示音</label>
+      <div>
+        <div class="checkline">
+          <input id="sound_keys" type="checkbox" name="sound_keys" value="1" {{if ne .Settings.sound_keys "false"}}checked{{end}}>
+          <span>按键音（勾选响高音，取消响低音，全部完成响琶音）</span>
+        </div>
+        <div class="checkline">
+          <input id="sound_alarm" type="checkbox" name="sound_alarm" value="1" {{if ne .Settings.sound_alarm "false"}}checked{{end}}>
+          <span>事项到点提醒</span>
+        </div>
+        <div class="hint">夜间熄屏时段内两种声音都不响；响铃时按任意键只停铃，不会勾选或移动光标。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="alarm_lead_minutes">提前提醒</label>
+      <div>
+        <select id="alarm_lead_minutes" name="alarm_lead_minutes">
+          {{$lead := .Settings.alarm_lead_minutes}}
+          <option value="0" {{if eq $lead "0"}}selected{{end}}>准时</option>
+          <option value="5" {{if eq $lead "5"}}selected{{end}}>提前 5 分钟</option>
+          <option value="10" {{if eq $lead "10"}}selected{{end}}>提前 10 分钟</option>
+          <option value="15" {{if eq $lead "15"}}selected{{end}}>提前 15 分钟</option>
+        </select>
+        <div class="hint">提前量在服务端算好，写进帧响应的 X-Alarms；设备断网也按本地时钟响。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>试听</label>
+      <div>
+        <div class="hint">在「设备」里对某一台点「试听」，它会在 1 分钟内响一声（不影响这里的设置）。</div>
+      </div>
+    </div>
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" id="weather">
+  <div class="card-head"><h2>天气</h2></div>
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+    <input type="hidden" name="action" value="weather">
+    <div class="field">
+      <label for="weather_api_key">WeatherAPI Key</label>
+      <div>
+        <input id="weather_api_key" type="text" name="weather_api_key" value="{{.Settings.weather_api_key}}" autocomplete="off" spellcheck="false" placeholder="填入 key 后屏上显示天气">
+        <div class="hint">
+          {{if .Weather.KeyBad}}<strong>key 无效</strong>（WeatherAPI 返回 401/403），请检查后重新填。{{else if .Weather.KeySet}}当前 key：<span class="weather-key">{{.Settings.weather_api_key}}</span>{{end}}
+          没有 key 时屏上不显示天气。注册免费 key：<a href="https://www.weatherapi.com/signup.aspx" target="_blank" rel="noopener">weatherapi.com</a>。免费额度每月 100,000 次，本项目每 30 分钟最多一次。
+          {{if .Weather.Detail}}<br>上次失败：{{.Weather.Detail}}{{end}}
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="weather_city">默认城市</label>
+      <div>
+        <input id="weather_city" type="text" name="weather_city" value="{{.Settings.weather_city}}" placeholder="北京" autocomplete="off">
+        <div class="hint">留空时按 IP 定位。城市名直接交给 WeatherAPI 的 q 参数（支持中英文城市名）。{{if .Weather.City}}当前：{{.Weather.City}}（{{.Weather.Source}}）{{end}}</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>IP 定位</label>
+      <div>
+        <div class="checkline">
+          <input id="weather_ip_fallback" type="checkbox" name="weather_ip_fallback" value="1" {{if ne .Settings.weather_ip_fallback "false"}}checked{{end}}>
+          <span>未配置城市时按 IP 自动定位</span>
+        </div>
+        <div class="hint">开启后会把公网 IP 发给 WeatherAPI（约城市级）。板子在本机局域网时用 Mac 的公网出口；板子经外网访问时用它自己的公网 IP。</div>
+      </div>
+    </div>
+    <div class="edit-actions">
+      <button type="submit">保存天气设置</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" id="funnel">
+  <div class="card-head"><h2>外网访问</h2></div>
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+    <input type="hidden" name="action" value="general">
+    <div class="field">
+      <label for="funnel">Tailscale Funnel</label>
       <div>
         <div class="checkline">
           <input id="funnel" type="checkbox" name="funnel" value="1" {{if eq .Settings.funnel "true"}}checked{{end}}>
-          <span>开启 Tailscale Funnel</span>
+          <span>开启外网访问</span>
         </div>
         <div class="hint">
           {{if .Settings.funnel_host}}当前地址：{{.Settings.funnel_host}}{{else}}勾选后由宿主启动，地址写回设置。{{end}}
@@ -87,7 +242,92 @@
   </form>
 </div>
 
-<div class="card">
+<div class="card" id="devices">
+  <div class="card-head"><h2>设备</h2><span class="count">{{len .Devices}}</span></div>
+  {{if and .Settings.localnet_state (ne .Settings.localnet_state "ok")}}
+  <div class="localnet-warn" role="status">
+    <strong>设备无法连入这台 Mac。</strong>
+    {{if eq .Settings.localnet_state "denied"}}macOS 已拒绝「本地网络」访问，手机和显示屏都连不进来。{{else}}还没有确认「本地网络」权限；若手机或显示屏连不上，先允许它。{{end}}
+    <div class="hint">{{.Settings.localnet_detail}}</div>
+    {{if eq .Settings.localnet_adhoc "true"}}<div class="hint">当前是 ad-hoc 签名的开发包：重新打包后 macOS 会把它当成新程序，可能再问一次。</div>{{end}}
+    <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+      <input type="hidden" name="action" value="localnet_request">
+      <button class="ghost" type="submit">申请本地网络权限</button>
+    </form>
+  </div>
+  {{end}}
+  <div class="settings">
+    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+      <input type="hidden" name="action" value="add_device">
+      <input type="text" name="device_id" placeholder="设备 ID（如 dev2）" pattern="[a-z0-9][a-z0-9_-]{0,31}" maxlength="32" required aria-label="设备 ID">
+      <input type="text" name="device_name" placeholder="名称（可选）" maxlength="80" aria-label="设备名称">
+      <button class="ghost" type="submit">添加设备</button>
+    </form>
+    {{if .Token}}
+    <div class="token-box">
+      <div class="hint">新 token 只显示这一次。把下面四行贴进串口（115200），设备会写进 NVS：</div>
+      <div class="token">{{.Token}}</div>
+      <pre class="token setup-cmds" id="setup-cmds">{{range .SetupCmds}}{{.}}
+{{end}}</pre>
+      <button class="ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('setup-cmds').innerText);this.textContent='已复制'">复制命令</button>
+    </div>
+    {{end}}
+    {{range .Devices}}
+    <div class="device{{if not (online .)}} offline{{end}}">
+      <div class="device-main">
+        <div class="name">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="sr-only">{{if online .}}在线{{else}}离线{{end}}</span>
+          {{.Name}} <span class="meta">{{.ID}}</span>
+        </div>
+        <dl class="device-stats">
+          <div><dt>状态</dt><dd>{{if online .}}在线{{else}}离线{{end}}</dd></div>
+          <div><dt>最后取帧</dt><dd>{{since .}}</dd></div>
+          <div><dt>电量</dt><dd>{{batteryPct .}}{{if .BatteryMV}}<span class="meta"> · {{.BatteryMV}} mV</span>{{end}}</dd></div>
+          <div><dt>温湿度</dt><dd>{{climate .}}</dd></div>
+          <div><dt>固件</dt><dd>{{with index $.Settings "firmware_version"}}{{.}}{{else}}未上传{{end}}</dd></div>
+          <div><dt>天气城市</dt><dd>{{with index $.Settings (printf "weather_city_%s" .ID)}}{{.}}{{else}}{{index $.Settings "weather_city"}}{{end}}</dd></div>
+        </dl>
+        <form class="device-city" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+          <input type="hidden" name="action" value="device_city">
+          <input type="hidden" name="device" value="{{.ID}}">
+          <label class="sr-only" for="city-{{.ID}}">设备 {{.ID}} 的天气城市</label>
+          <input id="city-{{.ID}}" type="text" name="weather_city" value="{{index $.Settings (printf "weather_city_%s" .ID)}}" placeholder="天气城市（留空用默认）" autocomplete="off">
+          <button class="ghost" type="submit">保存城市</button>
+        </form>
+      </div>
+      <div class="device-actions">
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+          <input type="hidden" name="action" value="refresh_device">
+          <input type="hidden" name="device" value="{{.ID}}">
+          <button class="ghost" type="submit">立即刷新</button>
+        </form>
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+          <input type="hidden" name="action" value="preview_device">
+          <input type="hidden" name="device" value="{{.ID}}">
+          <button class="ghost" type="submit">试听</button>
+        </form>
+        <a class="button ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank" rel="noopener">预览</a>
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+          <input type="hidden" name="action" value="device_token">
+          <input type="hidden" name="device" value="{{.ID}}">
+          <button class="ghost" type="submit">生成 token</button>
+        </form>
+        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+          <input type="hidden" name="action" value="revoke_device">
+          <input type="hidden" name="device" value="{{.ID}}">
+          <button class="danger" type="submit" aria-label="吊销设备 {{.ID}}">吊销</button>
+        </form>
+      </div>
+      {{if .RevokedAt}}<div class="meta">已吊销</div>{{end}}
+    </div>
+    {{else}}
+    <p class="empty">还没有设备</p>
+    {{end}}
+  </div>
+</div>
+
+<div class="card" id="security">
   <div class="card-head"><h2>安全</h2></div>
   <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
     <input type="hidden" name="action" value="password">
@@ -110,61 +350,27 @@
   </form>
 </div>
 
-<div class="card">
-  <div class="card-head"><h2>设备</h2><span class="count">{{len .Devices}}</span></div>
-  <div class="settings">
-    <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
-      <input type="hidden" name="action" value="add_device">
-      <input type="text" name="device_id" placeholder="设备 ID（如 dev2）" pattern="[a-z0-9][a-z0-9_-]{0,31}" maxlength="32" required aria-label="设备 ID">
-      <input type="text" name="device_name" placeholder="名称（可选）" maxlength="80" aria-label="设备名称">
-      <button class="ghost" type="submit">添加设备</button>
-    </form>
-    {{if .Token}}
-    <div class="token-box">
-      <div class="hint">新 token 只显示这一次。把下面四行贴进串口（115200），设备会写进 NVS：</div>
-      <div class="token">{{.Token}}</div>
-      <pre class="token setup-cmds" id="setup-cmds">{{range .SetupCmds}}{{.}}
-{{end}}</pre>
-      <button class="ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('setup-cmds').innerText);this.textContent='已复制'">复制命令</button>
-    </div>
-    {{end}}
-    {{range .Devices}}
-    <div class="device">
-      <div>
-        <div class="name">{{.Name}} <span class="meta">{{.ID}}</span></div>
-        <div class="meta">
-          {{if .LastSeenAt}}上次取帧 {{fmtTime .LastSeenAt}}{{else}}从未连接{{end}}
-          {{if .RevokedAt}} · 已吊销{{end}}
-          {{if .BatteryMV}} · {{.BatteryMV}} mV{{end}}
-          {{if index $.Settings "power_state"}} · {{powerLabel (index $.Settings "power_state")}}{{end}}
-        </div>
-      </div>
-      <div class="checkline">
-        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
-          <input type="hidden" name="action" value="device_token">
-          <input type="hidden" name="device" value="{{.ID}}">
-          <button class="ghost" type="submit">生成 token</button>
-        </form>
-        <a class="button ghost" href="/api/devices/{{.ID}}/preview.png?scale=2" target="_blank" rel="noopener">预览</a>
-        <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
-          <input type="hidden" name="action" value="revoke_device">
-          <input type="hidden" name="device" value="{{.ID}}">
-          <button class="danger" type="submit" aria-label="吊销设备 {{.ID}}">吊销</button>
-        </form>
-      </div>
-    </div>
-    {{else}}
-    <p class="empty">还没有设备</p>
-    {{end}}
-  </div>
-</div>
-
-<div class="card">
+<div class="card" id="firmware">
   <div class="card-head">
     <h2>固件</h2>
     <span class="count">{{with index .Settings "firmware_version"}}{{.}}{{else}}未上传{{end}}</span>
   </div>
   <div class="settings">
+    {{if index .Settings "firmware_pending_version"}}
+    <div class="field">
+      <label>待推送</label>
+      <div>
+        <div class="checkline">
+          <strong>{{index .Settings "firmware_pending_version"}}</strong>
+          <form hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+            <input type="hidden" name="action" value="push_firmware">
+            <button class="ghost" type="submit">推送给设备</button>
+          </form>
+        </div>
+        <div class="hint">镜像已经校验并放进 OTA 槽位，但还没有告诉设备升级。点「推送给设备」后，设备在下次取帧时升级（仅当这个版本比它当前的新）。</div>
+      </div>
+    </div>
+    {{end}}
     <form class="add-device" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML" hx-encoding="multipart/form-data" enctype="multipart/form-data">
       <input type="hidden" name="action" value="upload_firmware">
       <input type="file" name="firmware" accept=".bin,application/octet-stream" required aria-label="固件文件">
@@ -175,7 +381,80 @@
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="backup">
+  <div class="card-head"><h2>备份</h2><span class="count">保留最近 14 份</span></div>
+  <div class="settings">
+    <div class="field">
+      <label>数据目录</label>
+      <div>
+        <code>{{.DataRoot}}</code>
+        <div class="hint">数据库、配置与备份都在这里（0700）。删除 app 不会删数据。{{if .DataNote}}<br><strong>{{.DataNote}}</strong>{{end}}</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>最近备份</label>
+      <div>
+        {{if .Backup.LastLocal}}本地：{{.Backup.LastLocal}}{{else}}还没有备份{{end}}
+        {{if .Backup.LastCloud}}<br>iCloud：{{.Backup.LastCloud}}{{end}}
+        {{if .Backup.Error}}<br><span class="flash error">{{.Backup.Error}}</span>{{end}}
+        <div class="checkline">
+          <form hx-post="/api/backup" hx-target="#settings-panel" hx-swap="outerHTML">
+            <button class="ghost" type="submit">立即备份</button>
+          </form>
+          <a class="button ghost" href="file://{{.Backup.Dir}}" target="_blank" rel="noopener">在 Finder 中显示</a>
+          {{if .Backup.CloudOn}}
+          <a class="button ghost" href="file://{{.Backup.CloudDir}}" target="_blank" rel="noopener">在 Finder 中显示 iCloud 备份</a>
+          {{end}}
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="backup_icloud">iCloud</label>
+      <div>
+        {{if .Backup.CloudOn}}
+        <div class="checkline">
+          <input type="hidden" name="backup_icloud_present" value="1">
+          <input id="backup_icloud" type="checkbox" name="backup_icloud" value="1" {{if ne .Settings.backup_icloud "false"}}checked{{end}}>
+          <span>同时把备份复制到 iCloud Drive（{{.Backup.CloudPath}}）</span>
+        </div>
+        <div class="hint">只有备份文件会进 iCloud，数据库本体始终在本机。备份里不含登录会话密钥与 WeatherAPI key。</div>
+        {{else}}
+        <div class="hint">在系统设置里打开 iCloud Drive 后可用。数据库本体始终在本机，不会进 iCloud。</div>
+        {{end}}
+      </div>
+    </div>
+  </div>
+  <form class="settings" hx-post="/api/settings" hx-target="#settings-panel" hx-swap="outerHTML">
+    <input type="hidden" name="action" value="general">
+    {{if .Backup.CloudOn}}<input type="hidden" name="backup_icloud_present" value="1">{{end}}
+    <div class="edit-actions">
+      <button type="submit">保存 iCloud 设置</button>
+    </div>
+  </form>
+  {{if .Snapshots}}
+  <details class="group">
+    <summary class="group-title">从备份恢复… <span class="count">{{len .Snapshots}}</span></summary>
+    <div class="list-rows">
+      {{range .Snapshots}}
+      <div class="list-row">
+        <div class="meta">{{.Where}}</div>
+        <div class="row-main">
+          <div class="row-title">{{.Name}}</div>
+          <div class="meta">{{.When}} · {{.Size}}</div>
+        </div>
+        <form hx-post="/api/backup/restore" hx-target="#settings-panel" hx-swap="outerHTML"
+              hx-confirm="用 {{.Name}} 覆盖当前数据库？当前数据会先被另存为 today-before-restore 备份。">
+          <input type="hidden" name="snapshot" value="{{.Name}}">
+          <button class="danger" type="submit">恢复</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+  </details>
+  {{end}}
+</div>
+
+<div class="card" id="status">
   <div class="card-head"><h2>状态</h2></div>
   <div class="settings">
     <div class="field">

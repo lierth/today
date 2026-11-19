@@ -14,7 +14,8 @@ func TestBootAndRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	db := filepath.Join(t.TempDir(), "today.db")
-	cfg := Config{Addr: "127.0.0.1:0", DBPath: db, Dev: true, Logger: log.New(io.Discard, "", 0)}
+	cfg := Config{Addr: "127.0.0.1:0", DBPath: db, Dev: true,
+		Logger: log.New(io.Discard, "", 0), SkipCloud: true}
 
 	a, pw, err := Boot(ctx, cfg)
 	if err != nil {
@@ -60,5 +61,26 @@ func TestDefaultPaths(t *testing.T) {
 	}
 	if got := DefaultDBPath(); got == "" || filepath.Base(got) != "today.db" {
 		t.Fatalf("default db path: %q", got)
+	}
+}
+
+// A restart must not race the first process's ticker: Start's maintain runs
+// immediately, and if Close leaves it running it queries the closed store and
+// the next Boot fails on journal_mode with "database is locked". This is the
+// flake that took 26 clean runs to notice; with the ticker owned by the
+// server and waited for in Shutdown it is deterministic.
+func TestRestartWaitsForTicker(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := Config{Addr: "127.0.0.1:0", DBPath: filepath.Join(dir, "today.db"),
+		Dev: true, Logger: log.New(io.Discard, "", 0), SkipCloud: true}
+	for i := 0; i < 5; i++ {
+		a, _, err := Boot(ctx, cfg)
+		if err != nil {
+			t.Fatalf("boot %d: %v", i, err)
+		}
+		if err := a.Close(); err != nil {
+			t.Fatalf("close %d: %v", i, err)
+		}
 	}
 }

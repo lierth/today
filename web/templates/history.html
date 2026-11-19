@@ -1,6 +1,7 @@
 {{define "history.html"}}{{template "head" .}}
 <h1 class="page-title">历史</h1>
-<p class="page-sub">今天之前的事项，最近 200 条。</p>
+<p class="page-sub stat-line">本周完成 <strong>{{.WeekDone}}</strong> 项 · 上周 <strong>{{.LastWeekDone}}</strong> 项</p>
+<p class="hint">按周一到周日算；已取消的事项不计入。</p>
 
 <section class="card">
   <div class="card-head">

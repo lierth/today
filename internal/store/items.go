@@ -35,8 +35,14 @@ type Item struct {
 	RRule       string     `json:"rrule,omitempty"`
 	SeriesID    string     `json:"series_id,omitempty"`
 	SortKey     int64      `json:"sort_key"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// CarriedFrom is the local date the item slipped from, when a past open
+	// item was moved to today. Empty for ordinary items.
+	CarriedFrom string `json:"carried_from,omitempty"`
+	// ManualRank is the drag position someone chose for this item on its day;
+	// 0 means the row has never been dragged and sorts by its time.
+	ManualRank int64     `json:"manual_rank,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // Done reports whether the item is checked off.
@@ -44,9 +50,11 @@ func (it Item) Done() bool { return it.Status == StatusDone }
 
 const (
 	itemSelect = `id, title, description, all_day, starts_at, due_at, date_local,
-		status, pinned, rrule, COALESCE(series_id, ''), sort_key, created_at, updated_at`
+		status, pinned, rrule, COALESCE(series_id, ''), sort_key, carried_from,
+		manual_rank, created_at, updated_at`
 	itemCols = `id, title, description, all_day, starts_at, due_at, date_local,
-		status, pinned, rrule, series_id, sort_key, created_at, updated_at`
+		status, pinned, rrule, series_id, sort_key, carried_from, manual_rank,
+		created_at, updated_at`
 )
 
 func scanItem(row interface{ Scan(...any) error }) (Item, error) {
@@ -59,7 +67,7 @@ func scanItem(row interface{ Scan(...any) error }) (Item, error) {
 	)
 	err := row.Scan(&it.ID, &it.Title, &it.Description, &allDay, &startsAt, &dueAt,
 		&it.DateLocal, &it.Status, &pinned, &rrule, &it.SeriesID, &it.SortKey,
-		&createdAt, &updatedAt)
+		&it.CarriedFrom, &it.ManualRank, &createdAt, &updatedAt)
 	if err != nil {
 		return Item{}, err
 	}
@@ -144,13 +152,23 @@ func (s *Store) CreateItem(ctx context.Context, in Item, loc *time.Location) (It
 		return Item{}, err
 	}
 	in.CreatedAt, in.UpdatedAt = now, now
+	// A weekly rule with BYDAY starts on its first listed day, not on whatever
+	// weekday the person typed the rule on. Without this, "每周一三五" entered
+	// on a Thursday leaves a Thursday master row and skips the first Friday.
+	if in.StartsAt != nil && in.RRule != "" {
+		if rec, err := parseRRule(in.RRule, loc); err == nil && len(rec.byDay) > 0 {
+			aligned := occurrence(in.StartsAt.In(loc), rec, 0)
+			in.StartsAt = &aligned
+		}
+	}
 	in.fillDerived(loc, now)
 
 	_, err := s.db.ExecContext(ctx, `INSERT INTO items (`+itemCols+`, deleted_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`,
 		in.ID, in.Title, in.Description, boolInt(in.AllDay), nullTime(in.StartsAt),
 		nullTime(in.DueAt), in.DateLocal, in.Status, boolInt(in.Pinned), in.RRule,
-		nullable(in.SeriesID), in.SortKey, timeStr(in.CreatedAt), timeStr(in.UpdatedAt))
+		nullable(in.SeriesID), in.SortKey, in.CarriedFrom, in.ManualRank,
+		timeStr(in.CreatedAt), timeStr(in.UpdatedAt))
 	if err != nil {
 		return Item{}, fmt.Errorf("store: create item: %w", err)
 	}
@@ -183,7 +201,8 @@ func (s *Store) Item(ctx context.Context, id string) (Item, error) {
 func (s *Store) ItemsOn(ctx context.Context, dateLocal string) ([]Item, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemSelect+` FROM items
 		WHERE date_local = ? AND deleted_at IS NULL
-		ORDER BY pinned DESC, (status = 'done') ASC, sort_key ASC, created_at ASC`,
+		ORDER BY pinned DESC, (status = 'done') ASC, (manual_rank = 0) ASC,
+		         manual_rank ASC, sort_key ASC, created_at ASC`,
 		dateLocal)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items: %w", err)

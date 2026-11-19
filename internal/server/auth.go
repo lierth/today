@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,6 +112,32 @@ func (s *Server) EnsureAuth(ctx context.Context) (string, error) {
 	return generated, nil
 }
 
+// SetPasswordHook registers the callback that mirrors the plaintext to the
+// keychain. It is a hook, not an import, so the server never depends on a
+// platform keychain and the tests never touch the real one.
+func (s *Server) SetPasswordHook(fn func(pw string)) {
+	s.sessionMu.Lock()
+	s.onPassword = fn
+	s.sessionMu.Unlock()
+}
+
+func (s *Server) passwordHook() func(string) {
+	s.sessionMu.RLock()
+	defer s.sessionMu.RUnlock()
+	return s.onPassword
+}
+
+// CheckPassword verifies a plaintext password against the stored hash without
+// touching the database. It exists so the host can tell whether its keychain
+// copy is still the current one.
+func (s *Server) CheckPassword(ctx context.Context, pw string) (bool, error) {
+	hash, err := s.st.Setting(ctx, "auth_password_hash")
+	if err != nil {
+		return false, err
+	}
+	return hash != "" && verifyPassword(hash, pw), nil
+}
+
 // SetPassword replaces the password and rotates the session key, which
 // invalidates every existing cookie.
 func (s *Server) SetPassword(ctx context.Context, pw string) error {
@@ -125,6 +150,9 @@ func (s *Server) SetPassword(ctx context.Context, pw string) error {
 	}
 	if err := s.st.PutSettings(ctx, map[string]string{"auth_password_hash": h}); err != nil {
 		return err
+	}
+	if hook := s.passwordHook(); hook != nil {
+		hook(pw)
 	}
 	return s.RotateSessionKey(ctx)
 }
@@ -201,7 +229,13 @@ func (s *Server) secureCookie(r *http.Request) bool {
 	if s.cfg.Dev {
 		return false
 	}
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	// A Funnel request always arrives over TLS from the public host, and
+	// tailscaled sets X-Forwarded-Proto (again with Set, so it cannot be
+	// forged). The header is honoured only behind Funnel: on a direct request
+	// it is whatever the client typed, and trusting it there would hand a LAN
+	// browser a Secure cookie that plain HTTP never sends back.
+	return r.TLS != nil || (isFunnelRequest(r) &&
+		strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
@@ -321,17 +355,6 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	s.limiter.success(ip)
 	s.setSessionCookie(w, r)
 	http.Redirect(w, r, "/app", http.StatusFound)
-}
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // loginLimiter enforces 5 attempts per minute per IP and an increasing

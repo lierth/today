@@ -1,0 +1,19 @@
+{{define "search.html"}}{{template "head" .}}
+<h1 class="page-title">搜索</h1>
+<form class="quick search-form" method="get" action="/search" role="search">
+  <input type="search" name="q" value="{{.Query}}" placeholder="搜索标题和备注" autofocus aria-label="搜索">
+  <button type="submit">搜索</button>
+</form>
+<p class="page-sub">{{if .Query}}「{{.Query}}」的 {{len .Results}} 组结果{{else}}输入关键词，标题和备注都会搜{{end}}</p>
+
+{{if .Results}}
+{{range .Results}}
+<section class="card">
+  <div class="card-head"><h2>{{.Label}}</h2><span class="count">{{len .Items}}</span></div>
+  {{template "item_rows.html" .Items}}
+</section>
+{{end}}
+{{else if .Query}}
+<p class="empty">没有匹配的事项</p>
+{{end}}
+{{template "foot" .}}{{end}}

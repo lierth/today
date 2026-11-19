@@ -18,6 +18,7 @@ import (
 
 	"today/internal/config"
 	"today/internal/store"
+	"today/internal/weather"
 	"today/web"
 )
 
@@ -31,6 +32,25 @@ type Config struct {
 	// wants that (an app that never starts has no settings page); the CLI
 	// leaves it off so a wrong port fails loudly in the terminal.
 	FallbackPort bool
+	// Paths is the resolved data layout (~/.today): backups, firmware, and
+	// the note the migration left for the settings page.
+	Paths Paths
+}
+
+// Paths mirrors datahome.Paths for the parts the server uses. It is a plain
+// struct so the server package does not import the data layout package.
+type Paths struct {
+	Root     string
+	DB       string
+	Backups  string
+	Firmware string
+	// CloudDocs is the resolved iCloud Drive folder, or "" for "no iCloud".
+	// It is injected rather than discovered here on purpose: a test that calls
+	// backup code must never be able to write into the person's real iCloud,
+	// and app.Boot is the only place that looks the folder up.
+	CloudDocs string
+	// DataNote explains a failed or conflicting migration; empty when normal.
+	DataNote string
 }
 
 // Server is the long-lived HTTP service.
@@ -54,16 +74,41 @@ type Server struct {
 	settingsMu sync.Mutex
 	onSettings func(old, new map[string]string)
 
+	// onPassword runs after SetPassword committed the new hash. The host uses
+	// it to keep its keychain copy in step; the server stays platform-neutral.
+	onPassword func(pw string)
+
 	sessionMu  sync.RWMutex
 	sessionKey []byte
 
-	limiter *loginLimiter
-	tmpl    *template.Template
-	sleep   func(time.Duration)
+	localTokens localTokenStore
+	limiter     *loginLimiter
+	tmpl        *template.Template
+	sleep       func(time.Duration)
+
+	weather *weather.Client
+	// outbound is the one client for requests that leave this machine. It
+	// follows the proxy settings; local traffic uses its own clients.
+	outbound *http.Client
+	preview  previewSet
 
 	refreshMu   sync.Mutex
 	refreshAll  bool
 	refreshDone map[string]bool
+	refreshOne  map[string]bool // one-off per device, set by ForceRefresh
+
+	carryMu   sync.Mutex
+	lastCarry string // local date the auto-carry last ran
+
+	backups backupState
+
+	// The ticker owns a context derived from the caller's, and Shutdown
+	// cancels it and waits for tick to return. Without that, the first
+	// maintain keeps querying the database after the app closed it, and the
+	// next process (or the next Boot in a test) sees "database is locked".
+	tickMu     sync.Mutex
+	tickCancel context.CancelFunc
+	tickDone   chan struct{}
 }
 
 // New wires the router. Call Start to listen.
@@ -78,20 +123,27 @@ func New(st *store.Store, cfg Config) (*Server, error) {
 		refreshDone: map[string]bool{},
 		log:         cfg.Logger,
 		mux:         http.NewServeMux(),
-		startedAt:   time.Now(),
-		addr:        cfg.Addr,
-		instanceID:  b64(randomBytes(9)),
-		limiter:     newLoginLimiter(),
-		sleep:       time.Sleep,
+		weather:     weather.New(),
+		// Outbound HTTP (WeatherAPI now, the update feed later) goes through
+		// the configured proxy; loopback and LAN traffic never does.
+		outbound:   newOutboundClient(st, cfg.Logger),
+		startedAt:  time.Now(),
+		addr:       cfg.Addr,
+		instanceID: b64(randomBytes(9)),
+		limiter:    newLoginLimiter(),
+		sleep:      time.Sleep,
 	}
 	tmpl, err := template.New("today").Funcs(templateFuncs()).ParseFS(web.Templates(), "*.html")
 	if err != nil {
 		return nil, err
 	}
 	s.tmpl = tmpl
+	// WeatherAPI is the one request a frame makes to the internet; it must
+	// honour the proxy setting like every other outbound call.
+	s.weather.HTTP = s.outbound
 	s.routes()
 	s.http = &http.Server{
-		Handler:           s.mux,
+		Handler:           s.withOriginCheck(s.mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -101,11 +153,29 @@ func New(st *store.Store, cfg Config) (*Server, error) {
 }
 
 // Handler exposes the router for tests.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.withOriginCheck(s.mux) }
+
+// withOriginCheck rejects a state-changing request that a browser made from
+// another origin. See checkWriteOrigin for the rule.
+func (s *Server) withOriginCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !checkWriteOrigin(r) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.Error(w, "cross-origin request refused", http.StatusForbidden)
+				return
+			}
+			s.renderStatus(w, r, http.StatusForbidden, "login.html",
+				pageData{Title: "登录", Error: "来自其他网站的请求已被拒绝。"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /panel", s.handlePanel)
+	s.mux.HandleFunc("GET /local", s.handleLocalLogin)
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginPost)
 
@@ -126,6 +196,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/items", s.requireSession(s.handleItemCreate))
 	s.mux.HandleFunc("PATCH /api/items/{id}", s.requireSession(s.handleItemPatch))
 	s.mux.HandleFunc("DELETE /api/items/{id}", s.requireSession(s.handleItemDelete))
+	s.mux.HandleFunc("POST /api/items/{id}/restore", s.requireSession(s.handleRestore))
+	s.mux.HandleFunc("POST /api/items/{id}/status/{status}", s.requireSession(s.handleStatusUndo))
+	s.mux.HandleFunc("POST /api/items/carry", s.requireSession(s.handleCarry))
+	s.mux.HandleFunc("POST /api/items/uncarry", s.requireSession(s.handleUncarry))
+	s.mux.HandleFunc("POST /api/items/reorder", s.requireSession(s.handleReorder))
+	s.mux.HandleFunc("POST /api/items/move", s.requireSession(s.handleReorderGroup))
+	s.mux.HandleFunc("POST /api/items/parse", s.requireSession(s.handleParsePreview))
+	s.mux.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupNow))
+	s.mux.HandleFunc("POST /api/backup/restore", s.requireSession(s.handleBackupRestore))
+	s.mux.HandleFunc("GET /search", s.requireSession(s.handleSearch))
 	s.mux.HandleFunc("GET /api/settings", s.requireSession(s.handleSettingsGet))
 	s.mux.HandleFunc("POST /api/settings", s.requireSession(s.handleSettingsPost))
 	s.mux.HandleFunc("GET /api/devices/{id}/preview.png", s.requireSession(s.handlePreview))
@@ -159,6 +239,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // the settings page that fixes the port. BindNote reports what happened.
 func (s *Server) Start(ctx context.Context) error {
 	s.ForceFullRefresh()
+	// Backups run on the same five-minute ticker as materialisation; installing
+	// the hook here means both entry points (the app and todayd) get it.
+	s.installBackupHook()
 	if err := s.listen(); err != nil {
 		if !s.cfg.FallbackPort {
 			return err
@@ -176,7 +259,19 @@ func (s *Server) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	go s.tick(ctx)
+	tickCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.tickMu.Lock()
+	prev := s.tickCancel
+	s.tickCancel, s.tickDone = cancel, done
+	s.tickMu.Unlock()
+	if prev != nil {
+		prev()
+	}
+	go func() {
+		defer close(done)
+		s.tick(tickCtx)
+	}()
 	return nil
 }
 
@@ -403,12 +498,32 @@ func NormalizeAddr(addr string) string {
 	return addr
 }
 
-// Shutdown stops the listener gracefully.
+// Shutdown stops the ticker and the listener gracefully. The ticker is waited
+// for: it owns the database connection, and returning before its current
+// maintain finishes would close the store underneath it.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.http == nil {
-		return nil
+	s.tickMu.Lock()
+	cancel, done := s.tickCancel, s.tickDone
+	s.tickCancel, s.tickDone = nil, nil
+	s.tickMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	return s.http.Shutdown(ctx)
+	var tickErr error
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			tickErr = ctx.Err()
+		}
+	}
+	if s.http == nil {
+		return tickErr
+	}
+	if err := s.http.Shutdown(ctx); err != nil {
+		return err
+	}
+	return tickErr
 }
 
 func (s *Server) tick(ctx context.Context) {
@@ -438,11 +553,50 @@ func (s *Server) maintain(ctx context.Context) {
 	} else if n > 0 {
 		s.log.Printf("server: materialized %d recurring items", n)
 	}
+	s.autoCarry(ctx, loc, now)
+	s.runDailyHook(now, loc)
 	if n, err := s.st.PruneOps(ctx, now.AddDate(0, 0, -30)); err == nil && n > 0 {
 		s.log.Printf("server: pruned %d op records", n)
 	}
 	if n, err := s.st.PruneAuthFails(ctx, now.AddDate(0, 0, -1)); err == nil && n > 0 {
 		s.log.Printf("server: pruned %d auth failures", n)
+	}
+}
+
+// autoCarry is the 00:05 rule: with `auto_carry` on, everything in the
+// unfinished window moves to today. It runs at most once per local day, so the
+// five-minute ticker does not move rows the person just carried by hand.
+func (s *Server) autoCarry(ctx context.Context, loc *time.Location, now time.Time) {
+	settings, err := s.st.Settings(ctx)
+	if err != nil || !store.BoolSetting(settings, "auto_carry") {
+		return
+	}
+	today := now.Format(store.DateLayout)
+	// The 00:00-00:05 tick belongs to the previous day's sleep; the maintain
+	// loop runs again within five minutes. This check must come *before* the
+	// day is marked, or the early return would burn the whole day and the
+	// carry would never run.
+	if now.Hour() == 0 && now.Minute() < 5 {
+		return
+	}
+	s.carryMu.Lock()
+	if s.lastCarry == today {
+		s.carryMu.Unlock()
+		return
+	}
+	s.carryMu.Unlock()
+	n, err := s.st.AutoCarry(ctx, today, loc)
+	if err != nil {
+		// Not marked as done: a transient failure retries on the next tick.
+		s.log.Printf("server: auto carry: %v", err)
+		return
+	}
+	s.carryMu.Lock()
+	s.lastCarry = today
+	s.carryMu.Unlock()
+	if n > 0 {
+		s.log.Printf("server: auto carried %d items to %s", n, today)
+		s.ForceFullRefresh()
 	}
 }
 

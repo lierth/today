@@ -23,7 +23,17 @@ const (
 	timeGap         = 8
 
 	maxRows = 10
+
+	// headerWidth is the room the second header line has before the widgets
+	// (which start at x=232). 212 px was the old cap; the widgets are the real
+	// limit, so the line may use up to their left edge minus a small gap.
+	headerWidth = 212
 )
+
+// BoardRowLimit is how many of a day's rows can appear on the panel. Past it
+// the last visible row becomes "+N 项", so a list of exactly this many still
+// fits without a summary row.
+const BoardRowLimit = maxRows
 
 // Item is one row of the board.
 type Item struct {
@@ -33,6 +43,21 @@ type Item struct {
 	AllDay   bool
 	Pinned   bool
 	StartsAt *time.Time
+	// Carried marks a row that slipped from an earlier day. The time column
+	// then shows "»" ahead of the clock. The embedded face has no U+21BB (↻),
+	// and the brief's fallback for that case is "»", which it does have; the
+	// glyph lives in the bitmap, so the device needs nothing new.
+	Carried bool
+}
+
+// Weather is the second header line's tail, already reduced to the words the
+// panel can hold. The server fills it; the frame never calls the network.
+type Weather struct {
+	City  string  // may be empty: the layout then omits the city first
+	Text  string  // at most four Han characters (weather.Report.Short)
+	TempC float64 // current
+	MaxC  float64
+	MinC  float64
 }
 
 // Input is everything a frame depends on.
@@ -42,11 +67,15 @@ type Input struct {
 	CursorRow   int // index into rendered rows; negative means no cursor
 	CursorStyle uint8
 	ForceFull   bool
+	Weather     Weather // zero value = no weather on the header line
 }
 
 // Build lays out and renders in deterministically. Items are expected in
 // display order; more than ten are folded into a "+N 项" row.
 func Build(in Input) (*Frame, error) {
+	// One render at a time: the faces are shared and their Metrics/Glyph
+	// calls use an internal buffer that is not safe for concurrent use.
+	defer lockRender()()
 	body, err := faceAt(px(bodyFontSize))
 	if err != nil {
 		return nil, err
@@ -169,7 +198,30 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 	if len(in.Items) > 0 {
 		line2 = fmt.Sprintf("%s · %d/%d", line2, done, len(in.Items))
 	}
-	line2 = truncate(small, line2, px(212))
+	// Weather comes last and degrades in two steps: first the city name, then
+	// the high/low pair. The condition and the current temperature are the
+	// parts a person actually reads, so they go last.
+	if w := in.Weather; w.Text != "" {
+		weather := fmt.Sprintf("%s %s %s–%s°", w.City, w.Text,
+			roundC(w.MinC), roundC(w.MaxC))
+		if w.City == "" {
+			weather = fmt.Sprintf("%s %s–%s°", w.Text, roundC(w.MinC), roundC(w.MaxC))
+		}
+		switch {
+		case fits(small, line2+" · "+weather, px(headerWidth)):
+			line2 += " · " + weather
+		default:
+			// Drop the city, then the range; keep the condition if it fits.
+			noCity := fmt.Sprintf("%s %s–%s°", w.Text, roundC(w.MinC), roundC(w.MaxC))
+			cond := fmt.Sprintf("%s %s°", w.Text, roundC(w.TempC))
+			if fits(small, line2+" · "+noCity, px(headerWidth)) {
+				line2 += " · " + noCity
+			} else if fits(small, line2+" · "+cond, px(headerWidth)) {
+				line2 += " · " + cond
+			}
+		}
+	}
+	line2 = truncate(small, line2, px(headerWidth))
 	c.text(small, line2, px(ContentX), baseline(small, 22, 18), 0)
 
 	// Widget rectangles are left blank in the real frame; the preview fills
@@ -177,6 +229,24 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 	for _, w := range WidgetRects {
 		c.fillLogical(int(w.X), int(w.Y), int(w.X+w.W), int(w.Y+w.H), 0xFF)
 	}
+}
+
+// fits reports whether s can be drawn in width logical pixels by face.
+func fits(face font.Face, s string, width int) bool {
+	return font.MeasureString(face, s).Ceil() <= width
+}
+
+// roundC formats a temperature the way the panel shows it.
+func roundC(v float64) string {
+	n := int(v)
+	if v < 0 {
+		if v-float64(n) <= -0.5 {
+			n--
+		}
+	} else if v-float64(n) >= 0.5 {
+		n++
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor bool, style uint8, y int) {
@@ -199,6 +269,12 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 		slot = it.StartsAt.Format("15:04")
 	} else if it.AllDay {
 		slot = "全天"
+	}
+	if it.Carried {
+		// A carried all-day row says "↻全天"; a carried timed row keeps its
+		// clock but the arrow sits before it, which is the one part a person
+		// needs to see at a glance.
+		slot = "»" + slot
 	}
 	if slot != "" {
 		tw := font.MeasureString(timeFace, slot).Ceil()
@@ -228,7 +304,11 @@ func drawSummaryRow(c *canvas, face font.Face, n, y int, cursor bool, style uint
 		c.fillLogical(ContentX, y+3, ContentX+gutterWidth, y+RowHeight-3, fg)
 	}
 	label := fmt.Sprintf("+%d 项", n)
-	c.text(face, label, px(ContentX+gutterWidth+gutterGap), baseline(face, y, RowHeight), fg)
+	// The summary stands in for the rows that did not fit, so its text starts
+	// where an item title would: one time-column further right than the
+	// gutter. That keeps the left edge straight down the whole list.
+	c.text(face, label, px(ContentX+gutterWidth+gutterGap+timeColumnWidth+timeGap),
+		baseline(face, y, RowHeight), fg)
 }
 
 func drawEmpty(c *canvas, body, hint font.Face) {

@@ -1,19 +1,15 @@
 {{define "items.html"}}{{template "head" .}}
 <h1 class="page-title">事项</h1>
-<p class="page-sub">全部事项，含已完成与重复规则。重复实例由服务端每天物化。</p>
+<p class="page-sub">按时间分组。重复系列只显示下一次；已完成的收在最后。</p>
 
 <div class="card">
-  <form class="quick quick-items" hx-post="/api/items" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}' hx-on::after-request="if (event.detail.successful) this.reset()">
-    <input type="text" name="title" placeholder="新事项…" maxlength="200" required autocomplete="off" aria-label="标题">
-    <input type="date" name="date" aria-label="日期">
-    <input type="time" name="time" aria-label="时间">
-    <select name="rrule" aria-label="重复">
-      <option value="">不重复</option>
-      <option value="FREQ=DAILY">每天</option>
-      <option value="FREQ=WEEKLY">每周</option>
-      <option value="FREQ=MONTHLY">每月</option>
-    </select>
+  <form class="quick quick-items" id="quick-add" hx-post="/api/items" hx-target="#items-list" hx-swap="outerHTML" hx-vals='{"view":"items"}' hx-on::after-request="if (event.detail.elt === this &amp;&amp; event.detail.successful) { this.reset(); document.getElementById('quick-tags').innerHTML=''; }">
+    <input id="add-title" type="text" name="raw" placeholder="添加一件事…试试「每周一三五 健身」" maxlength="220" required autocomplete="off" aria-label="标题"
+           hx-post="/api/items/parse" hx-trigger="keyup changed delay:300ms" hx-swap="none">
+    <input type="date" name="date_manual" aria-label="日期">
+    <input type="time" name="time_manual" aria-label="时间">
     <button type="submit">添加</button>
+    <div id="quick-tags" class="quick-tags" aria-live="polite"></div>
   </form>
 </div>
 

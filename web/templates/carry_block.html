@@ -1,0 +1,28 @@
+{{define "carry_block.html"}}
+<section id="carry-block" class="card carry">
+  <div class="card-head">
+    <h2>之前未完成 <span class="count">{{len .CarriedAt}}</span></h2>
+    <form hx-post="/api/items/carry" hx-target="#carry-swap" hx-swap="outerHTML">
+      <input type="hidden" name="all" value="1">
+      <button class="ghost" type="submit">全部移到今天</button>
+    </form>
+  </div>
+  <p class="hint carry-note">过去 14 天没有勾选的事项。重复事项过去的实例不顺延，改系列本身即可。</p>
+  <ul class="items carried">
+    {{range .CarriedAt}}
+    <li class="item{{if .Item.Done}} done{{end}}">
+      <div class="gutter" aria-hidden="true">↻</div>
+      <div class="time">{{if .Item.AllDay}}全天{{else}}{{timeLabel .Item}}{{end}}</div>
+      <div class="title">
+        <a href="/items/{{.ID}}">{{.Title}}</a>
+        <span class="meta">从 {{.DayLabel}}</span>
+      </div>
+      <form hx-post="/api/items/carry" hx-target="#carry-swap" hx-swap="outerHTML">
+        <input type="hidden" name="item" value="{{.ID}}">
+        <button class="ghost small" type="submit">移到今天</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}

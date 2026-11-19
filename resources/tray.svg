@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Menu-bar glyph, 18x18 grid. A rounded screen with one tick inside, the
+  simplest read of the app icon. Drawn in pure black; render.sh strips the
+  colour so macOS can treat it as a template image and invert it per menu-bar
+  appearance. Lines land on whole pixels so 18 and 36 stay crisp.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <rect x="2.5" y="3.5" width="13" height="11" rx="2.5" ry="2.5"
+        fill="none" stroke="#000" stroke-width="1.6"/>
+  <path d="M6 9.2 l2 2.1 l4 -4.6" fill="none" stroke="#000" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

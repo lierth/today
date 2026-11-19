@@ -20,6 +20,8 @@ type Device struct {
 	ButtonsJSON string     `json:"buttons_json,omitempty"`
 	TZ          string     `json:"tz,omitempty"`
 	BatteryMV   int        `json:"battery_mv,omitempty"`
+	TempC       float64    `json:"temp_c,omitempty"`
+	Humidity    float64    `json:"humidity,omitempty"`
 	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -44,7 +46,7 @@ func (d Device) Panel() (w, h, rowH, font int) {
 }
 
 const deviceColumns = `id, name, token_hash, panel_w, panel_h, row_h, font_size,
-	buttons_json, tz, battery_mv, last_seen_at, revoked_at, created_at`
+	buttons_json, tz, battery_mv, temp_c, humidity, last_seen_at, revoked_at, created_at`
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var (
@@ -53,7 +55,8 @@ func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 		createdAt string
 	)
 	if err := row.Scan(&d.ID, &d.Name, &d.TokenHash, &d.PanelW, &d.PanelH, &d.RowH,
-		&d.FontSize, &d.ButtonsJSON, &d.TZ, &d.BatteryMV, &last, &rev, &createdAt); err != nil {
+		&d.FontSize, &d.ButtonsJSON, &d.TZ, &d.BatteryMV, &d.TempC, &d.Humidity,
+		&last, &rev, &createdAt); err != nil {
 		return Device{}, err
 	}
 	d.LastSeenAt = scanTime(last)
@@ -103,7 +106,7 @@ func (s *Store) CreateDevice(ctx context.Context, id, name, tokenHash string) (D
 	now := time.Now()
 	d := Device{ID: id, Name: name, TokenHash: tokenHash, CreatedAt: now}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO devices (`+deviceColumns+`)
-		VALUES (?,?,?,0,0,0,0,'','',0,NULL,NULL,?)`,
+		VALUES (?,?,?,0,0,0,0,'','',0,0,0,NULL,NULL,?)`,
 		d.ID, d.Name, d.TokenHash, timeStr(now))
 	if err != nil {
 		return Device{}, fmt.Errorf("store: create device: %w", err)
@@ -141,6 +144,16 @@ func (s *Store) TouchDevice(ctx context.Context, id string, batteryMV int) error
 		WHERE id = ?`, timeStr(time.Now()), batteryMV, batteryMV, id)
 	if err != nil {
 		return fmt.Errorf("store: touch device: %w", err)
+	}
+	return nil
+}
+
+// TouchClimate records the last temperature and humidity the board reported.
+func (s *Store) TouchClimate(ctx context.Context, id string, tempC, humidity float64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE devices SET temp_c=?, humidity=? WHERE id = ?`, tempC, humidity, id)
+	if err != nil {
+		return fmt.Errorf("store: touch climate: %w", err)
 	}
 	return nil
 }

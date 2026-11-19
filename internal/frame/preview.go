@@ -55,6 +55,9 @@ func (f *Frame) WritePNG(w io.Writer, scale int) error {
 // The encoded frame leaves these rectangles blank, so the picture is for the
 // web/CLI preview only and never changes the ETag.
 func drawWidgetSamples(img *image.Gray) {
+	// It measures and draws with the shared faces, so it takes the same lock
+	// as Build.
+	defer lockRender()()
 	fill := func(x0, y0, x1, y1 int) {
 		for y := y0; y < y1; y++ {
 			if y < 0 || y >= img.Rect.Dy() {

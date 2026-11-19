@@ -22,6 +22,25 @@ var (
 	missing  sync.Map // rune -> struct{}
 )
 
+// renderMu serializes everything that touches an opentype.Face.
+//
+// golang.org/x/image's Face keeps a mutable buffer inside: Metrics, Glyph and
+// MeasureString all read into it. Two renders at once (two boards fetching
+// frames, or a board and the web preview) therefore corrupt each other's
+// output, and a corrupted bitmap changes the ETag.
+//
+// shortcut: 全局渲染锁，设备多到有竞争时改为每次渲染从已解析的
+// *opentype.Font 新建 Face。
+var renderMu sync.Mutex
+
+// lockRender takes the render lock and returns the unlock func, so a caller
+// can use `defer unlock()`. It also covers faceAt, whose first call for a size
+// creates a Face.
+func lockRender() func() {
+	renderMu.Lock()
+	return renderMu.Unlock
+}
+
 func baseFont() (*sfnt.Font, error) {
 	fontOnce.Do(func() {
 		fontSFNT, fontErr = sfnt.Parse(fontData)

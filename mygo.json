@@ -5,10 +5,13 @@
   "version": "0.1.0",
   "main": ".",
   "icon": "resources/icon.png",
-  "urlSchemes": ["today"],
+  "urlSchemes": [
+    "today"
+  ],
   "macos": {
     "infoPlist": {
-      "LSUIElement": true
+      "LSUIElement": true,
+      "NSLocalNetworkUsageDescription": "Today 需要访问局域网，才能让桌上的显示屏取到今天的事项。"
     }
   }
 }

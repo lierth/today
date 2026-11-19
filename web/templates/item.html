@@ -14,6 +14,10 @@
         <input id="title" class="wide" type="text" name="title" value="{{.Item.Title}}" maxlength="200" required>
       </div>
       <div class="field">
+        <label for="description">备注</label>
+        <textarea id="description" name="description" rows="3" maxlength="2000" placeholder="只在网页上显示，不上屏">{{.Item.Description}}</textarea>
+      </div>
+      <div class="field">
         <label for="date">日期</label>
         <input id="date" type="date" name="date" value="{{dateValue .Item}}">
       </div>
@@ -35,10 +39,7 @@
         <span class="hint">这是重复实例，只修改这一天。原始事项：<a href="/items/{{.Item.SeriesID}}">{{.Item.SeriesID}}</a></span>
       </div>
       {{else}}
-      <div class="field">
-        <label for="rrule">重复</label>
-        <input id="rrule" class="wide" type="text" name="rrule" value="{{.Item.RRule}}" placeholder="FREQ=WEEKLY;INTERVAL=1 或留空">
-      </div>
+      {{template "rrule_editor.html" .Item}}
       {{end}}
       <div class="field">
         <label>选项</label>

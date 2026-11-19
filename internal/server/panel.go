@@ -51,6 +51,13 @@ func (s *Server) panelOK(raw string) bool {
 }
 
 func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
+	// The panel link carries no session, so the source of the request is part
+	// of the lock: Funnel proxies public traffic from 127.0.0.1, and a leaked
+	// link pasted elsewhere must not be readable through it.
+	if !isLocalRequest(r) {
+		http.Error(w, "panel link requires the local machine", http.StatusForbidden)
+		return
+	}
 	token := r.URL.Query().Get("t")
 	if !s.panelOK(token) {
 		http.Error(w, "panel link expired", http.StatusUnauthorized)
