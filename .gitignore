@@ -17,3 +17,8 @@ firmware/dist/
 firmware/.vscode/
 firmware/*.bin
 firmware/*.elf
+
+# Release signing material — never commit.
+TODAY_RELEASE_KEY*
+*.p12
+*.key

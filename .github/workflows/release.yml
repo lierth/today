@@ -1,0 +1,112 @@
+name: release
+
+# Push a tag v0.4.0 and this builds the app and the board image, signs both
+# with the repository's ed25519 key, signs the bundle with the self-signed
+# code-signing certificate and publishes one GitHub release.
+#
+# Secrets (see docs/developing.md):
+#   TODAY_RELEASE_KEY        ed25519 private key, base64 (from todayd release-keygen)
+#   TODAY_RELEASE_PUBLIC_KEY the matching public key, base64 (also the -ldflags value)
+#   TODAY_CODESIGN_P12       base64 .p12 of the code-signing certificate
+#   TODAY_CODESIGN_PASSWORD  the .p12 password
+#   CODESIGN_IDENTITY        the certificate CN, e.g. "Today Self-Signed"
+#
+# Without TODAY_CODESIGN_* the build still works and is ad-hoc signed; it just
+# loses its permissions on every update.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    env:
+      # A step-level `if:` cannot read `secrets`; map them to the environment
+      # first and test the environment variable instead.
+      TODAY_CODESIGN_P12: ${{ secrets.TODAY_CODESIGN_P12 }}
+      TODAY_CODESIGN_PASSWORD: ${{ secrets.TODAY_CODESIGN_PASSWORD }}
+      TODAY_CODESIGN_CERT: ${{ secrets.TODAY_CODESIGN_CERT }}
+      TODAY_RELEASE_KEY: ${{ secrets.TODAY_RELEASE_KEY }}
+      TODAY_RELEASE_PUBLIC_KEY: ${{ secrets.TODAY_RELEASE_PUBLIC_KEY }}
+      CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pipx install platformio
+
+      - name: Version from the tag
+        id: version
+        run: echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The certificate and the trust setting live in a throwaway keychain: the
+      # runner is wiped afterwards, and nothing is written to the login
+      # keychain.
+      - name: Import the signing certificate
+        if: env.TODAY_CODESIGN_P12 != ''
+        env:
+          P12: ${{ env.TODAY_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ env.TODAY_CODESIGN_PASSWORD }}
+          CERT_PEM: ${{ env.TODAY_CODESIGN_CERT }}
+        run: |
+          set -eu
+          KEYCHAIN="$RUNNER_TEMP/today-signing.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/today.p12"
+          security import "$RUNNER_TEMP/today.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          # Trust the certificate for code signing inside the runner. A failure
+          # here is a real failure: codesign would sign untrusted.
+          printf '%s' "$CERT_PEM" | base64 --decode > "$RUNNER_TEMP/today.cer"
+          security add-trusted-cert -d -r trustRoot -p codeSign -k "$KEYCHAIN" \
+            "$RUNNER_TEMP/today.cer"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Checks
+        run: |
+          TZ=UTC go test ./...
+          TZ=UTC go test -race -count=3 ./...
+          python3 -I firmware/test/check_partitions.py firmware/partitions.csv
+
+      - name: Build, sign, package
+        run: scripts/release.sh "${{ steps.version.outputs.ver }}"
+
+      - name: Delete the temporary keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.ver }}" \
+            dist/release/Today-*.zip \
+            dist/release/Today-*.dmg \
+            dist/release/today-rlcd-*.bin \
+            dist/release/SHA256SUMS \
+            dist/release/SHA256SUMS.sig \
+            --title "Today ${{ steps.version.outputs.ver }}" \
+            --generate-notes

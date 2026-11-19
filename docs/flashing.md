@@ -31,7 +31,8 @@
 
 **A1 浏览器（Chrome / Edge）**
 
-1. 从 release 下载合并镜像 `today-rlcd-<版本>.bin`（约 1.3 MB，包含 bootloader、分区表、boot_app0、应用）。
+1. 从 release 下载**合并镜像** `today-rlcd-<版本>-full.bin`（约 1.3 MB，包含 bootloader、分区表、boot_app0、应用）。
+   同名但不带 `-full` 的 `today-rlcd-<版本>.bin` 是**只给 OTA 用的应用镜像**（没有 bootloader），**不要**用它做 USB 首次刷机，也不要把它写到 `0x0`。
 2. 打开 <https://espressif.github.io/esptool-js/>（乐鑫官方 esptool-js，Web Serial）。
 3. 连接板子（Chrome/Edge 才支持 Web Serial，Safari 不支持），选择串口，Flash address 填 `0x0`，选文件，Program。
 4. 烧完单击 PWR 重启。
@@ -42,7 +43,7 @@
 
 ```sh
 brew install esptool          # 或：uv tool install esptool
-esptool.py --chip esp32s3 --port /dev/cu.usbmodem1101 write_flash 0x0 today-rlcd-<版本>.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem1101 write_flash 0x0 today-rlcd-<版本>-full.bin
 ```
 
 `/dev/cu.usbmodem*` 用 `ls /dev/cu.*` 查；只有一个时也可以省略 `--port`，esptool 会自己找。
@@ -115,8 +116,8 @@ reboot
 ### 方式 B：SoftAP 配网（只收 Wi-Fi）
 
 1. 冷启动时按住 **KEY** 3 秒（或已存 Wi-Fi 连续失败 5 次后自动进入）。
-2. 屏上显示热点名 `Today-XXXX`、10 位密码、`http://192.168.4.1`。
-3. 手机/电脑连该热点，打开 `http://192.168.4.1`，填 SSID 和密码，保存后设备自动重启。
+2. 屏上显示热点名 `Today-XXXX`、**10 位纯数字密码**（屏上分成两组显示，例如 `12345 67890`，**输入时不带空格**）、大号 `http://192.168.4.1`。
+3. 手机/电脑连该热点，打开 `http://192.168.4.1`：页面会列出附近扫描到的网络（按信号强弱排序，标出加密网络），**点一下即可填入 SSID，只需再输密码**；隐藏网络仍可手动输入。点「重新扫描」可刷新，扫描时手机可能短暂断开。保存后设备自动重启。
 4. token 仍需走方式 A（串口）或网页设置页复制命令；SoftAP 只收 Wi-Fi。
 
 ## 3. OTA 升级
@@ -139,6 +140,7 @@ pio run -t erase              # 或 esptool.py --chip esp32s3 erase_flash
 | 上传失败 / `Failed to connect` | 按住 BOOT → 单击 PWR → 松开 BOOT 进下载模式；或换 USB 口 |
 | 屏不亮 | 单击 PWR；确认 USB 供电；RLCD 无背光，弱光下本来就很暗（见使用教程） |
 | 连不上 Wi-Fi | 只支持 **2.4 GHz**；SSID/密码区分大小写；SoftAP 配网会覆盖旧凭据 |
+| 热点密码输不进去 | 屏上是 10 位数字、分两组显示；**空格只是显示用**，输入 `4821993057` 这样的 10 位，不要输空格 |
 | 取帧 404 | `device` 或 `token` 与网页「设置 → 设备」不一致；token 重新生成后旧值立刻失效 |
 | 屏幕一直是 `WIFI SETUP` | 没有保存成功：重新连接热点提交，或改用串口方式 |
 | 刷过旧固件后 NVS 报错 / Wi-Fi 丢失 | 旧分区表把 `boot_app0` 写进了 NVS；升级到当前分区表后重新配网一次即可（`pio run -t erase` 可彻底清空） |
