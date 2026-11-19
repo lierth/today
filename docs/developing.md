@@ -99,6 +99,13 @@ cd firmware
 ./flash.sh merge      # 生成 dist/today-rlcd-merged.bin（浏览器刷机用）
 ```
 
+串口日志分两类：`reset: reason=…`、`portal: submitted/closed`、`acks: failed`、`ota: …` 是事件，任何构建都有，排查现场问题就看这几行；`setup: KEY held`、`portal: draw/pack/flush`、`painted screen, ink=`、`keys: KEY down|up` 是计时和输入边沿，只在带线调试时需要，默认编译不进固件。要它们：
+
+```sh
+pio run -e esp32-s3-devkitc1-n16r8-debug               # 打开 -DTODAY_DEBUG_LOG=1
+pio run -e esp32-s3-devkitc1-n16r8-debug -t upload
+```
+
 细节见 `firmware/README.md`。板子的官方资料在 <https://docs.waveshare.net/ESP32-S3-RLCD-4.2/>。
 
 ## 打包

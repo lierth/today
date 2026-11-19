@@ -144,7 +144,7 @@ func (s *Store) CreateItem(ctx context.Context, in Item, loc *time.Location) (It
 	if in.RRule != "" && in.StartsAt == nil {
 		return Item{}, errors.New("store: recurring item needs a start time")
 	}
-	now := time.Now()
+	now := s.Now()
 	if in.ID == "" {
 		in.ID = uuid.NewString()
 	}
@@ -334,7 +334,7 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 	if err := it.normalize(); err != nil {
 		return Item{}, err
 	}
-	it.UpdatedAt = time.Now()
+	it.UpdatedAt = s.Now()
 	it.fillDerived(loc, it.UpdatedAt)
 
 	_, err = s.db.ExecContext(ctx, `UPDATE items SET title=?, description=?, all_day=?,
@@ -450,7 +450,7 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 		return fmt.Errorf("store: unknown status %q", status)
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE items SET status=?, updated_at=?
-		WHERE id = ? AND deleted_at IS NULL`, status, timeStr(time.Now()), id)
+		WHERE id = ? AND deleted_at IS NULL`, status, timeStr(s.Now()), id)
 	if err != nil {
 		return fmt.Errorf("store: set status: %w", err)
 	}
@@ -465,7 +465,7 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 // generated instances from today onwards; deleting a generated instance
 // affects only that row.
 func (s *Store) DeleteItem(ctx context.Context, id string) error {
-	now := timeStr(time.Now())
+	now := timeStr(s.Now())
 	res, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=?, updated_at=?
 		WHERE id = ? AND deleted_at IS NULL`, now, now, id)
 	if err != nil {
@@ -477,7 +477,7 @@ func (s *Store) DeleteItem(ctx context.Context, id string) error {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=?, updated_at=?
 		WHERE series_id = ? AND deleted_at IS NULL AND date_local >= ?`,
-		now, now, id, time.Now().Format(DateLayout)); err != nil {
+		now, now, id, s.Now().Format(DateLayout)); err != nil {
 		return fmt.Errorf("store: delete series instances: %w", err)
 	}
 	return nil

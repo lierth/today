@@ -7,6 +7,11 @@ namespace portal {
 
 // Start opens "Today-XXXX" with a random password and an HTTP + DNS server.
 // The screen is expected to display ssid/password/url (see main.cpp).
+// Prepare generates the SSID and password without touching the radio. The
+// caller paints the screen from them first, then calls Start(): the panel must
+// not wait for the AP (or for a stuck HTTP/DNS tick) to show what to type.
+void Prepare();
+
 void Start();
 void Stop();
 void Loop();

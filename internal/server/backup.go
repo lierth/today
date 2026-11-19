@@ -100,7 +100,7 @@ func (s *Server) RunBackup(day string) error {
 		s.backups.mu.Unlock()
 	}()
 
-	now := time.Now()
+	now := s.clock()
 	stamp := now.Format("2006-01-02 15:04")
 	local, err := backup.Create(s.cfg.Paths.DB, s.backupDir(), "today", now)
 	s.backups.mu.Lock()
@@ -217,7 +217,7 @@ func (s *Server) runDailyHook(now time.Time, loc *time.Location) {
 
 // handleBackupNow is the "立即备份" button.
 func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
-	day := time.Now().Format(store.DateLayout)
+	day := s.clock().Format(store.DateLayout)
 	if err := s.RunBackup(day); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, ErrBackupBusy) {
@@ -297,7 +297,7 @@ func (s *Server) RestoreBackup(path string) error {
 	if dbPath == "" {
 		return errors.New("没有配置数据库路径")
 	}
-	if err := backup.Restore(path, dbPath, s.backupDir(), time.Now()); err != nil {
+	if err := backup.Restore(path, dbPath, s.backupDir(), s.clock()); err != nil {
 		return err
 	}
 	// The snapshot has no session key (every backup blanks it), but the

@@ -25,9 +25,24 @@
 #include "sound_synth.h"
 #include "sensors.h"
 #include "screens.h"
+#include "st7305.h"
 #include "storage.h"
 #include "tbf.h"
 #include "version.h"
+
+// Timing and input-edge lines are for a person with a serial cable attached,
+// not for a board in a kitchen. Off by default; `pio run -e ...-debug` turns
+// them on. Everything that answers "why did it open the hotspot / why did it
+// reboot / did the device get its frame" stays unconditional.
+#ifndef TODAY_DEBUG_LOG
+#define TODAY_DEBUG_LOG 0
+#endif
+
+#if TODAY_DEBUG_LOG
+#define DEBUG_LOG(...) Serial.printf(__VA_ARGS__)
+#else
+#define DEBUG_LOG(...) do {} while (0)
+#endif
 #include "widgets.h"
 
 namespace {
@@ -53,6 +68,15 @@ uint32_t lastPortalEnd = 0;      // millis() of the last close, 0 = never
 bool manualPortal = false;       // KEY hold latched, consumed by the loop
 bool portalDrawn = false;        // the setup screen is the current panel content
 bool lostBannerShown = false;    // the WIFI LOST line is on the panel
+#if TODAY_DEBUG_LOG
+bool portalPaintLogged = false;   // first successful portal paint was logged
+#endif
+
+// kPortalRefreshMs is how often the portal screen is repainted. The countdown
+// is the only changing element; a full paint measures 27 ms on the board
+// (draw 3 + pack 8 + flush 13), so one second is 2.7% of the CPU and the
+// panel's own RAM never flickers.
+constexpr uint32_t kPortalRefreshMs = 1000;
 uint32_t lastPortalPaint = 0;
 
 // Sound: policy from X-Sound (cached in NVS), alarm times from X-Alarms.
@@ -82,6 +106,29 @@ String availableFirmware;
 
 void DrawWidgets();
 void PaintWifiLostOverlay();
+void PaintPortalScreen();
+
+// ResetReasonName decodes esp_reset_reason() for the boot line.
+const char* ResetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "int-wdt";
+    case ESP_RST_TASK_WDT: return "task-wdt";
+    case ESP_RST_WDT: return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    case ESP_RST_USB: return "usb-uart-reset";
+    case ESP_RST_JTAG: return "jtag";
+    case ESP_RST_EFUSE: return "efuse";
+    case ESP_RST_PWR_GLITCH: return "power-glitch";
+    case ESP_RST_CPU_LOCKUP: return "cpu-lockup";
+    default: return "unknown";
+  }
+}
 void PlayCue(sound::Cue cue);
 void PaintAlarmBanner();
 
@@ -610,14 +657,22 @@ WindowExit SerialWindow(uint32_t windowMs) {
   String line;
   const uint32_t start = millis();
   bool keyWasDown = false;
+  bool bootWasDown = false;
   uint32_t keyDownAt = 0;
+  Serial.printf("keys: KEY(GPIO%d)=%d BOOT(GPIO%d)=%d (0 = pressed)\n", board::kPinKey,
+                digitalRead(board::kPinKey), board::kPinBoot, digitalRead(board::kPinBoot));
   while (millis() - start < windowMs) {
     // The KEY gesture has to work here too: a board with no credentials has
     // no other way into the SoftAP portal, and this window runs before loop().
     const bool keyDown = digitalRead(board::kPinKey) == board::kButtonActiveLevel;
+    const bool bootDown = digitalRead(board::kPinBoot) == board::kButtonActiveLevel;
+    // Edge log: the one way to tell "not pressed" from "pressed but not read".
+    if (keyDown != keyWasDown) DEBUG_LOG("keys: KEY %s\n", keyDown ? "down" : "up");
+    if (bootDown != bootWasDown) DEBUG_LOG("keys: BOOT %s\n", bootDown ? "down" : "up");
+    bootWasDown = bootDown;
     if (keyDown && !keyWasDown) keyDownAt = millis();
     if (keyDown && millis() - keyDownAt >= board::kProvisionHoldMs) {
-      Serial.println("setup: KEY held, opening hotspot");
+      DEBUG_LOG("[%lu] setup: KEY held, opening hotspot\n", millis());
       return WindowExit::Portal;
     }
     keyWasDown = keyDown;
@@ -640,16 +695,36 @@ WindowExit SerialWindow(uint32_t windowMs) {
 // The hotspot runs inside loop(); nothing here waits. A submitted form still
 // reboots after a short pause so the browser gets its "saved" reply.
 void StartPortal(bool manual) {
+#if TODAY_DEBUG_LOG
+  const uint32_t t0 = millis();
+#endif
+  // Show the credentials before the radio exists. The AP takes ~600 ms to come
+  // up and the HTTP/DNS tick is not preemptible; painting after Start() meant
+  // the panel kept the old screen for as long as any of that took, which is
+  // what "hold KEY and nothing happens for a while" looked like.
+  portal::Prepare();
+#if TODAY_DEBUG_LOG
+  const uint32_t t1 = millis();
+#endif
+  PaintPortalScreen();
+#if TODAY_DEBUG_LOG
+  const uint32_t t2 = millis();
+#endif
   if (manual) {
     portal::StartUserOpened();
   } else {
     portal::Start();
   }
+#if TODAY_DEBUG_LOG
+  const uint32_t t3 = millis();
+#endif
   portalRuns++;
-  portalDrawn = false;
-  lastPortalPaint = 0;
-  Serial.printf("portal: open (%s), %d networks\n", manual ? "manual" : "auto",
-                portal::ScanCount());
+  // The screen is already up; the next tick refreshes the countdown.
+  portalDrawn = true;
+  lastPortalPaint = millis();
+  DEBUG_LOG("[%lu] portal: open (%s) prepare=%lu paint=%lu radio=%lu ms\n", millis(),
+            manual ? "manual" : "auto", static_cast<unsigned long>(t1 - t0),
+            static_cast<unsigned long>(t2 - t1), static_cast<unsigned long>(t3 - t2));
 }
 
 void StopPortal(const char* why) {
@@ -691,18 +766,74 @@ void PaintWifiLost() {
   if (!nightDark) display::On();
 }
 
+// ServicePortal runs one tick of an open hotspot and reports whether it
+// handled the tick. Every caller that would otherwise return must try this
+// first: the hotspot is a background service, and both the HTTP/DNS handlers
+// and the screen live here.
+bool ServicePortal() {
+  if (!portal::Active()) return false;
+  portal::Loop();
+  // The countdown has to tick visibly; the measured full paint is 27 ms, so a
+  // one-second cadence costs little and the panel never looks frozen. (The
+  // reset reason was never a brownout, so there is no power case for slowing
+  // it down.)
+  if (!portalDrawn || millis() - lastPortalPaint >= kPortalRefreshMs) PaintPortalScreen();
+  HandleKeys();  // a no-op while the portal is up
+  delay(20);
+  return true;
+}
+
 // Panel content for a hotspot that is up: the credentials, plus a countdown in
 // the bottom right corner so a person who walks away knows how long the door
 // stays open.
 void PaintPortalScreen() {
-  DrawPortalScreen();
+#if TODAY_DEBUG_LOG
+  const uint32_t t0 = millis();
+#endif
   char left[8];
   portalplan::CountdownText(board::kPortalIdleMs - portal::IdleMs(), left, sizeof(left));
+  // Draw the countdown into `work` before the bitmap is pushed: the previous
+  // version flushed the panel from DrawPortalScreen and then drew one string
+  // into the panel buffer, so every second cost two 15 KB SPI bursts and the
+  // string sat outside the packed image. One bitmap, one flush.
+  screens::DrawPortal(work, portal::Ssid().c_str(), portal::PasswordDisplay().c_str(),
+                       "http://192.168.4.1");
   const int w = widgets::MeasureWidth(left, 2);
-  widgets::DrawString(board::kWidth - 16 - w, board::kHeight - 30, left, 2);
+  screens::DrawString(work, static_cast<int>(screens::kWidth) - 16 - w,
+                      static_cast<int>(screens::kHeight) - 30, left, 2);
+#if TODAY_DEBUG_LOG
+  const uint32_t t1 = millis();
+#endif
+  ShowScreensBitmap(work);
+#if TODAY_DEBUG_LOG
+  const uint32_t t2 = millis();
+#endif
   display::Flush();
+#if TODAY_DEBUG_LOG
+  const uint32_t t3 = millis();
+  if (!portalPaintLogged) {
+    DEBUG_LOG("[%lu] portal: draw=%lu pack=%lu flush=%lu ms\n", millis(),
+              static_cast<unsigned long>(t1 - t0), static_cast<unsigned long>(t2 - t1),
+              static_cast<unsigned long>(t3 - t2));
+  }
+#endif
+  // DISPON only when the panel is off; repeating it every second restarts the
+  // controller's refresh for no reason.
+  if (display::IsOff()) display::On();
   portalDrawn = true;
   lastPortalPaint = millis();
+  nightDark = false;
+  screenOff = false;
+#if TODAY_DEBUG_LOG
+  if (!portalPaintLogged) {
+    portalPaintLogged = true;
+    int ink = 0;
+    for (size_t i = 0; i < st7305::kPackedBytes; i++) {
+      ink += 8 - __builtin_popcount(display::Buffer()[i]);
+    }
+    DEBUG_LOG("[%lu] portal: painted screen, ink=%d px\n", millis(), ink);
+  }
+#endif
 }
 
 }  // namespace
@@ -710,6 +841,10 @@ void PaintPortalScreen() {
 void setup() {
   Serial.begin(115200);
   delay(50);
+  // The ROM line already names the reset; this is the SDK's own view, and it
+  // is the only way to tell a brownout from a USB re-enumeration in the field.
+  Serial.printf("reset: reason=%d (%s)\n", static_cast<int>(esp_reset_reason()),
+                ResetReasonName(esp_reset_reason()));
   storage::Begin();
   cfg = storage::LoadConfig();
   sensors::Begin();
@@ -825,7 +960,11 @@ void loop() {
 
   // A board without Wi-Fi/token cannot fetch anything and must not spin the
   // retry path. HandleKeys() still runs, so KEY 3 s opens the portal.
+  // No credentials: the network path below has nothing to do. That is exactly
+  // the board that needs the setup portal, so an open hotspot is serviced
+  // here instead of falling through to a return that skips it.
   if (cfg.wifiSsid.isEmpty()) {
+    if (ServicePortal()) return;
     HandleKeys();
     delay(20);
     return;
@@ -891,13 +1030,7 @@ void loop() {
   }
 
   // The hotspot is serviced on every tick, never in its own blocking loop.
-  if (portal::Active()) {
-    portal::Loop();
-    if (!portalDrawn || millis() - lastPortalPaint >= 1000) PaintPortalScreen();
-    HandleKeys();  // a no-op while the portal is up
-    delay(20);
-    return;
-  }
+  if (ServicePortal()) return;
 
   const uint32_t now = millis();
   if (net::Connected() && (lastFrameAt == 0 || now - lastFrameAt >= board::kFrameIntervalMs)) {

@@ -20,6 +20,12 @@ func openTest(t *testing.T) (*Store, *time.Location) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A fixed clock: the store reads s.Now() for "today", so a test that
+	// builds its dates from time.Now() would otherwise straddle local midnight
+	// (or disagree with a run under another TZ) and split one test across two
+	// days. Thursday 2026-11-19, 10:00 in Shanghai.
+	pin := time.Date(2026, 11, 19, 10, 0, 0, 0, loc)
+	st.SetNow(func() time.Time { return pin })
 	return st, loc
 }
 
@@ -271,7 +277,7 @@ func TestDevicesAndOps(t *testing.T) {
 func TestAuthFailures(t *testing.T) {
 	st, _ := openTest(t)
 	ctx := context.Background()
-	now := time.Now()
+	now := st.Now()
 	for i := 0; i < 3; i++ {
 		if err := st.RecordAuthFail(ctx, "127.0.0.1", now); err != nil {
 			t.Fatal(err)
@@ -313,7 +319,7 @@ func TestOpenMissingDir(t *testing.T) {
 func TestPastItems(t *testing.T) {
 	st, loc := openTest(t)
 	ctx := context.Background()
-	now := time.Now().In(loc)
+	now := st.Now().In(loc)
 	yesterday := now.AddDate(0, 0, -1).Format(DateLayout)
 	today := now.Format(DateLayout)
 
@@ -352,7 +358,7 @@ func TestRecurringNeedsTime(t *testing.T) {
 func TestSeriesEditSyncsFutureInstances(t *testing.T) {
 	st, loc := openTest(t)
 	ctx := context.Background()
-	now := time.Now().In(loc)
+	now := st.Now().In(loc)
 	today := now.Format(DateLayout)
 	tomorrow := now.AddDate(0, 0, 1).Format(DateLayout)
 	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
@@ -411,7 +417,7 @@ func TestSeriesEditSyncsFutureInstances(t *testing.T) {
 func TestDeletedOccurrenceStaysDeleted(t *testing.T) {
 	st, loc := openTest(t)
 	ctx := context.Background()
-	now := time.Now().In(loc)
+	now := st.Now().In(loc)
 	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
 	master, err := st.CreateItem(ctx, Item{
 		Title: "系列", StartsAt: &start, RRule: "FREQ=DAILY;COUNT=4",
@@ -453,7 +459,7 @@ func TestDeletedOccurrenceStaysDeleted(t *testing.T) {
 func TestAllDayItemSortsBeforeTimed(t *testing.T) {
 	st, loc := openTest(t)
 	ctx := context.Background()
-	now := time.Now().In(loc)
+	now := st.Now().In(loc)
 	day := now.Format(DateLayout)
 	start := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, loc)
 	if _, err := st.CreateItem(ctx, Item{Title: "十点", StartsAt: &start}, loc); err != nil {

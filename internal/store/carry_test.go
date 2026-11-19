@@ -21,6 +21,17 @@ func newCarryStore(t *testing.T) (*Store, *time.Location) {
 	return st, loc
 }
 
+// newPinnedStore is newCarryStore with the clock fixed to the date the
+// fixtures use. Without this, every dated fixture here is a time bomb: the
+// rows stop being "today" the day the calendar moves past them.
+func newPinnedStore(t *testing.T, day string) (*Store, *time.Location) {
+	t.Helper()
+	st, loc := newCarryStore(t)
+	pin := atDay(loc, day, 10, 0)
+	st.SetNow(func() time.Time { return *pin })
+	return st, loc
+}
+
 func atDay(loc *time.Location, day string, hh, mm int) *time.Time {
 	v, err := time.ParseInLocation(DateLayout+" 15:04", day+" 00:00", loc)
 	if err != nil {
@@ -134,7 +145,7 @@ func TestCarryItemsKeepsClockAndMarksOrigin(t *testing.T) {
 // Manual order only applies to dragged rows; an untouched day keeps its clock
 // order, and dragging puts the rows in the submitted order.
 func TestReorderAndManualRank(t *testing.T) {
-	st, loc := newCarryStore(t)
+	st, loc := newPinnedStore(t, "2026-11-19")
 	ctx := context.Background()
 	early, _ := st.CreateItem(ctx, Item{Title: "早", StartsAt: atDay(loc, "2026-11-19", 8, 0)}, loc)
 	late, _ := st.CreateItem(ctx, Item{Title: "晚", StartsAt: atDay(loc, "2026-11-19", 17, 0)}, loc)

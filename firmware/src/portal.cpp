@@ -109,14 +109,6 @@ void CacheScanResults(int found) {
 // Scanning with the AP up makes the radio hop channels; phones can drop the
 // association for a second or two. That is why the boot scan runs in STA mode
 // *before* the hotspot is raised.
-void ScanBeforeAp() {
-  WiFi.mode(WIFI_STA);
-  delay(100);
-  const int found = WiFi.scanNetworks(false, false);
-  CacheScanResults(found);
-  WiFi.scanDelete();
-}
-
 // A rescan while the hotspot is up is asynchronous: a synchronous scan would
 // block the HTTP server (and the keys) for seconds. /scan starts it, the page
 // polls until the results land.
@@ -341,8 +333,8 @@ void HandleNotFound() {
 
 }  // namespace
 
-void Start() {
-  if (s_active) return;
+void Prepare() {
+  if (!s_ssid.isEmpty()) return;  // one identity per boot; a repaint must not reshuffle it
   uint32_t mac = static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFF);
   char suffix[5];
   snprintf(suffix, sizeof(suffix), "%04X", static_cast<unsigned>(mac));
@@ -362,11 +354,17 @@ void Start() {
   }
   pw[portalcfg::kPasswordLength] = '\0';
   s_password = pw;
+}
 
-  // Scan first, in STA mode: scanning with the AP up makes phones drop for a
-  // second or two, and the result would be a list the user sees flicker.
-  ScanBeforeAp();
-
+void Start() {
+  if (s_active) return;
+  Prepare();
+  // No scan before the AP comes up. A synchronous scan blocks the CPU for
+  // seconds (2-10 s with a busy 2.4 GHz band), and it runs before the caller
+  // can draw the screen: holding KEY looked broken because the board stayed on
+  // WAITING while the radio searched for a list the portal screen does not
+  // even show. The list is filled by an async scan started below; the page
+  // polls /scan for it.
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(s_ssid.c_str(), s_password.c_str());
   delay(200);
@@ -378,14 +376,17 @@ void Start() {
   s_http.begin();
   s_active = true;
   s_submitted = false;
+  // Kick the async scan now, while the phone is still joining: by the time the
+  // page asks for the list it is usually ready, and nobody sees a rescan drop.
+  StartRescan();
   s_startedAt = millis();
   s_savedSeen = false;
   const String saved = SavedSsid();
   for (int i = 0; i < s_networkCount; i++) {
     if (saved.length() > 0 && String(s_networks[i].ssid) == saved) s_savedSeen = true;
   }
-  Serial.printf("portal: %s / %s / http://192.168.4.1 (%d networks)\n", s_ssid.c_str(),
-                s_password.c_str(), s_networkCount);
+  Serial.printf("portal: %s / %s / http://192.168.4.1 (scan async, %d cached)\n",
+                s_ssid.c_str(), s_password.c_str(), s_networkCount);
 }
 
 void Stop() {
@@ -395,6 +396,10 @@ void Stop() {
   WiFi.softAPdisconnect(true);
   s_active = false;
   s_userOpened = false;  // the next manual hold sets it again
+  // Drop the identity so the next opening gets a fresh password: the ten
+  // digits are a one-time key for one five-minute window.
+  s_ssid = "";
+  s_password = "";
 }
 
 void Loop() {

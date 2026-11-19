@@ -69,7 +69,7 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "timezone", http.StatusInternalServerError)
 		return
 	}
-	now := time.Now().In(loc)
+	now := s.clock().In(loc)
 	date := now.Format(store.DateLayout)
 	items, err := s.st.ItemsOn(ctx, date)
 	if err != nil {

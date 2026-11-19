@@ -23,6 +23,26 @@ var ErrNotFound = errors.New("store: not found")
 type Store struct {
 	db   *sql.DB
 	path string
+	// now is the clock every derived date and timestamp reads. It exists so a
+	// test can pin "today": a literal date in a fixture plus a live clock is a
+	// time bomb (the row stops being "today" the day after it was written).
+	now func() time.Time
+}
+
+// Now is the store clock; it never returns nil.
+func (s *Store) Now() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// SetNow fixes the store clock. Tests use it; production leaves the default.
+func (s *Store) SetNow(fn func() time.Time) {
+	if fn == nil {
+		fn = time.Now
+	}
+	s.now = fn
 }
 
 // Open creates the database file and schema if needed.
@@ -53,7 +73,7 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("store: %s: %w", pragma, err)
 		}
 	}
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: path, now: time.Now}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err

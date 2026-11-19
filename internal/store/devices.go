@@ -103,7 +103,7 @@ func (s *Store) Device(ctx context.Context, id string) (Device, error) {
 
 // CreateDevice inserts a device row with a token hash (possibly empty).
 func (s *Store) CreateDevice(ctx context.Context, id, name, tokenHash string) (Device, error) {
-	now := time.Now()
+	now := s.Now()
 	d := Device{ID: id, Name: name, TokenHash: tokenHash, CreatedAt: now}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO devices (`+deviceColumns+`)
 		VALUES (?,?,?,0,0,0,0,'','',0,0,0,NULL,NULL,?)`,
@@ -141,7 +141,7 @@ func (s *Store) SetDeviceToken(ctx context.Context, id, hash string) error {
 // TouchDevice records a successful frame fetch.
 func (s *Store) TouchDevice(ctx context.Context, id string, batteryMV int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE devices SET last_seen_at=?, battery_mv=CASE WHEN ? > 0 THEN ? ELSE battery_mv END
-		WHERE id = ?`, timeStr(time.Now()), batteryMV, batteryMV, id)
+		WHERE id = ?`, timeStr(s.Now()), batteryMV, batteryMV, id)
 	if err != nil {
 		return fmt.Errorf("store: touch device: %w", err)
 	}
@@ -161,7 +161,7 @@ func (s *Store) TouchClimate(ctx context.Context, id string, tempC, humidity flo
 // RevokeDevice invalidates a device immediately.
 func (s *Store) RevokeDevice(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE devices SET revoked_at=? WHERE id = ? AND revoked_at IS NULL`,
-		timeStr(time.Now()), id)
+		timeStr(s.Now()), id)
 	if err != nil {
 		return fmt.Errorf("store: revoke device: %w", err)
 	}

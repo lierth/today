@@ -105,7 +105,7 @@ func (s *Server) validateLocalToken(r *http.Request, now time.Time) (string, boo
 // browser on to the requested page. It is the only route where a cookie is set
 // without a password.
 func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
-	next, ok := s.validateLocalToken(r, time.Now())
+	next, ok := s.validateLocalToken(r, s.clock())
 	if !ok {
 		s.log.Printf("server: local login rejected from %s", clientIP(r))
 		http.Error(w, "local login link expired or already used", http.StatusUnauthorized)

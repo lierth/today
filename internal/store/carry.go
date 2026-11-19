@@ -65,7 +65,7 @@ func (s *Store) CarryItems(ctx context.Context, ids []string, today string, loc 
 		return res, fmt.Errorf("store: carry tx: %w", err)
 	}
 	defer tx.Rollback()
-	now := time.Now()
+	now := s.Now()
 	for _, id := range ids {
 		row := tx.QueryRowContext(ctx, `SELECT `+itemSelect+` FROM items
 			WHERE id = ? AND deleted_at IS NULL`, id)
@@ -146,7 +146,10 @@ func (s *Store) AutoCarry(ctx context.Context, today string, loc *time.Location)
 func mustDate(date string, loc *time.Location) (int, time.Month, int) {
 	t, err := time.ParseInLocation(DateLayout, date, loc)
 	if err != nil {
-		t = time.Now().In(loc)
+		// A malformed date has no "today" to fall back on; the callers only
+		// pass dates that came out of the store, so zero is a bug worth seeing
+		// rather than a silent substitution of the current date.
+		return 1970, time.January, 1
 	}
 	return t.Date()
 }
@@ -178,8 +181,8 @@ func (s *Store) Reorder(ctx context.Context, ids []string, loc *time.Location) e
 		return fmt.Errorf("store: reorder tx: %w", err)
 	}
 	defer tx.Rollback()
-	now := timeStr(time.Now())
-	today := time.Now().In(loc).Format(DateLayout)
+	now := timeStr(s.Now())
+	today := s.Now().In(loc).Format(DateLayout)
 	for i, id := range ids {
 		// The rank is 1-based so 0 keeps meaning "never dragged, sort by the
 		// clock". sort_key stays the start time: the frame, the menu and the
@@ -203,7 +206,7 @@ func (s *Store) Reorder(ctx context.Context, ids []string, loc *time.Location) e
 // RestoreItem undoes a soft delete.
 func (s *Store) RestoreItem(ctx context.Context, id string) (Item, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=NULL, updated_at=?
-		WHERE id=? AND deleted_at IS NOT NULL`, timeStr(time.Now()), id)
+		WHERE id=? AND deleted_at IS NOT NULL`, timeStr(s.Now()), id)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: restore item: %w", err)
 	}
@@ -303,7 +306,7 @@ func (s *Store) UncarryItems(ctx context.Context, ids []string, loc *time.Locati
 		return 0, fmt.Errorf("store: uncarry tx: %w", err)
 	}
 	defer tx.Rollback()
-	now := time.Now()
+	now := s.Now()
 	moved := 0
 	for _, id := range ids {
 		row := tx.QueryRowContext(ctx, `SELECT `+itemSelect+` FROM items

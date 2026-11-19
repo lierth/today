@@ -100,7 +100,7 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "timezone", http.StatusInternalServerError)
 		return
 	}
-	now := time.Now().In(loc)
+	now := s.clock().In(loc)
 	// The device draws its own cursor (and local strike-through) so moving it
 	// never depends on the network and never changes the ETag. Only the web
 	// preview takes a cursor parameter.
@@ -373,7 +373,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cursor, _ = strconv.Atoi(raw)
 	}
-	fr, err := s.buildFrame(ctx, r, time.Now().In(loc), cursor, false)
+	fr, err := s.buildFrame(ctx, r, s.clock().In(loc), cursor, false)
 	if err != nil {
 		http.Error(w, "render", http.StatusInternalServerError)
 		return

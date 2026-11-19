@@ -61,6 +61,18 @@ pio run && pio run -t upload && pio device monitor
 `platformio.ini`). The port is `/dev/cu.usbmodem*`; if upload cannot open it,
 hold BOOT while tapping RESET and retry.
 
+The normal build logs events only: `reset: reason=…` at boot (which answers
+"did it lose power or did the USB port reset?"), `portal: submitted/closed`,
+`ota: …`, and `acks: failed`. Timing and input-edge lines — `setup: KEY held`,
+`portal: draw/pack/flush`, `painted screen, ink=`, `keys: KEY down|up` — are
+behind `TODAY_DEBUG_LOG` and are not compiled in by default. Build and flash
+the talking variant when you are diagnosing with a cable attached:
+
+```sh
+pio run -e esp32-s3-devkitc1-n16r8-debug
+pio run -e esp32-s3-devkitc1-n16r8-debug -t upload
+```
+
 The partition table uses Arduino's standard prefix: `nvs` at `0x9000`
 (20 KB), `otadata` at `0xe000`, two 3 MB app slots from `0x10000`, and a 1 MB
 LittleFS partition. `otadata` must sit at `0xe000` because PlatformIO writes

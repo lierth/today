@@ -156,7 +156,7 @@ func (s *Store) PutSettings(ctx context.Context, values map[string]string) error
 		return fmt.Errorf("store: settings tx: %w", err)
 	}
 	defer tx.Rollback()
-	now := timeStr(time.Now())
+	now := timeStr(s.Now())
 	for k, v := range values {
 		if !knownSetting(k) {
 			return fmt.Errorf("store: unknown setting %q", k)

@@ -15,7 +15,7 @@ import (
 // the lock: one minute, one use, loopback only.
 func TestLocalLoginTokenLifecycle(t *testing.T) {
 	e := newTestEnv(t)
-	now := time.Now()
+	now := e.srv.Clock()
 	link, err := e.srv.LocalLoginToken(context.Background(), "/settings", now)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestLocalLoginTokenLifecycle(t *testing.T) {
 
 func TestLocalLoginRejectsReplay(t *testing.T) {
 	e := newTestEnv(t)
-	link, err := e.srv.LocalLoginToken(context.Background(), "/app", time.Now())
+	link, err := e.srv.LocalLoginToken(context.Background(), "/app", e.srv.Clock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestLocalLoginRejectsReplay(t *testing.T) {
 func TestLocalLoginRejectsExpired(t *testing.T) {
 	e := newTestEnv(t)
 	link, err := e.srv.LocalLoginToken(context.Background(), "/app",
-		time.Now().Add(-2*localTokenTTL))
+		e.srv.Clock().Add(-2*localTokenTTL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestLocalLoginRejectsExpired(t *testing.T) {
 
 func TestLocalLoginRejectsForgedSignature(t *testing.T) {
 	e := newTestEnv(t)
-	link, err := e.srv.LocalLoginToken(context.Background(), "/app", time.Now())
+	link, err := e.srv.LocalLoginToken(context.Background(), "/app", e.srv.Clock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestLocalLoginRejectsForgedSignature(t *testing.T) {
 
 func TestLocalLoginRejectsNonLoopback(t *testing.T) {
 	e := newTestEnv(t)
-	now := time.Now()
+	now := e.srv.Clock()
 	link, err := e.srv.LocalLoginToken(context.Background(), "/app", now)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestLocalLoginRejectsNonLoopback(t *testing.T) {
 // would otherwise log the internet in.
 func TestLocalLoginRejectsFunnelProxy(t *testing.T) {
 	e := newTestEnv(t)
-	now := time.Now()
+	now := e.srv.Clock()
 	link, err := e.srv.LocalLoginToken(context.Background(), "/app", now)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestIsLocalRequest(t *testing.T) {
 
 func TestLocalLoginTokenStorePrunes(t *testing.T) {
 	s := &localTokenStore{}
-	now := time.Now()
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
 	if !s.consume("a", now) {
 		t.Fatal("first use should pass")
 	}

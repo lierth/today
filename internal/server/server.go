@@ -67,6 +67,11 @@ type Server struct {
 	onAddr   func(string)
 	bindNote string
 
+	// now is the server's clock. It defaults to the store's, so a test that
+	// pins the store clock also pins "today" for pages, frames and backups;
+	// two clocks would be a fresh time bomb in every hand-written date.
+	now func() time.Time
+
 	startedAt  time.Time
 	frameSeq   atomic.Uint64
 	instanceID string
@@ -132,6 +137,7 @@ func New(st *store.Store, cfg Config) (*Server, error) {
 		instanceID: b64(randomBytes(9)),
 		limiter:    newLoginLimiter(),
 		sleep:      time.Sleep,
+		now:        st.Now,
 	}
 	tmpl, err := template.New("today").Funcs(templateFuncs()).ParseFS(web.Templates(), "*.html")
 	if err != nil {
@@ -546,7 +552,7 @@ func (s *Server) maintain(ctx context.Context) {
 		s.log.Printf("server: timezone: %v", err)
 		return
 	}
-	now := time.Now().In(loc)
+	now := s.clock().In(loc)
 	n, err := s.st.Materialize(ctx, loc, now, 31)
 	if err != nil {
 		s.log.Printf("server: materialize: %v", err)
@@ -600,6 +606,17 @@ func (s *Server) autoCarry(ctx context.Context, loc *time.Location, now time.Tim
 	}
 }
 
+// Clock exposes the server clock to tests that build dates by hand.
+func (s *Server) Clock() time.Time { return s.clock() }
+
+// clock is the server's wall clock, shared with the store.
+func (s *Server) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
 // Location resolves the configured timezone, falling back to the host zone.
 func (s *Server) Location(ctx context.Context) (*time.Location, error) {
 	name, err := s.st.Setting(ctx, "timezone")
@@ -622,7 +639,7 @@ func (s *Server) Today(ctx context.Context) (time.Time, *time.Location, error) {
 	if err != nil {
 		return time.Time{}, loc, err
 	}
-	now := time.Now().In(loc)
+	now := s.clock().In(loc)
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), loc, nil
 }
 

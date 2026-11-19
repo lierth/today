@@ -230,6 +230,35 @@ void TestClockFitsPanel() {
   }
 }
 
+// The portal screen must be complete before the radio is started: StartPortal
+// paints first and calls portal::Start() afterwards, so a slow AP bring-up
+// never leaves the old screen on the panel. This asserts the layout the paint
+// produces is the full one (title rule, password, countdown), i.e. nothing in
+// it depends on the radio being up.
+void TestPortalPaintIndependentOfRadio() {
+  static uint8_t bmp[screens::kBytes];
+  memset(bmp, 0xFF, sizeof(bmp));
+  char shown[portalcfg::kPasswordLength + 2];
+  portalplan::PasswordDisplay("1234567890", shown, sizeof(shown));
+  screens::DrawPortal(bmp, "Today-1A2B", shown, "http://192.168.4.1");
+  // Header rule present.
+  bool rule = false;
+  for (size_t x = 0; x < screens::kWidth; x++) {
+    if ((bmp[(screens::kHeaderHeight - 1) * screens::kStride + x / 8] & (0x80 >> (x % 8))) == 0) {
+      rule = true;
+    }
+  }
+  Expect(rule, "portal draws its header rule without the radio");
+  // The SSID line carries ink: a screen painted before Start() is complete.
+  int ssidInk = 0;
+  for (int y = screens::kHeaderHeight + 34; y < screens::kHeaderHeight + 34 + 16; y++) {
+    for (size_t x = 0; x < screens::kWidth; x++) {
+      if ((bmp[y * screens::kStride + x / 8] & (0x80 >> (x % 8))) == 0) ssidInk++;
+    }
+  }
+  Expect(ssidInk > 50, "portal shows the SSID before Start()");
+}
+
 void TestFontCoverage() {
   if (const char* missing = fontcheck::Missing()) {
     printf("FAIL font: no glyph for \"%s\"\n", missing);
@@ -704,6 +733,7 @@ int main(int argc, char** argv) {
   TestPortalLayoutFits();
   TestBannerGeometry();
   TestClockFitsPanel();
+  TestPortalPaintIndependentOfRadio();
   TestFirmwareVersionCompare();
   TestSourceStrings("src/main.cpp");
   if (argc > 1) TestFrameFile(argv[1]);

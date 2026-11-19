@@ -26,7 +26,7 @@ func (s *Store) ApplyOp(ctx context.Context, opID, deviceID, itemID, status stri
 	if opID == "" {
 		return AckSkipped, errors.New("store: op_id is required")
 	}
-	now := timeStr(time.Now())
+	now := timeStr(s.Now())
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AckSkipped, fmt.Errorf("store: apply op: %w", err)

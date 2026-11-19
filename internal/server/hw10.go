@@ -340,7 +340,7 @@ func (s *Server) handleParsePreview(w http.ResponseWriter, r *http.Request) {
 	if text == "" {
 		text = r.FormValue("title")
 	}
-	got := ParseQuickAdd(text, nowIn(), loc)
+	got := ParseQuickAdd(text, s.clock(), loc)
 	writeJSON(w, http.StatusOK, got)
 }
 
@@ -468,6 +468,3 @@ func (s *Server) renderTodayList(w http.ResponseWriter, r *http.Request) {
 		Items: items, Total: total, Done: done, BoardLimit: frame.BoardRowLimit,
 	})
 }
-
-// nowIn is the clock the parser sees; a variable so tests can pin it.
-var nowIn = time.Now

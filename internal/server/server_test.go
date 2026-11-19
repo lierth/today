@@ -78,6 +78,12 @@ func newTestEnvCloud(t *testing.T, cloudDocs string) *testEnv {
 	if err := st.PutSettings(context.Background(), map[string]string{"timezone": "Asia/Shanghai"}); err != nil {
 		t.Fatal(err)
 	}
+	// Pin the clock too. Fixtures here use relative dates (day-2, day+1), but
+	// the store/server default to the real clock; pinning keeps a run that
+	// straddles local midnight (or a wall clock someone changed) from splitting
+	// "today" between the two halves of one test.
+	pin := time.Date(2026, 11, 19, 10, 0, 0, 0, loc)
+	st.SetNow(func() time.Time { return pin })
 	// The test client is a script: it sends the header that checkWriteOrigin
 	// requires from a caller with no Sec-Fetch-Site and no Origin. A real
 	// browser supplies one of those instead.
@@ -203,7 +209,7 @@ func TestFrameETagAndAcks(t *testing.T) {
 	if err := e.st.SetDeviceToken(ctx, "dev1", hex.EncodeToString(sum[:])); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().In(e.loc)
+	now := e.srv.Clock().In(e.loc)
 	start := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, e.loc)
 	it, err := e.st.CreateItem(ctx, store.Item{Title: "会议", StartsAt: &start}, e.loc)
 	if err != nil {
@@ -720,7 +726,7 @@ func TestFirmwareUploadAndDownload(t *testing.T) {
 func TestPanelToken(t *testing.T) {
 	e := newTestEnv(t)
 	if _, err := e.st.CreateItem(context.Background(), store.Item{
-		Title: "面板事项", AllDay: true, DateLocal: time.Now().In(e.loc).Format(store.DateLayout),
+		Title: "面板事项", AllDay: true, DateLocal: e.srv.Clock().In(e.loc).Format(store.DateLayout),
 	}, e.loc); err != nil {
 		t.Fatal(err)
 	}
@@ -787,7 +793,7 @@ func TestPanelRejectsFunnelProxy(t *testing.T) {
 
 func TestPanelShowsTodayWithoutCancelled(t *testing.T) {
 	e := newTestEnv(t)
-	now := time.Now().In(e.loc)
+	now := e.srv.Clock().In(e.loc)
 	today := now.Format(store.DateLayout)
 	if _, err := e.st.CreateItem(context.Background(), store.Item{Title: "面板里的会议", AllDay: true, DateLocal: today}, e.loc); err != nil {
 		t.Fatal(err)

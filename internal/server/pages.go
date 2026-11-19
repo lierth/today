@@ -683,7 +683,7 @@ func (s *Server) handleItemCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "timezone", http.StatusInternalServerError)
 		return
 	}
-	day := time.Now().In(loc)
+	day := s.clock().In(loc)
 	today := day.Format(store.DateLayout)
 	var in store.Item
 	if isJSON(r) {
@@ -724,7 +724,7 @@ func (s *Server) handleItemCreate(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "timezone", http.StatusInternalServerError)
 				return
 			}
-			got := ParseQuickAdd(raw, time.Now().In(loc), loc)
+			got := ParseQuickAdd(raw, s.clock().In(loc), loc)
 			in.Title = got.Title
 			if v := strings.TrimSpace(r.FormValue("date")); v != "" {
 				in.DateLocal = v
@@ -782,7 +782,7 @@ func (s *Server) handleItemCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if item.RRule != "" {
-		if _, err := s.st.Materialize(ctx, loc, time.Now(), 31); err != nil {
+		if _, err := s.st.Materialize(ctx, loc, s.clock(), 31); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -865,7 +865,7 @@ func (s *Server) handleItemPatch(w http.ResponseWriter, r *http.Request) {
 			date := strings.TrimSpace(form.Get("date"))
 			clock := strings.TrimSpace(form.Get("time"))
 			if date == "" {
-				date = time.Now().In(loc).Format(store.DateLayout)
+				date = s.clock().In(loc).Format(store.DateLayout)
 			}
 			if clock == "" {
 				v := ""

@@ -269,7 +269,7 @@ func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Ti
 				continue
 			}
 			date := occ.Format(DateLayout)
-			nowStr := timeStr(time.Now())
+			nowStr := timeStr(s.Now())
 			res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO items (`+itemCols+`, deleted_at)
 				VALUES (?,?,?,?,?,NULL,?,?,0,'',?,?,'',0,?,?,NULL)`,
 				uuid.NewString(), m.title, m.description, boolInt(m.allDay), timeStr(occ),
