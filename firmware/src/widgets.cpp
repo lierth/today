@@ -6,72 +6,17 @@
 
 #include "board.h"
 #include "display.h"
+#include "font.h"
+#include "screens.h"
 #include "st7305.h"
 
 namespace widgets {
 namespace {
 
-// 5x7 glyphs, one byte per column, bit 0 = top row. Only the characters the
-// widgets need: digits, ':', '%', '-', '.', 'C', '°', ' ' and '?'.
-struct Glyph {
-  char c;
-  uint8_t col[5];
-};
-
-constexpr Glyph kFont[] = {
-    // Uppercase ASCII from the classic 5x7 table (public domain / BSD, as in
-    // Adafruit GFX glcdfont); only the glyphs the UI needs are kept.
-    {'A', {0x7E, 0x11, 0x11, 0x11, 0x7E}},
-    {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}},
-    {'C', {0x3E, 0x41, 0x41, 0x41, 0x22}},
-    {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}},
-    {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}},
-    {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}},
-    {'G', {0x3E, 0x41, 0x49, 0x49, 0x7A}},
-    {'H', {0x7F, 0x08, 0x08, 0x08, 0x7F}},
-    {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}},
-    {'J', {0x20, 0x40, 0x41, 0x3F, 0x01}},
-    {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
-    {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}},
-    {'M', {0x7F, 0x02, 0x0C, 0x02, 0x7F}},
-    {'N', {0x7F, 0x04, 0x08, 0x10, 0x7F}},
-    {'O', {0x3E, 0x41, 0x41, 0x41, 0x3E}},
-    {'P', {0x7F, 0x09, 0x09, 0x09, 0x06}},
-    {'Q', {0x3E, 0x41, 0x51, 0x21, 0x5E}},
-    {'R', {0x7F, 0x09, 0x19, 0x29, 0x46}},
-    {'S', {0x46, 0x49, 0x49, 0x49, 0x31}},
-    {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}},
-    {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}},
-    {'V', {0x1F, 0x20, 0x40, 0x20, 0x1F}},
-    {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}},
-    {'X', {0x63, 0x14, 0x08, 0x14, 0x63}},
-    {'Y', {0x07, 0x08, 0x70, 0x08, 0x07}},
-    {'Z', {0x61, 0x51, 0x49, 0x45, 0x43}},
-    {'/', {0x20, 0x10, 0x08, 0x04, 0x02}},
-    {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}},
-    {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
-    {'2', {0x42, 0x61, 0x51, 0x49, 0x46}},
-    {'3', {0x21, 0x41, 0x45, 0x4B, 0x31}},
-    {'4', {0x18, 0x14, 0x12, 0x7F, 0x10}},
-    {'5', {0x27, 0x45, 0x45, 0x45, 0x39}},
-    {'6', {0x3C, 0x4A, 0x49, 0x49, 0x30}},
-    {'7', {0x01, 0x71, 0x09, 0x05, 0x03}},
-    {'8', {0x36, 0x49, 0x49, 0x49, 0x36}},
-    {'9', {0x06, 0x49, 0x49, 0x29, 0x1E}},
-    {':', {0x00, 0x36, 0x36, 0x00, 0x00}},
-    {'%', {0x23, 0x13, 0x08, 0x64, 0x62}},
-    {'-', {0x08, 0x08, 0x08, 0x08, 0x08}},
-    {'.', {0x00, 0x60, 0x60, 0x00, 0x00}},
-    {'?', {0x02, 0x01, 0x51, 0x09, 0x06}},
-    {' ', {0, 0, 0, 0, 0}},
-};
-
-const Glyph* Find(char c) {
-  for (const Glyph& g : kFont) {
-    if (g.c == c) return &g;
-  }
-  return nullptr;
-}
+// The glyph table lives in font.h/font_ascii.inc so the host test can check
+// every string the firmware draws; see firmware/test/pack_test.cpp.
+using Glyph = font::Glyph;
+const Glyph* Find(char c) { return font::Find(c); }
 
 void Pixel(int x, int y, bool black) {
   if (x < 0 || y < 0 || x >= board::kWidth || y >= board::kHeight) return;
@@ -95,18 +40,22 @@ void Box(int x0, int y0, int w, int h, bool fill) {
 }
 
 // Draws text with its top-left at (x,y); scale 1 or 2. Returns the width used.
-int Text(int x, int y, const char* s, int scale) {
+// `inkBlack` picks the ink, so the same glyphs can sit inside an inverted
+// band without a second copy of the glyph loop.
+int TextInk(int x, int y, const char* s, int scale, bool inkBlack) {
   int cursor = x;
   for (; *s != '\0'; s++) {
     const Glyph* g = Find(*s);
     if (g == nullptr) g = Find('?');
+    if (g == nullptr) continue;
     for (int col = 0; col < 5; col++) {
       const uint8_t bits = g->col[col];
-      for (int row = 0; row < 7; row++) {
+      // 5x8 cell: bit 7 carries the descender (see font.h).
+      for (int row = 0; row < font::kGlyphHeight; row++) {
         if ((bits >> row) & 1) {
           for (int dy = 0; dy < scale; dy++) {
             for (int dx = 0; dx < scale; dx++) {
-              Pixel(cursor + col * scale + dx, y + row * scale + dy, true);
+              Pixel(cursor + col * scale + dx, y + row * scale + dy, inkBlack);
             }
           }
         }
@@ -116,6 +65,8 @@ int Text(int x, int y, const char* s, int scale) {
   }
   return cursor - x;
 }
+
+int Text(int x, int y, const char* s, int scale) { return TextInk(x, y, s, scale, true); }
 
 int TextWidth(const char* s, int scale) {
   int n = 0;
@@ -160,19 +111,15 @@ void DrawClock(const tbf::Widget& rect, int hh, int mm) {
   char line[8];
   snprintf(line, sizeof(line), "%02d:%02d", hh, mm);
   const int scale = 3;
-  const int w = TextWidth(line, scale);
-  int x = rect.x + (rect.w - w) / 2;
-  if (x < rect.x) x = rect.x;
-  Text(x, rect.y + (rect.h - 7 * scale) / 2, line, scale);
+  // The ink may start left of the rect (it is wider); that is fine, the
+  // neighbours are to its left with a gap.
+  Text(screens::ClockTextX(rect.x, rect.w, scale), rect.y + (rect.h - font::kGlyphHeight * scale) / 2, line, scale);
 }
 
 void DrawClockUnknown(const tbf::Widget& rect) {
   Clear(rect);
   const int scale = 3;
-  const int w = TextWidth("--:--", scale);
-  int x = rect.x + (rect.w - w) / 2;
-  if (x < rect.x) x = rect.x;
-  Text(x, rect.y + (rect.h - 7 * scale) / 2, "--:--", scale);
+  Text(screens::ClockTextX(rect.x, rect.w, scale), rect.y + (rect.h - font::kGlyphHeight * scale) / 2, "--:--", scale);
 }
 
 void DrawWifi(const tbf::Widget& rect, int rssi, bool connecting, bool portal,
@@ -267,6 +214,27 @@ void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb)
 
 int DrawString(int x, int y, const char* text, int scale) {
   return Text(x, y, text, scale);
+}
+
+void DrawBanner(int y, int height, const char* text, int scale, bool invert) {
+  // One strip serves both banners: the lost-Wi-Fi line is white with black
+  // ink over the header, the reminder is the inverse. Same geometry, so the
+  // two never read as different kinds of thing.
+  for (int yy = y; yy < y + height && yy < board::kHeight; yy++) {
+    for (int x = 0; x < board::kWidth; x++) Pixel(x, yy, invert);
+  }
+  const int w = TextWidth(text, scale);
+  const int x = screens::BannerTextX(board::kWidth, w);
+  const int top = screens::BannerTextY(y, height, scale);
+  TextInk(x, top, text, scale, !invert);
+}
+
+int MeasureWidth(const char* text, int scale) { return TextWidth(text, scale); }
+
+void FillRect(int x, int y, int w, int h, int color) {
+  for (int yy = y; yy < y + h; yy++) {
+    for (int xx = x; xx < x + w; xx++) Pixel(xx, yy, color == kBlack);
+  }
 }
 
 void InvertRow(int y, int height) {

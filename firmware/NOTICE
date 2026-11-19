@@ -19,3 +19,16 @@ Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
 Server-side lunar date and solar terms, MIT License
 (https://github.com/6tail/lunar-go). Used only by the Go renderer; no code is
 linked into the firmware.
+
+## Adafruit GFX glcdfont
+
+`src/font_ascii.inc` is the printable ASCII range (0x20-0x7E) of the classic
+5x8-cell glcdfont distributed with Adafruit GFX (the upstream comment says
+"5x7"; the cell has eight row bits, the eighth carrying descenders):
+
+- https://github.com/adafruit/Adafruit-GFX-Library (BSD license)
+- original file: `glcdfont.c`
+
+Modifications: only the 95 printable glyphs are kept, reformatted one glyph
+per line for the `font::Glyph` table; the drawing code passes each column byte
+directly to the panel.

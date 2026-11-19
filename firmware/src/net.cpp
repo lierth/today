@@ -37,18 +37,19 @@ void Prepare(HTTPClient& http) {
 
 }  // namespace
 
-bool Connect(const storage::Config& cfg, uint32_t timeoutMs) {
-  if (cfg.wifiSsid.isEmpty()) return false;
-  if (WiFi.status() == WL_CONNECTED) return true;
-  WiFi.mode(WIFI_STA);
+void EnsureSta(const storage::Config& cfg) {
+  if (cfg.wifiSsid.isEmpty()) return;
+  if (WiFi.status() == WL_CONNECTED) return;
+  // A provisioning hotspot must survive the retry: raise the station beside
+  // the AP instead of replacing it, or the phone drops off the setup page.
+  WiFi.mode(WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA
+                ? WIFI_AP_STA
+                : WIFI_STA);
   WiFi.setSleep(true);  // modem sleep: the loop is idle between fetches
+  // The driver keeps retrying on its own between our calls; this call resets
+  // the attempt so a router that just came back is picked up within one tick.
+  WiFi.setAutoReconnect(true);
   WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
-  const uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    if (millis() - start > timeoutMs) return false;
-    delay(200);
-  }
-  return true;
 }
 
 bool Connected() { return WiFi.status() == WL_CONNECTED; }
@@ -74,10 +75,11 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool forc
   }
   http.addHeader("X-Device-Token", cfg.token);
   if (!etag.isEmpty()) http.addHeader("If-None-Match", etag);
-  static const char* kHeaders[] = {"X-Frame-Seq",     "X-Server-Now",    "X-UTC-Offset",
-                                   "X-Night",         "X-Refresh",       "ETag",
-                                   "X-Firmware-Version"};
-  http.collectHeaders(kHeaders, 7);
+  static const char* kHeaders[] = {"X-Frame-Seq",   "X-Server-Now", "X-UTC-Offset",
+                                   "X-Night",       "X-Refresh",    "ETag",
+                                   "X-Firmware-Version", "X-Alarms", "X-Sound",
+                                   "X-Sound-Preview"};
+  http.collectHeaders(kHeaders, 10);
 
   const int code = http.GET();
   res.status = code;
@@ -88,6 +90,9 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool forc
   res.etag = http.header("ETag");
   res.refresh = http.header("X-Refresh") == "1";
   res.firmwareVersion = http.header("X-Firmware-Version");
+  res.alarms = http.header("X-Alarms");
+  res.sound = http.header("X-Sound");
+  res.soundPreview = http.header("X-Sound-Preview") == "1";
 
   if (code == HTTP_CODE_NOT_MODIFIED) {
     res.etag = etag;

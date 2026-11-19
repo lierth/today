@@ -42,6 +42,18 @@ constexpr uint8_t kAddrShtc3 = 0x70;
 constexpr uint8_t kAddrPcf85063 = 0x51;
 constexpr int kPinRtcInt = 15;
 
+// Audio (ES8311 codec + I2S, from the official 07_Audio_Test example,
+// board_cfg.h "S3_RLCD_4_2"). The amplifier enable is GPIO46, which is also a
+// strapping pin with an external pull-down: it must stay low during reset and
+// only go high while a sound plays.
+constexpr int kPinAudioMclk = 16;
+constexpr int kPinAudioBclk = 9;
+constexpr int kPinAudioWs = 45;
+constexpr int kPinAudioDout = 8;   // ESP32 -> codec (playback)
+constexpr int kPinAudioDin = 10;   // codec -> ESP32 (unused, DAC only)
+constexpr int kPinAudioPa = 46;    // amplifier enable, active high
+constexpr uint8_t kAddrEs8311 = 0x18;
+
 // Battery: 100k/100k -> 1:3 divider, ADC1 channel 3.
 constexpr int kPinBattery = 4;
 constexpr int kBatteryScale = 3;
@@ -56,7 +68,12 @@ constexpr uint8_t kWifiFailuresBeforePortal = 5;
 constexpr uint32_t kPortalIdleMs = 5 * 60 * 1000;
 constexpr uint32_t kNightWakeMs = 30 * 1000;
 
-// Firmware identity for OTA.
-constexpr char kFirmwareVersion[] = "0.3.0";
+// Firmware identity for OTA. The release script injects TODAY_FW_VERSION
+// (-DTODAY_FW_VERSION="0.4.0"); a local build without it reports 0.0.0-dev and
+// therefore never upgrades itself by accident.
+#ifndef TODAY_FW_VERSION
+#define TODAY_FW_VERSION "0.0.0-dev"
+#endif
+constexpr char kFirmwareVersion[] = TODAY_FW_VERSION;
 
 }  // namespace board

@@ -27,6 +27,14 @@ void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb)
 void InvertRow(int y, int height);
 void StrikeRow(int y, int height);
 
+// DrawBanner paints one full-width strip with vertically centred text. With
+// `invert` the strip is black and the text white; otherwise the strip is
+// white with black text. The reminder and the lost-Wi-Fi line share it.
+void DrawBanner(int y, int height, const char* text, int scale, bool invert);
+
+// Width of `text` at `scale`, without drawing.
+int MeasureWidth(const char* text, int scale);
+
 // Battery percentage from a resting Li-ion voltage; -1 when the reading is
 // outside the usable window (no battery / not calibrated).
 int BatteryPercent(int millivolts);

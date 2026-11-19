@@ -14,8 +14,18 @@ constexpr const char* kOutbox = "outbox";
 // and the outbox, so it lives in LittleFS. NVS keeps only small values.
 constexpr const char* kFramePath = "/frame.bin";
 
+// Preferences::getString/getBytes log an error for every missing key
+// ("nvs_get_str len fail: ... NOT_FOUND"), which buries the boot log on a
+// fresh board. isKey() probes the type without logging, so every optional key
+// is checked first.
 String ReadString(const char* key, const char* fallback = "") {
+  if (!prefs.isKey(key)) return String(fallback);
   return prefs.getString(key, fallback);
+}
+
+size_t ReadBlob(const char* key, void* buf, size_t maxLen) {
+  if (!prefs.isKey(key)) return 0;
+  return prefs.getBytes(key, buf, maxLen);
 }
 
 }  // namespace
@@ -89,11 +99,8 @@ uint8_t LoadRows(tbf::Row* out, uint8_t max) {
   uint8_t count = prefs.getUChar("rowcount", 0);
   if (count > max) count = max;
   if (count == 0) return 0;
-  if (prefs.getBytesLength("rows") != static_cast<size_t>(count) * 20) return 0;
-  return prefs.getBytes("rows", out, static_cast<size_t>(count) * 20) ==
-                 static_cast<size_t>(count) * 20
-             ? count
-             : 0;
+  const size_t want = static_cast<size_t>(count) * 20;
+  return ReadBlob("rows", out, want) == want ? count : 0;
 }
 
 void SaveRows(const tbf::Row* rows, uint8_t count) {
@@ -108,7 +115,7 @@ uint8_t OutboxCount() { return prefs.getUChar("outcount", 0); }
 
 bool AppendOutbox(const uint8_t id[16], uint8_t status, uint32_t seq) {
   OutboxOp ops[board::kMaxOutbox]{};
-  const size_t bytes = prefs.getBytes(kOutbox, ops, sizeof(ops));
+  const size_t bytes = ReadBlob(kOutbox, ops, sizeof(ops));
   uint8_t count = bytes > 0 ? static_cast<uint8_t>(bytes / sizeof(OutboxOp)) : 0;
   if (count >= board::kMaxOutbox) return false;
   OutboxOp& op = ops[count];
@@ -123,7 +130,7 @@ bool AppendOutbox(const uint8_t id[16], uint8_t status, uint32_t seq) {
 
 bool LoadOutbox(uint8_t index, OutboxOp* out) {
   OutboxOp ops[board::kMaxOutbox]{};
-  const size_t bytes = prefs.getBytes(kOutbox, ops, sizeof(ops));
+  const size_t bytes = ReadBlob(kOutbox, ops, sizeof(ops));
   if (bytes == 0 || index >= bytes / sizeof(OutboxOp)) return false;
   *out = ops[index];
   return true;
@@ -133,6 +140,11 @@ void ClearOutbox() {
   prefs.remove(kOutbox);
   prefs.putUChar("outcount", 0);
 }
+
+String LoadAlarms() { return prefs.getString("alarms", ""); }
+void SaveAlarms(const String& alarms) { prefs.putString("alarms", alarms); }
+String LoadSound() { return prefs.getString("sound", ""); }
+void SaveSound(const String& sound) { prefs.putString("sound", sound); }
 
 int LoadUtcOffset() { return prefs.getInt("utcoff", 0); }
 void SaveUtcOffset(int seconds) { prefs.putInt("utcoff", seconds); }

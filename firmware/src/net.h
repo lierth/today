@@ -7,7 +7,11 @@
 
 namespace net {
 
-bool Connect(const storage::Config& cfg, uint32_t timeoutMs);
+// EnsureSta starts (or restarts) the station with the stored credentials and
+// returns immediately: the link comes up in the background, so a dead router
+// never blocks the keys. Safe to call repeatedly; a connected station is left
+// alone. Keeps AP_STA when a provisioning hotspot is up.
+void EnsureSta(const storage::Config& cfg);
 bool Connected();
 int Rssi();
 
@@ -24,6 +28,9 @@ struct FetchResult {
   int nightEnd = 0;
   String etag;
   String firmwareVersion;     // X-Firmware-Version, empty when none uploaded
+  String alarms;              // X-Alarms: Unix seconds, comma separated
+  String sound;               // X-Sound: vol=60;keys=1;alarm=1
+  bool soundPreview = false;  // X-Sound-Preview: play one test tone
 };
 
 // FetchFrame writes the bitmap into `buf` and points `out->bitmap` into it.

@@ -15,12 +15,19 @@
 
 #include "board.h"
 #include "display.h"
+#include "fontcheck.h"
 #include "net.h"
 #include "night.h"
 #include "portal.h"
+#include "audio.h"
+#include "portal_plan.h"
+#include "sound_policy.h"
+#include "sound_synth.h"
 #include "sensors.h"
+#include "screens.h"
 #include "storage.h"
 #include "tbf.h"
+#include "version.h"
 #include "widgets.h"
 
 namespace {
@@ -41,7 +48,21 @@ uint32_t lastRetryAt = 0;
 uint32_t lastKeyAt = 0;
 int lastClockMinute = -1;
 uint8_t wifiFailures = 0;
-bool portalPending = false;
+uint8_t portalRuns = 0;          // unattended hotspots since boot
+uint32_t lastPortalEnd = 0;      // millis() of the last close, 0 = never
+bool manualPortal = false;       // KEY hold latched, consumed by the loop
+bool portalDrawn = false;        // the setup screen is the current panel content
+bool lostBannerShown = false;    // the WIFI LOST line is on the panel
+uint32_t lastPortalPaint = 0;
+
+// Sound: policy from X-Sound (cached in NVS), alarm times from X-Alarms.
+sound::Policy soundPolicy;
+sound::Alarms alarms;
+uint32_t alarmUntilMs = 0;   // a ringing alarm is showing / sounding
+uint32_t alarmFlashAt = 0;
+bool alarmBandOn = false;
+bool alarmKeyConsumed = false;  // the stop-key must not also toggle a row
+
 
 float temperatureC = 0;
 float humidity = 0;
@@ -60,6 +81,29 @@ String etag;
 String availableFirmware;
 
 void DrawWidgets();
+void PaintWifiLostOverlay();
+void PlayCue(sound::Cue cue);
+void PaintAlarmBanner();
+
+// ReplaceAlarms installs a new list but keeps the "already rang" marks for
+// timestamps that survive, so a 200 arriving right after a chime cannot make
+// it ring twice.
+void ReplaceAlarms(const String& text) {
+  int64_t next[sound::kMaxAlarms];
+  const uint8_t count = sound::ParseAlarms(text.c_str(), next, sound::kMaxAlarms);
+  sound::Alarms merged;
+  merged.count = count;
+  for (uint8_t i = 0; i < count; i++) {
+    merged.at[i] = next[i];
+    for (uint8_t j = 0; j < alarms.count; j++) {
+      if (alarms.at[j] == next[i]) {
+        merged.fired[i] = alarms.fired[j];
+        break;
+      }
+    }
+  }
+  alarms = merged;
+}
 
 void CaptureFrame() {
   // Remember the focused item before the row table is replaced: the server
@@ -120,6 +164,7 @@ void PushPanel() {
   if (!haveFrame) return;
   display::ShowFrame(work);
   DrawWidgets();
+  if (lostBannerShown) PaintWifiLostOverlay();
   display::Flush();
   if (!nightDark) display::On();
 }
@@ -135,7 +180,9 @@ void DrawWidgets() {
     }
   }
   if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetWifi)) {
-    widgets::DrawWifi(*w, net::Rssi(), !net::Connected() && wifiFailures > 0,
+    // "--" only while the first attempt is still in flight; once a retry has
+    // failed the widget shows the disconnected mark, not a forever-spinner.
+    widgets::DrawWifi(*w, net::Rssi(), !net::Connected() && wifiFailures == 0,
                       portal::Active(), net::Connected());
   }
   if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetClimate)) {
@@ -154,22 +201,56 @@ void Paint() {
   if (!haveFrame) return;
   nightDark = false;
   screenOff = false;
+  lostBannerShown = false;
   ComposeLocal();
   PushPanel();
 }
 
+// ShowScreensBitmap pushes one screens.cpp bitmap. Those are row-major with
+// 1 = white; the TBF the panel packer takes is row-major with 1 = black, so
+// the bits are flipped first. `bmp` is scratch (work); Paint() recomposes it.
+void ShowScreensBitmap(uint8_t* bmp) {
+  for (size_t i = 0; i < sizeof(work); i++) bmp[i] = static_cast<uint8_t>(~bmp[i]);
+  display::ShowFrame(bmp);
+}
+
 void PaintMessage(const char* line1, const char* line2, const char* line3) {
-  memset(work, 0, sizeof(work));
-  display::ShowFrame(work);
-  widgets::DrawString(16, 28, line1, 2);
-  widgets::DrawString(16, 76, line2, 1);
-  widgets::DrawString(16, 96, line3, 1);
+  // All of the board's own messages share one template: header band, a title
+  // at scale 3, steps at scale 2, a hint at the bottom (screens.cpp).
+  const screens::Text text{line1, line2, line3, "", ""};
+  screens::DrawTemplate(work, text, false);
+  ShowScreensBitmap(work);
   display::Flush();
   display::On();
   nightDark = false;
   screenOff = false;
   // The cached frame stays in `base`: a later 304 repaints the board instead
   // of leaving this message on screen forever.
+}
+
+// PaintBoot is the first screen after reset: the app icon at half size and
+// the firmware version, so someone at the desk can tell what is running.
+void PaintBoot() {
+  screens::DrawBoot(work, board::kFirmwareVersion);
+  ShowScreensBitmap(work);
+  display::Flush();
+  display::On();
+  nightDark = false;
+  screenOff = false;
+}
+
+// The setup hotspot needs its credentials readable from a metre away: the
+// password is the one value a user copies by hand, so it is drawn at the
+// largest scale that still fits (11 chars incl. the display space at 5x is
+// 330 px on a 400 px panel).
+void DrawPortalScreen() {
+  screens::DrawPortal(work, portal::Ssid().c_str(), portal::PasswordDisplay().c_str(),
+                      "http://192.168.4.1");
+  ShowScreensBitmap(work);
+  display::Flush();
+  display::On();
+  nightDark = false;
+  screenOff = false;
 }
 
 uint32_t BatteryMillivolts() {
@@ -228,6 +309,12 @@ String BuildAcksJson(const char* power) {
   JsonDocument doc;
   doc["frame_seq"] = static_cast<uint32_t>(storage::LoadSeq());
   if (batteryMv > 0) doc["battery_mv"] = batteryMv;
+  // The menu and the settings card show these; omit them rather than send a
+  // misleading 0 when the sensor read failed.
+  if (climateOk) {
+    doc["temp_c"] = temperatureC;
+    doc["humidity"] = humidity;
+  }
   if (power != nullptr) doc["power"] = power;
   JsonArray ops = doc["ops"].to<JsonArray>();
   const uint8_t count = storage::OutboxCount();
@@ -267,9 +354,12 @@ void SendAcks() {
 }
 
 void MaybeUpdate(const String& version) {
-  if (version.isEmpty() || version == board::kFirmwareVersion) return;
+  // Only a strictly newer version upgrades: the server advertises the same
+  // version on every frame, and an equality test would reboot the board on
+  // every boot when the two strings disagree.
+  if (version.isEmpty() || !version::Newer(version.c_str(), board::kFirmwareVersion)) return;
   Serial.printf("ota: %s -> %s\n", board::kFirmwareVersion, version.c_str());
-  PaintMessage("UPDATING", version.c_str(), "KEEP POWER ON");
+  PaintMessage("UPDATING", "1. KEEP THE POWER ON", "2. THE BOARD REBOOTS BY ITSELF");
   if (net::DownloadFirmware(cfg)) {
     delay(800);
     ESP.restart();
@@ -291,6 +381,17 @@ void ApplyFrame(const net::FetchResult& res) {
   nightEnabled = res.night;
   nightStart = res.nightStart;
   nightEnd = res.nightEnd;
+  // Reminders and sound settings change independently of the bitmap; they
+  // ride in headers on both 200 and 304, so this runs on every response.
+  if (res.status == 200 || !res.alarms.isEmpty()) {
+    storage::SaveAlarms(res.alarms);
+    ReplaceAlarms(res.alarms);
+  }
+  if (!res.sound.isEmpty()) {
+    storage::SaveSound(res.sound);
+    sound::ParsePolicy(res.sound.c_str(), &soundPolicy);
+  }
+  if (res.soundPreview) PlayCue(sound::Cue::kCheck);
 }
 
 // Fetch refreshes from the server. During night mode the fresh bitmap is
@@ -316,7 +417,47 @@ void Fetch(bool repaintAlways) {
   PushPanel();
 }
 
+// PlayCue renders and queues one cue. Volume 0 or a busy output drops it.
+void PlayCue(sound::Cue cue) {
+  size_t cap = 0;
+  int16_t* buf = audio::Scratch(&cap);
+  if (buf == nullptr || cap == 0) return;
+  const size_t n = sound::Render(cue, soundPolicy.volume, buf, cap);
+  if (n > 0) audio::Play(buf, n);
+}
+
+// RingAlarm shows the reminder as an inverted header band and plays the chime.
+// The band flashes for 30 s or until a key is pressed; the sound itself is
+// three chimes and ends on its own.
+void RingAlarm() {
+  alarmUntilMs = millis() + 30000;
+  alarmFlashAt = 0;
+  alarmBandOn = true;
+  alarmKeyConsumed = false;
+  PlayCue(sound::Cue::kAlarm);
+  PaintAlarmBanner();
+}
+
+// PaintAlarmBanner draws the inverted band under the header line, the same
+// style the WIFI LOST banner uses, so a reminder never disturbs the row list.
+void PaintAlarmBanner() {
+  if (!haveFrame) return;
+  display::ShowFrame(work);
+  DrawWidgets();
+  const int y = 44;  // frame.HeaderHeight: the band sits right under the date
+  // The text is ASCII on purpose: the device font has no CJK, so the reminder
+  // reads as a time band rather than the item's Chinese title. Same strip as
+  // the lost-Wi-Fi banner, inverted.
+  widgets::DrawBanner(y, board::kRowHeight, "ALARM - PRESS ANY KEY", 1, true);
+  if (lostBannerShown) PaintWifiLostOverlay();
+  display::Flush();
+  if (!nightDark) display::On();
+}
+
 void HandleKeys() {
+  // The panel shows the hotspot password: a cursor move or a toggle would
+  // repaint over it. The timeout (or a submitted form) ends the portal.
+  if (portal::Active()) return;
   const int key = PressedKey();
   if (key < 0) return;
 
@@ -334,7 +475,18 @@ void HandleKeys() {
 
   if (key == board::kPinKey && held >= board::kProvisionHoldMs) {
     Serial.println("key: setup portal");
-    portalPending = true;
+    manualPortal = true;
+    return;
+  }
+
+  // A ringing alarm: this press only silences it, exactly like the night
+  // window's first press only lights the panel.
+  if (alarmUntilMs != 0) {
+    alarmUntilMs = 0;
+    alarmBandOn = false;
+    audio::Silence();
+    Paint();
+    lastKeyAt = millis();
     return;
   }
 
@@ -370,6 +522,13 @@ void HandleKeys() {
       doneMask |= RowBit(cursorRow);
     }
     storage::SaveDoneMask(doneMask);
+    int done = 0;
+    for (uint8_t i = 0; i < rowCount; i++) {
+      const bool d = (doneMask & RowBit(i)) != 0 || (rows[i].flags & tbf::kRowDone) != 0;
+      if (d) done++;
+    }
+    const int cue = sound::KeyCue(soundPolicy.keys, soundPolicy.volume, !wasDone, done, rowCount);
+    if (cue != static_cast<int>(sound::Cue::kNone)) PlayCue(static_cast<sound::Cue>(cue));
     ComposeLocal();
     PushPanel();
     // Then let the server catch up; the frame it returns is authoritative.
@@ -386,7 +545,12 @@ void HandleKeys() {
   PushPanel();
 }
 
-void SerialCommand(const String& line) {
+// SerialWindow returns why it stopped: Timeout means nobody configured the
+// board over serial, Portal means the user asked for the setup hotspot, Ready
+// means the stored credentials are now complete and boot can continue.
+enum class WindowExit { Timeout, Portal, Ready };
+
+WindowExit SerialCommand(const String& line) {
   String command = line;
   String rest;
   const int space = line.indexOf(' ');
@@ -398,14 +562,21 @@ void SerialCommand(const String& line) {
     const int split = rest.indexOf(' ');
     if (split < 0) {
       Serial.println("usage: wifi <ssid> <password>");
-      return;
+      return WindowExit::Timeout;
     }
     cfg.wifiSsid = rest.substring(0, split);
     cfg.wifiPass = rest.substring(split + 1);
     storage::SaveConfig(cfg);
     Serial.println("wifi saved");
+    // A board that already had server+token is now fully configured: stop
+    // waiting for the rest of the window and go online.
+    if (storage::Configured()) {
+      Serial.println("configured, leaving setup window");
+      return WindowExit::Ready;
+    }
   } else if (command == "setup") {
-    portalPending = true;
+    Serial.println("setup requested");
+    return WindowExit::Portal;
   } else if (command == "server") {
     cfg.server = rest;
     storage::SaveConfig(cfg);
@@ -427,50 +598,111 @@ void SerialCommand(const String& line) {
   } else {
     Serial.println("wifi/setup/server/token/device/show/reboot");
   }
+  return WindowExit::Timeout;
 }
 
-void SerialWindow(uint32_t windowMs) {
+WindowExit SerialWindow(uint32_t windowMs) {
   Serial.println();
   Serial.println("Today firmware " + String(board::kFirmwareVersion));
   Serial.println(
       "wifi <ssid> <password> | setup | server <url> | token <token> | device <id> | show | reboot");
+  Serial.println("hold KEY 3s to open the setup hotspot");
   String line;
   const uint32_t start = millis();
+  bool keyWasDown = false;
+  uint32_t keyDownAt = 0;
   while (millis() - start < windowMs) {
+    // The KEY gesture has to work here too: a board with no credentials has
+    // no other way into the SoftAP portal, and this window runs before loop().
+    const bool keyDown = digitalRead(board::kPinKey) == board::kButtonActiveLevel;
+    if (keyDown && !keyWasDown) keyDownAt = millis();
+    if (keyDown && millis() - keyDownAt >= board::kProvisionHoldMs) {
+      Serial.println("setup: KEY held, opening hotspot");
+      return WindowExit::Portal;
+    }
+    keyWasDown = keyDown;
+
     while (Serial.available()) {
       const char c = static_cast<char>(Serial.read());
       if (c == '\n') {
-        SerialCommand(line);
+        const WindowExit exit = SerialCommand(line);
         line = "";
+        if (exit != WindowExit::Timeout) return exit;
       } else if (c != '\r') {
         line += c;
       }
     }
     delay(10);
   }
+  return WindowExit::Timeout;
 }
 
-void RunPortal() {
-  const uint8_t failures = wifiFailures;
-  portal::Start();
-  char line[24];
-  snprintf(line, sizeof(line), "SSID %s", portal::Ssid().c_str());
-  PaintMessage("WIFI SETUP", line, portal::Password().c_str());
-  widgets::DrawString(16, 128, "http://192.168.4.1", 1);
-  display::Flush();
-  const uint32_t start = millis();
-  while (!portal::Submitted() && millis() - start < board::kPortalIdleMs) {
-    portal::Loop();
-    delay(5);
+// The hotspot runs inside loop(); nothing here waits. A submitted form still
+// reboots after a short pause so the browser gets its "saved" reply.
+void StartPortal(bool manual) {
+  if (manual) {
+    portal::StartUserOpened();
+  } else {
+    portal::Start();
   }
-  portal::Stop();
+  portalRuns++;
+  portalDrawn = false;
+  lastPortalPaint = 0;
+  Serial.printf("portal: open (%s), %d networks\n", manual ? "manual" : "auto",
+                portal::ScanCount());
+}
+
+void StopPortal(const char* why) {
   if (portal::Submitted()) {
+    Serial.printf("portal: submitted %s\n", portal::SubmittedSsid().c_str());
     delay(400);
     ESP.restart();
   }
-  Serial.println("portal: closed by timeout");
-  wifiFailures = failures;  // do not loop straight back into the portal
-  PaintMessage("NO WIFI", "KEY 3S OR 'setup' OVER SERIAL", "");
+  const bool userOpened = portal::UserOpened();
+  portal::Stop();
+  lastPortalEnd = millis();
+  lastPortalPaint = 0;
+  Serial.printf("portal: closed (%s)\n", why);
+  if (userOpened) {
+    // A person opened this and walked away; surface the way back in.
+    PaintMessage("SETUP ENDED", "1. HOLD KEY FOR 3 SECONDS", "2. THE HOTSPOT REOPENS");
+    return;
+  }
+  Paint();
+}
+
+// WIFI LOST rides over the second header line: rows stay visible and the keys
+// keep working, only the lunar line is borrowed. Draws into the panel buffer;
+// the caller flushes.
+void PaintWifiLostOverlay() {
+  // The band replaces the lunar line, not a row: every item stays visible.
+  // 33 chars at scale 2 is 396 px, which fits the strip's 8 px padding on
+  // both sides only just; DrawBanner does not clip, so the literal is the
+  // widest string that may go here (pack_test asserts it).
+  widgets::DrawBanner(20, 24, "WIFI LOST - HOLD KEY 3S TO SET UP", 2, false);
+}
+
+void PaintWifiLost() {
+  if (!haveFrame) return;
+  display::ShowFrame(work);
+  DrawWidgets();
+  PaintWifiLostOverlay();
+  display::Flush();
+  if (!nightDark) display::On();
+}
+
+// Panel content for a hotspot that is up: the credentials, plus a countdown in
+// the bottom right corner so a person who walks away knows how long the door
+// stays open.
+void PaintPortalScreen() {
+  DrawPortalScreen();
+  char left[8];
+  portalplan::CountdownText(board::kPortalIdleMs - portal::IdleMs(), left, sizeof(left));
+  const int w = widgets::MeasureWidth(left, 2);
+  widgets::DrawString(board::kWidth - 16 - w, board::kHeight - 30, left, 2);
+  display::Flush();
+  portalDrawn = true;
+  lastPortalPaint = millis();
 }
 
 }  // namespace
@@ -482,12 +714,26 @@ void setup() {
   cfg = storage::LoadConfig();
   sensors::Begin();
   display::Begin();
+  // Audio comes after I2C (the codec shares the bus). A missing codec is not
+  // fatal: the board simply stays silent.
+  audio::Begin();
+  sound::ParsePolicy(storage::LoadSound().c_str(), &soundPolicy);
+  ReplaceAlarms(storage::LoadAlarms());
   widgets::Begin();
+  // A glyph that is missing from the font renders as "?" on the panel; make
+  // that a loud startup error rather than a silent one.
+  if (const char* missing = fontcheck::Missing()) {
+    Serial.printf("font: no glyph for \"%s\"\n", missing);
+  }
 
   pinMode(board::kPinKey, INPUT_PULLUP);
   pinMode(board::kPinBoot, INPUT_PULLUP);
   pinMode(board::kPinBattery, INPUT);
+  // analogSetPinAttenuation only reconfigures a pin that is already attached
+  // to the ADC; calling it first logs "Pin is not configured as analog
+  // channel" and leaves the default attenuation. One read attaches it.
   analogReadResolution(12);
+  (void)analogReadMilliVolts(board::kPinBattery);
   analogSetPinAttenuation(board::kPinBattery, ADC_11db);
 
   utcOffset = storage::LoadUtcOffset();
@@ -499,6 +745,10 @@ void setup() {
     settimeofday(&tv, nullptr);
   }
   batteryMv = static_cast<int>(BatteryMillivolts());
+  // Boot line for the field: with 11 dB attenuation a 1:3 divider on a 4.2 V
+  // cell reads ~0.7 V at the pin, i.e. ~1400-2800 raw counts on 12 bit.
+  Serial.printf("battery: raw=%u mv=%u (atten 11dB)\n", analogRead(board::kPinBattery),
+                analogReadMilliVolts(board::kPinBattery));
   ReadClimate();
 
   haveFrame = storage::LoadFrame(base, sizeof(base));
@@ -511,37 +761,142 @@ void setup() {
     // A cold boot repaints the cache, so a 304 never leaves the board blank.
     Paint();
   } else {
-    PaintMessage("TODAY", "WAITING FOR FIRST FRAME", "KEY 3S TO START SETUP");
+    // First boot: logo + version, then the hint that a frame is coming.
+    PaintBoot();
+    delay(1200);
+    PaintMessage("WAITING", "1. THE BOARD POLLS EVERY MINUTE", "2. KEY 3S TO SET UP WI-FI");
   }
 
   if (!storage::Configured()) {
-    SerialWindow(10 * 60 * 1000);
+    const WindowExit exit = SerialWindow(10 * 60 * 1000);
     cfg = storage::LoadConfig();
+    switch (exit) {
+      case WindowExit::Ready:
+        break;  // credentials complete: fall through to loop()
+      case WindowExit::Portal:
+        // Raise the hotspot now; loop() keeps it running without blocking.
+        StartPortal(true);
+        break;
+      case WindowExit::Timeout:
+        PaintMessage("NO WI-FI", "1. HOLD KEY FOR 3 SECONDS", "2. OR TYPE setup OVER SERIAL");
+        break;
+    }
   }
 }
 
 void loop() {
-  if (portalPending) {
-    portalPending = false;
-    RunPortal();
+  // A hotspot is a background service now: the STA keeps retrying beside it,
+  // the keys keep working and the frame path resumes the moment the old
+  // network is back.
+  if (!portal::Active()) {
+    const uint32_t now = millis();
+    portalplan::Input in{};
+    in.now = now;
+    in.lastPortalEnd = lastPortalEnd;
+    in.portalRuns = portalRuns;
+    in.connected = net::Connected();
+    in.portalOpen = false;
+    in.manualRequest = manualPortal;
+    in.haveCredentials = !cfg.wifiSsid.isEmpty();
+    in.failures = wifiFailures;
+    in.threshold = board::kWifiFailuresBeforePortal;
+    if (portalplan::ShouldOpen(in)) {
+      manualPortal = false;
+      StartPortal(in.manualRequest);
+    }
+  } else {
+    manualPortal = false;  // already open: the hold already had its effect
+    if (portal::Submitted()) StopPortal("submitted");
+    if (!portal::Active()) return;
+    if (portal::IdleMs() >= board::kPortalIdleMs) {
+      StopPortal("idle timeout");
+      return;
+    }
+    // The old network came back while the hotspot was up. A portal the person
+    // opened stays until they finish; an automatic one yields immediately.
+    if (portalplan::CloseOnConnect(portal::Active(), net::Connected()) &&
+        !portal::UserOpened()) {
+      StopPortal("link restored");
+      wifiFailures = 0;
+      lastFrameAt = 0;
+      return;
+    }
+  }
+
+  // A board without Wi-Fi/token cannot fetch anything and must not spin the
+  // retry path. HandleKeys() still runs, so KEY 3 s opens the portal.
+  if (cfg.wifiSsid.isEmpty()) {
+    HandleKeys();
+    delay(20);
     return;
   }
 
+  // Non-blocking reconnect: EnsureSta() only kicks the driver, so this branch
+  // costs a few microseconds and the keys stay live on every tick.
   if (!net::Connected()) {
     const uint32_t now = millis();
     if (lastRetryAt == 0 || now - lastRetryAt >= board::kWifiRetryMs) {
       lastRetryAt = now;
-      if (net::Connect(cfg, board::kWifiRetryMs)) {
-        wifiFailures = 0;
-        lastFrameAt = 0;
-      } else {
-        if (wifiFailures < 255) wifiFailures++;
-        if (wifiFailures >= board::kWifiFailuresBeforePortal) {
-          portalPending = true;
-          return;
-        }
+      net::EnsureSta(cfg);
+      if (wifiFailures < 255) wifiFailures++;
+    }
+    if (wifiFailures == board::kWifiFailuresBeforePortal && !lostBannerShown &&
+        haveFrame && !portal::Active()) {
+      // The banner rides above the row list so the list stays usable; it is
+      // painted once, and Paint() clears it when the link returns.
+      lostBannerShown = true;
+      PaintWifiLost();
+    }
+  } else if (wifiFailures > 0) {
+    wifiFailures = 0;
+    lastFrameAt = 0;
+    if (lostBannerShown) {
+      lostBannerShown = false;
+      Paint();
+    }
+  }
+
+  // Reminders: local clock, cached list, no network needed. The check is
+  // cheap and runs every tick so an alarm fires within ~20 ms of its second.
+  audio::Loop();
+  if (alarmUntilMs != 0 && static_cast<int32_t>(millis() - alarmUntilMs) >= 0) {
+    alarmUntilMs = 0;
+    alarmBandOn = false;
+    Paint();
+  } else if (alarmUntilMs != 0 && millis() - alarmFlashAt >= 500) {
+    // Blink the band while the reminder is up; the same inverted strip as the
+    // Wi-Fi banner, so the two never look like different things.
+    alarmFlashAt = millis();
+    alarmBandOn = !alarmBandOn;
+    if (alarmBandOn) {
+      PaintAlarmBanner();
+    } else {
+      PushPanel();
+    }
+  }
+  {
+    const time_t now = time(nullptr);
+    if (now > 1600000000) {  // RTC or server time is valid
+      struct tm local {};
+      const bool haveTime = getLocalTime(&local, 0);
+      const bool nightNow = nightEnabled &&
+                            night::Inside(local.tm_hour * 60 + local.tm_min, nightStart, nightEnd);
+      const int due = sound::ShouldRing(static_cast<int64_t>(now), alarms, soundPolicy.alarm,
+                                        soundPolicy.volume, haveTime && nightNow, 60);
+      if (due >= 0) {
+        alarms.fired[due] = true;
+        RingAlarm();
       }
     }
+  }
+
+  // The hotspot is serviced on every tick, never in its own blocking loop.
+  if (portal::Active()) {
+    portal::Loop();
+    if (!portalDrawn || millis() - lastPortalPaint >= 1000) PaintPortalScreen();
+    HandleKeys();  // a no-op while the portal is up
+    delay(20);
+    return;
   }
 
   const uint32_t now = millis();

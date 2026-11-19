@@ -79,6 +79,32 @@ PlatformIO pins a pioarduino Arduino-ESP32 3.x build (ESP-IDF 5). With the
 Arduino IDE, select "ESP32S3 Dev Module", 16 MB flash, OPI PSRAM, the same
 partition scheme, and install ArduinoJson.
 
+## Sound
+
+The board has an ES8311 codec and a small amplifier (pins in `board.h`: MCLK 16,
+BCLK 9, WS 45, DOUT 8, DIN 10 unused). `src/audio.cpp` ports only the DAC half
+of the vendor's `07_Audio_Test` example — the register writes needed for 16 kHz
+mono playback — and drives I2S through Arduino's `ESP_I2S`. No audio files are
+stored: `src/sound_synth.cpp` synthesises four cues (tick, tock, completion
+arpeggio, three-chime alarm) with a raised-cosine envelope so the first and last
+sample are exactly zero and the speaker does not click.
+
+GPIO46 is the amplifier enable **and a strapping pin** with an external
+pull-down. It is driven low in `setup()` before anything else and only goes high
+while a sound plays, so a reset can never leave the amplifier on.
+
+Reminders are data, not sound: the server sends `X-Alarms` (Unix seconds of
+today's remaining timed items, lead time already applied) and `X-Sound`
+(`vol=60;keys=1;alarm=1`) on every frame response, 200 and 304 alike. The device
+caches both in NVS, so it rings on its own clock with no network. `X-Sound-Preview:
+1` is a one-shot flag from the settings page's 试听 button or the tray's
+「设备 → 试听提示音」; the server keeps it in memory per device and sends it once.
+
+Silence rules are pure functions in `src/sound_policy.cpp` (`ShouldRing`,
+`KeyCue`, `ParsePolicy`), unit-tested on the host: night window, alarm switch,
+volume 0, and a 60 s grace so a board that just booted does not chime for a
+reminder from an hour ago. The first key press during an alarm only stops it.
+
 ## Provisioning
 
 On a cold boot without credentials the firmware opens a 10-minute serial
@@ -94,12 +120,39 @@ show
 reboot
 ```
 
-The SoftAP portal (`Today-XXXX`, WPA2, random 10-character password without
-look-alike letters/digits) serves a form
-at `http://192.168.4.1` that only collects SSID and password. Credentials are
+The SoftAP portal (`Today-XXXX`, WPA2, 10 random digits) serves a form
+at `http://192.168.4.1` that only collects SSID and password. It scans the
+neighbourhood once in STA mode *before* raising the AP (scanning with the AP up
+makes phones drop for a second), lists the results strongest-first with dedup,
+signal bars and a lock marker, and fills the SSID on tap. `/scan` refreshes the
+list as JSON; SSIDs are escaped for both HTML and JSON (`src/netescape.cpp`,
+unit-tested on the host because an SSID is attacker-controlled input). The panel shows
+the password in two groups of five at 4x ("12345 67890") with a "TYPE
+WITHOUT SPACE" hint; the key itself has no space. Ten digits instead of eight
+because an 8-digit numeric WPA2 handshake falls in about two minutes on a GPU
+while the hotspot stays up for five. Credentials are
 stored in NVS and the board reboots. Five minutes without a submission closes
-the portal. HTTPS works but uses `WiFiClientSecure::setInsecure()` because the
-Funnel certificate is public and rotates; pin a CA for a trusted deployment.
+the portal.
+
+### Losing the network
+
+`net::EnsureSta()` never waits: it kicks `WiFi.begin()` and the driver
+reconnects in the background, so a dead router cannot stall a key press. Once
+five retries (20 s apart) have failed, the frame area shows
+`WIFI LOST - HOLD KEY 3S TO SET UP` and an unattended portal opens. Its
+schedule is a pure function (`src/portal_plan.cpp`, host-tested): the first
+retry comes 10 minutes after an empty portal times out, later ones every 30
+minutes, and a KEY hold opens one immediately — even while the saved network is
+still up, which is the "new router" case.
+The portal no longer blocks `loop()`: the hotspot runs in `WIFI_AP_STA` with
+the station still retrying, so the phone on the setup page is not left behind
+and the board goes back to normal within a tick of the old network returning
+(an automatically opened hotspot closes itself; a manually opened one stays
+until its five minutes are up). The panel shows the hotspot password with a
+`M:SS` countdown in the corner.
+
+HTTPS works but uses `WiFiClientSecure::setInsecure()` because the Funnel
+certificate is public and rotates; pin a CA for a trusted deployment.
 
 ## State machine
 
@@ -138,8 +191,24 @@ The server leaves four rectangles blank and the device draws them:
 | 3 climate | `23° 45%` or `-- --%` | SHTC3 0x70, every 60 s |
 | 4 power | battery gauge + `%`, or a plug when the reading is < 2.5 V | GPIO4 ×3, median of 7 samples |
 
-No CJK font is linked into the firmware: boot/error screens use ASCII only,
-and all Chinese text lives in the server-rendered bitmap.
+No CJK font is linked into the firmware: boot/error screens and the SoftAP
+credentials use printable ASCII only (full 0x20–0x7E 5x8 table in
+`src/font_ascii.inc`, BSD-licensed glcdfont; see NOTICE), and all Chinese text
+lives in the server-rendered bitmap. `firmware/test/pack_test.cpp` fails if a
+string drawn with PaintMessage/DrawString, or any character of the SoftAP
+password alphabet, has no glyph. The degree sign in the climate widget is
+drawn as a 3x3 ring, never encoded as UTF-8.
+
+Every screen the board draws itself comes from `src/screens.cpp`: a 44 px
+header band (the same height as the server frame's) with the title at scale 3,
+numbered steps at scale 2, and a key hint at the bottom. The boot screen is a
+centred half-size app icon plus the firmware version; the setup hotspot keeps
+the same header and puts the password at scale 5. `pack_test` renders each one
+to `/tmp/todayui/device-*.pbm`; `go run ./cmd/todayd pbm2png in.pbm out.png`
+turns them into PNGs for review. (The test does not encode PNG: a hand-written
+encoder once produced a bad chunk CRC, and a viewer reading those files hung.) The reminder band and the
+`WIFI LOST` banner are the same inverted strip, so the two never look like
+different things.
 
 ## Current limits
 

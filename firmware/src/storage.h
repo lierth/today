@@ -56,6 +56,13 @@ void ClearOutbox();
 int LoadUtcOffset();
 void SaveUtcOffset(int seconds);
 
+// Reminder list and sound policy from the last frame response: kept in NVS so
+// a cold boot with no Wi-Fi still rings for today's items.
+String LoadAlarms();
+void SaveAlarms(const String& alarms);
+String LoadSound();
+void SaveSound(const String& sound);
+
 bool TakeForceFull();
 void SetForceFull(bool value);
 
