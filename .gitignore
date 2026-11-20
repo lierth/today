@@ -1,4 +1,7 @@
+# macOS
 .DS_Store
+.AppleDouble
+._*
 
 # Local design doc — not tracked.
 docs/PLAN.md
@@ -7,11 +10,26 @@ docs/PLAN.md
 *.db
 *.db-wal
 *.db-shm
+*.log
+
+# Local environment
+.env
+.env.*
+!.env.example
 
 # Build output
 Today.app/
 dist/
 .tmp/
+*.dmg
+*.zip
+
+# Go binaries built at the repository root (`go build .`, `go build ./cmd/todayd`).
+# The names have no slash prefix on purpose: the toolchain and the docs both put
+# them beside go.mod. Everything else named today lives in cmd/ or internal/.
+/today
+/todayd
+
 # The embedded frontend: dist/ is the committed placeholder page, build/ holds
 # the release bundle (scripts/build-web.sh) and stays empty in the repository.
 !internal/server/webapp/dist/
@@ -23,13 +41,27 @@ firmware/dist/
 firmware/.vscode/
 firmware/*.bin
 firmware/*.elf
+firmware/*.o
 
 # Release signing material — never commit.
 TODAY_RELEASE_KEY*
 *.p12
 *.key
+*.pem
+*.cer
 
-# pnpm / build tool output
+# pnpm / node build output
 node_modules/
+.pnpm-store/
 .vite/
+.svelte-kit/
+.turbo/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+# Only pnpm is supported (package.json pins it); stray lockfiles are noise.
+package-lock.json
+yarn.lock
 /gen
