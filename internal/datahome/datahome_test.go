@@ -185,10 +185,25 @@ func TestPathsAndEnsure(t *testing.T) {
 			t.Fatalf("%s mode %v", dir, st.Mode().Perm())
 		}
 	}
-	// --db overrides only the database.
+	// --db moves the whole layout to the database's directory: its backups
+	// belong beside it, not in the default root.
 	other := filepath.Join(root, "elsewhere.db")
-	if p2 := Resolve(root, other); p2.DB != other || p2.Backups != p.Backups {
-		t.Fatalf("override: %+v", p2)
+	if p2 := Resolve(root, other); p2.DB != other || p2.Root != root ||
+		p2.Backups != p.Backups {
+		t.Fatalf("override in the same directory: %+v", p2)
+	}
+	sub := filepath.Join(root, "profiles", "test")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved := Resolve(root, filepath.Join(sub, "today.db"))
+	if moved.Root != sub || moved.Backups != filepath.Join(sub, "backups") ||
+		moved.Logs != filepath.Join(sub, "logs") {
+		t.Fatalf("override elsewhere: %+v", moved)
+	}
+	// The default root itself is never touched by such a run.
+	if moved.Backups == p.Backups {
+		t.Fatalf("override still wrote into the default root: %+v", moved)
 	}
 }
 

@@ -1,10 +1,7 @@
 package server
 
 import (
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"testing"
 )
 
@@ -79,60 +76,26 @@ func TestSameListen(t *testing.T) {
 }
 
 // A rejected port must leave the listener untouched: the user would otherwise
-// lose access to the page that reports the mistake.
+// lose access to the page that reports the mistake. The port is changed from
+// the Mac app's settings window, so the check is on the method it calls; the
+// HTTP door answers 404 and changes nothing either.
 func TestSettingsRejectsBadPort(t *testing.T) {
 	e := newTestEnv(t)
-	pw := e.password()
-	e.login(pw)
 	before := e.srv.Addr()
-	form := url.Values{"action": {"general"}, "tray_title": {"1"}, "open_at_login": {"1"}, "listen_addr": {"99999"}}
-	resp, err := e.client.PostForm(e.ts.URL+"/api/settings", form)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if err := e.srv.SetListenAddr("99999"); err == nil {
+		t.Fatal("an impossible port was accepted")
 	}
 	if after := e.srv.Addr(); after != before {
 		t.Fatalf("addr moved from %q to %q", before, after)
 	}
-}
 
-// Saving settings without touching the port must not bounce the listener.
-func TestSettingsKeepsListenerWhenPortUnchanged(t *testing.T) {
-	e := newTestEnv(t)
-	pw := e.password()
-	e.login(pw)
-	before := e.srv.Addr()
-	form := url.Values{"action": {"general"}, "tray_title": {"1"}, "listen_addr": {e.srv.Port()}}
-	resp, err := e.client.PostForm(e.ts.URL+"/api/settings", form)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	e.login(e.password())
+	resp := e.apiCall("PUT", "/api/v2/listen", map[string]string{"listen": "99999"})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("HTTP listen: %d, want 404", resp.StatusCode)
 	}
 	if after := e.srv.Addr(); after != before {
 		t.Fatalf("addr moved from %q to %q", before, after)
-	}
-}
-
-func TestSettingsPageShowsPort(t *testing.T) {
-	e := newTestEnv(t)
-	pw := e.password()
-	e.login(pw)
-	resp := e.get("/settings")
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), `name="listen_addr"`) {
-		t.Fatal("port field missing from settings page")
-	}
-	if !strings.Contains(string(body), "127.0.0.1:") {
-		t.Fatal("current listener not shown")
 	}
 }

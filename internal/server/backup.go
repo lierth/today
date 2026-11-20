@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,80 +214,6 @@ func (s *Server) runDailyHook(now time.Time, loc *time.Location) {
 	}
 }
 
-// handleBackupNow is the "立即备份" button.
-func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
-	day := s.clock().Format(store.DateLayout)
-	if err := s.RunBackup(day); err != nil {
-		code := http.StatusInternalServerError
-		if errors.Is(err, ErrBackupBusy) {
-			code = http.StatusConflict
-		}
-		s.renderSettingsPanel(w, r, pageData{Error: "备份失败：" + err.Error()}, code)
-		return
-	}
-	status := s.BackupStatus()
-	msg := "已备份到 " + status.Dir
-	if status.LastCloud != "" {
-		msg += "，并已复制到 iCloud"
-	}
-	s.renderSettingsPanel(w, r, pageData{Message: msg}, http.StatusOK)
-}
-
-// handleBackupRestore replaces the database with a snapshot and reopens the
-// store in place. A failed restore leaves the live data untouched and answers
-// 500 with the reason.
-func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
-		return
-	}
-	name := filepath.Base(strings.TrimSpace(r.FormValue("snapshot")))
-	if name == "" || name == "." || name == string(filepath.Separator) {
-		s.renderSettingsPanel(w, r, pageData{Error: "请选择一份备份。"}, http.StatusBadRequest)
-		return
-	}
-	// Find which directory actually holds that file: local or cloud.
-	var path string
-	for _, dir := range []string{s.backupDir(), s.cloudDir()} {
-		if dir == "" {
-			continue
-		}
-		candidate := filepath.Join(dir, name)
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			path = candidate
-			break
-		}
-	}
-	if path == "" {
-		s.renderSettingsPanel(w, r, pageData{Error: "找不到这份备份。"}, http.StatusNotFound)
-		return
-	}
-
-	s.backups.mu.Lock()
-	if s.backups.running {
-		s.backups.mu.Unlock()
-		s.renderSettingsPanel(w, r, pageData{Error: "正在备份，稍后再试。"}, http.StatusConflict)
-		return
-	}
-	s.backups.running = true
-	s.backups.mu.Unlock()
-	defer func() {
-		s.backups.mu.Lock()
-		s.backups.running = false
-		s.backups.mu.Unlock()
-	}()
-
-	// Reopening the store happens after the file swap; the server keeps its
-	// listener, the page just needs a fresh connection.
-	if err := s.RestoreBackup(path); err != nil {
-		s.renderSettingsPanel(w, r, pageData{Error: err.Error()}, http.StatusInternalServerError)
-		return
-	}
-	s.renderSettingsPanel(w, r, pageData{
-		Message: "已从 " + name + " 恢复。" + backup.RestoredSecretsNote,
-	}, http.StatusOK)
-}
-
 // RestoreBackup copies a snapshot's rows back inside one transaction. The
 // store stays open: SQLite serialises the writer, and a rollback leaves the
 // current data exactly as it was.
@@ -309,14 +234,4 @@ func (s *Server) RestoreBackup(path string) error {
 	}
 	s.ForceFullRefresh()
 	return nil
-}
-
-// backupsPageData adds the backup block to the settings model.
-func (s *Server) backupsPageData(ctx context.Context) (BackupStatus, []backup.Snapshot, error) {
-	status := s.BackupStatus()
-	snaps, err := s.SnapshotList()
-	if err != nil {
-		return status, nil, err
-	}
-	return status, snaps, nil
 }

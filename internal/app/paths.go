@@ -41,13 +41,18 @@ func DefaultDBPath() string {
 }
 
 // cloudDocsFor decides which iCloud folder this boot may use. An explicit
-// Config value wins; SkipCloud means none; otherwise the real home is read
-// here, once. Nothing else in the program looks iCloud up.
-func cloudDocsFor(cfg Config) string {
+// Config value wins; SkipCloud means none; a --db override also means none.
+//
+// The --db rule is not a convenience: a database somewhere else belongs to a
+// test, a second profile or a support case, and copying its snapshots into the
+// person's real iCloud Drive mixes one profile's data into another's (and made
+// a smoke test write into the real account). Those runs keep their backups
+// beside their own database.
+func cloudDocsFor(cfg Config, dbOverride string) string {
 	if cfg.CloudDocs != "" {
 		return cfg.CloudDocs
 	}
-	if cfg.SkipCloud {
+	if cfg.SkipCloud || dbOverride != "" {
 		return ""
 	}
 	_, docs := backup.CloudDocsForHome()

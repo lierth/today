@@ -13,6 +13,19 @@ type QuickAdd struct {
 	Date  string // yyyy-mm-dd, local to the person
 	Time  string // HH:MM
 	RRule string
+	// Fragments are the pieces the title no longer contains, in the order they
+	// appeared. The quick-add field draws them as chips and removes a chip by
+	// deleting its text, so the exact slice matters: re-parsing cannot recover
+	// it, because "10:30" and "十点半" both become the same clock time.
+	Fragments []Fragment
+}
+
+// Fragment is one recognized piece of a quick-add line.
+type Fragment struct {
+	// Kind is "date", "time" or "repeat".
+	Kind string
+	// Text is the slice of the input it stands for, verbatim.
+	Text string
 }
 
 // span is one recognized fragment: a byte range in the input.
@@ -40,6 +53,23 @@ func (s span) len() int { return s.end - s.start }
 //     followed by 前/之前 does not become a repeat rule and the phrase stays
 //     in the title. The date is still understood.
 //   - Every recognized fragment is removed from the title.
+//
+// periodDefaults are the clock times a period word alone stands for
+// ("晚上 给妈妈打电话"). A person who writes 晚上 means "in the evening", and
+// leaving the time empty would put the item at the top of the day, where the
+// board shows it first thing in the morning. The values are the middle of each
+// period, not its edge: 8 pm is evening, 5 pm is not.
+var periodDefaults = map[string]string{
+	"凌晨": "05:00",
+	"早上": "08:00",
+	"上午": "09:00",
+	"中午": "12:00",
+	"下午": "15:00",
+	"傍晚": "18:00",
+	"晚上": "20:00",
+	"夜里": "21:00",
+}
+
 func ParseQuickAdd(text string, now time.Time, loc *time.Location) QuickAdd {
 	if loc == nil {
 		loc = time.Local
@@ -56,18 +86,29 @@ func ParseQuickAdd(text string, now time.Time, loc *time.Location) QuickAdd {
 	if rule, sp, ok := matchRepeat(input); ok {
 		out.RRule = rule
 		spans = append(spans, sp)
+		out.Fragments = append(out.Fragments, Fragment{Kind: "repeat", Text: input[sp.start:sp.end]})
 	}
 	if d, sp, ok := matchDate(input, now); ok {
 		if !overlaps(spans, sp) {
 			out.Date = d
 			spans = append(spans, sp)
+			out.Fragments = append(out.Fragments, Fragment{Kind: "date", Text: input[sp.start:sp.end]})
 		}
 	}
 	if c, sp, ok := matchClock(input); ok {
 		if !overlaps(spans, sp) {
 			out.Time = c
 			spans = append(spans, sp)
+			out.Fragments = append(out.Fragments, Fragment{Kind: "time", Text: input[sp.start:sp.end]})
 		}
+	} else if p, sp, ok := matchPeriod(input); ok && !overlaps(spans, sp) {
+		// A period word with no digits after it: "晚上 给妈妈打电话" is an
+		// evening item, not an untimed one. The default is a documented
+		// constant (periodDefaults) so the chip reads "晚上" and the time is
+		// still sane if the person disagrees.
+		out.Time = periodDefaults[p]
+		spans = append(spans, sp)
+		out.Fragments = append(out.Fragments, Fragment{Kind: "time", Text: input[sp.start:sp.end]})
 	}
 
 	out.Title = stripSpans(input, spans)
@@ -242,6 +283,22 @@ func matchDate(s string, now time.Time) (string, span, bool) {
 			return d.Format("2006-01-02"), span{i, i + len(c.word)}, true
 		}
 	}
+	// 下周 on its own means next Monday; 本周末/周末 mean this Saturday. They
+	// come before the prefixed forms so the longer phrases win, and before the
+	// repeat matcher's weekdays are consulted (this function runs after it).
+	for _, c := range []struct {
+		word string
+		day  int // Monday=0
+		week int
+	}{
+		{"下个周末", 5, 1}, {"下周末", 5, 1}, {"下个星期", 0, 1}, {"下星期", 0, 1},
+		{"这个周末", 5, 0}, {"本周末", 5, 0}, {"这周末", 5, 0},
+		{"下个星期天", 6, 1}, {"下周日", 6, 1}, {"下个周日", 6, 1},
+	} {
+		if i := strings.Index(s, c.word); i >= 0 {
+			return weekDate(now, c.day, c.week), span{i, i + len(c.word)}, true
+		}
+	}
 	// 下周X / 本周X / 这周X, then a bare 周X / 星期X.
 	for _, prefix := range []struct {
 		word   string
@@ -258,6 +315,17 @@ func matchDate(s string, now time.Time) (string, span, bool) {
 				return d, span{i, i + len(prefix.word) + used}, true
 			}
 		}
+	}
+	// A bare "下周" (nothing after it) is still a date: next Monday. This is
+	// what a person types for "sometime early next week".
+	if i := strings.Index(s, "下周"); i >= 0 {
+		if end := i + len("下周"); end >= len(s) || !isHanRune(firstRune(s[end:])) {
+			return weekDate(now, 0, 1), span{i, end}, true
+		}
+	}
+	// "周末"/"本周末" alone: this Saturday, the next one still ahead of now.
+	if i := strings.Index(s, "周末"); i >= 0 && (i == 0 || !isHanRune(lastRune(s[:i]))) {
+		return weekDate(now, 5, 0), span{i, i + len("周末")}, true
 	}
 	for _, word := range []string{"星期", "周"} {
 		if i := strings.Index(s, word); i >= 0 {
@@ -482,6 +550,29 @@ func matchClock(s string) (string, span, bool) {
 			return pad2(h%24) + ":" + pad2(m), span{start, end + mUsed}, true
 		}
 		return pad2(h%24) + ":00", span{start, end}, true
+	}
+	return "", span{}, false
+}
+
+// matchPeriod finds a period word that stands alone — followed by a space, a
+// punctuation mark or the end of the line — so "晚上 打电话" gets 20:00 while
+// "晚上8点" is still the clock matcher's business, and "晚上海边" (a title that
+// merely starts with those runes) is left alone because a Han character
+// follows.
+func matchPeriod(s string) (string, span, bool) {
+	for _, p := range []string{"凌晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里"} {
+		i := strings.Index(s, p)
+		if i < 0 {
+			continue
+		}
+		end := i + len(p)
+		if end < len(s) {
+			r := firstRune(s[end:])
+			if isHanRune(r) || unicode.IsDigit(r) {
+				continue
+			}
+		}
+		return p, span{i, end}, true
 	}
 	return "", span{}, false
 }

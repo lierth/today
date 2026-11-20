@@ -12,6 +12,12 @@ docs/PLAN.md
 Today.app/
 dist/
 .tmp/
+# The embedded frontend: dist/ is the committed placeholder page, build/ holds
+# the release bundle (scripts/build-web.sh) and stays empty in the repository.
+!internal/server/webapp/dist/
+!internal/server/webapp/dist/index.html
+internal/server/webapp/build/*
+!internal/server/webapp/build/.gitkeep
 firmware/.pio/
 firmware/dist/
 firmware/.vscode/
@@ -22,3 +28,8 @@ firmware/*.elf
 TODAY_RELEASE_KEY*
 *.p12
 *.key
+
+# pnpm / build tool output
+node_modules/
+.vite/
+/gen

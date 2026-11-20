@@ -105,7 +105,7 @@ func clientIP(r *http.Request) string {
 //
 // A request with neither header is either a very old browser or a script
 // (curl, the tray's own think). It must carry X-Today-Client:1, which no
-// browser adds on its own for a cross-site form post; the page's fetch/HTMX
+// browser adds on its own for a cross-site form post; the page's fetch
 // wrapper and the host's API client set it.
 //
 // Requests from tailscaled (Funnel or serve) arrive with Origin of the public

@@ -72,10 +72,20 @@ type Paths struct {
 }
 
 // Resolve builds the layout. `dbOverride` is the --db flag: when it is set,
-// everything else still comes from the root, because a person moving only the
-// database is asking for exactly that.
+// the database's own directory becomes the root.
+//
+// The root follows the database on purpose. Everything the root holds
+// (backups, firmware, logs) describes that database; keeping ~/.today while
+// reading another file made a `--db /tmp/test.db` run write its snapshots into
+// the person's real backup folder. A person who wants a database in another
+// place is asking for a separate set of backups beside it.
 func Resolve(root, dbOverride string) Paths {
-	if root == "" {
+	if dbOverride != "" {
+		root = filepath.Dir(dbOverride)
+		if root == "" || root == "." {
+			root = "."
+		}
+	} else if root == "" {
 		root = Root()
 	}
 	p := Paths{

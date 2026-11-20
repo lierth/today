@@ -59,34 +59,38 @@ func Claim(addr string) bool {
 	return mygo.App.RequestSingleInstanceLock()
 }
 
-// deepLinkTarget maps a today:// URL to the page that serves it.
+// deepLinkTarget maps a today:// URL to the page that serves it. The pages
+// are the React app's routes now; "items" used to be a list page and is the
+// search page here, because the list is what search shows when it starts.
 func deepLinkTarget(raw, base string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return base + "/app"
+		return base + "/"
 	}
 	if !strings.HasPrefix(raw, "today://") {
 		if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 			return raw
 		}
-		return base + "/app"
+		return base + "/"
 	}
 	rest := strings.TrimPrefix(strings.TrimPrefix(raw, "today://"), "/")
 	switch {
 	case rest == "" || rest == "app":
-		return base + "/app"
+		return base + "/"
 	case rest == "settings":
 		return base + "/settings"
 	case rest == "items" || rest == "item":
-		return base + "/items"
+		return base + "/search"
 	case strings.HasPrefix(rest, "item/"):
 		id := strings.TrimPrefix(rest, "item/")
 		if id == "" || strings.ContainsAny(id, "/?#") {
-			return base + "/items"
+			return base + "/search"
 		}
-		return base + "/items/" + id
+		// The drawer opens on the today page, which is where a linked item
+		// is edited; a link from a phone lands there with the drawer open.
+		return base + "/?item=" + url.QueryEscape(id)
 	default:
-		return base + "/app"
+		return base + "/"
 	}
 }
 
@@ -163,9 +167,10 @@ type Host struct {
 	dev bool
 	log *log.Logger
 
-	tray  *mygo.Tray
-	menu  *mygo.Menu
-	panel *mygo.Window
+	tray           *mygo.Tray
+	menu           *mygo.Menu
+	panel          *mygo.Window
+	settingsWindow *mygo.Window
 
 	iconNormal []byte
 	iconError  []byte
@@ -236,13 +241,18 @@ func (h *Host) Run() error {
 	mygo.App.SetName("Today")
 	mygo.App.SetVersion(Version)
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
+	// The panel's bindings have to exist before Run: `mygo generate` writes
+	// mygo.ts from the registered services, and a late binding would be
+	// missing from the client.
+	BindPanel(h)
 	mygo.App.WhenReady(h.ready)
 	return mygo.App.Run()
 }
 
 func (h *Host) ready() {
+	// Both states come from the generated artwork; trayIcon only transcodes.
 	h.iconNormal = trayIcon(trayPNG, false)
-	h.iconError = trayIcon(trayPNG, true)
+	h.iconError = trayIcon(trayAlertPNG, true)
 	settings, err := h.srv.Settings(context.Background())
 	if err != nil {
 		h.log.Printf("host: settings: %v", err)
@@ -311,6 +321,10 @@ func (h *Host) ready() {
 		h.log.Printf("host: system sleeping; next wake forces a full repaint")
 	})
 
+	// The tray is built without a menu on purpose: a tray that owns a menu
+	// never reports a left click (mygo: "OnClick is called when the icon is
+	// clicked and it has no menu"), and the left click is the panel. The menu
+	// is set just for the duration of a right click instead.
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID:              "today",
 		Icon:            h.iconNormal,
@@ -318,7 +332,6 @@ func (h *Host) ready() {
 		Title:           h.title(),
 		MonospacedTitle: true,
 		ToolTip:         "Today",
-		Menu:            h.buildMenu(),
 	})
 	if err != nil {
 		h.log.Printf("host: tray: %v", err)
@@ -326,6 +339,18 @@ func (h *Host) ready() {
 		return
 	}
 	h.tray = tray
+	tray.OnClick(func() { h.togglePanel() })
+	tray.OnRightClick(func() {
+		// Close the panel first: a native menu over a popover steals the
+		// keyboard from it, and the flyout would close under the menu.
+		if h.panel != nil {
+			h.panel.Close()
+			h.panel = nil
+		}
+		tray.SetMenu(h.buildMenu())
+		defer tray.SetMenu(nil)
+		tray.PopUpMenu()
+	})
 	if h.firstPass != "" {
 		pw := h.firstPass
 		h.firstPass = ""
@@ -346,7 +371,7 @@ func (h *Host) ready() {
 			}).Show()
 		}
 		// The person is at this Mac: skip the password form entirely.
-		h.openLocal("/app")
+		h.openLocal("/")
 	}
 	h.srv.OnSettingsChanged(func(old, new map[string]string) {
 		if old["funnel"] != new["funnel"] {
@@ -889,23 +914,22 @@ func (h *Host) togglePanel() {
 	if h.tray == nil {
 		return
 	}
-	token, err := h.srv.PanelToken()
-	if err != nil {
-		h.log.Printf("host: panel token: %v", err)
-		return
-	}
+	// A vibrancy surface with the system's own corner radius, not NSPopover:
+	// the panel is a card, and an arrow pointing at the icon would read as a
+	// tooltip. Focusable closes it on the first click outside, as a menu does.
 	panel := mygo.NewFlyout(mygo.FlyoutOptions{
-		Tray:      h.tray,
-		Placement: mygo.PlacementBottom,
-		Gap:       4,
-		Width:     360,
-		Height:    460,
-		MinWidth:  320,
-		MaxWidth:  420,
-		Focusable: true,
-		Shadow:    true,
-		Popover:   true,
-		URL:       h.baseURL() + "/panel?t=" + url.QueryEscape(token),
+		Tray:         h.tray,
+		Placement:    mygo.PlacementBottom,
+		Gap:          6,
+		Width:        340,
+		MinWidth:     320,
+		MaxWidth:     420,
+		FitContent:   true,
+		Focusable:    true,
+		Shadow:       true,
+		Vibrancy:     mygo.VibrancyPopover,
+		CornerRadius: 12,
+		URL:          "/panel",
 	})
 	// The callback fires after a slow close animation; only clear the field
 	// when it still points at this flyout, or a fast reopen would be lost.
@@ -960,12 +984,17 @@ func (h *Host) lanAddr() string {
 	return h.baseURL()
 }
 
+// refreshMenu is the one place that rebuilds the tray title and icon after a
+// change, since the menu itself has no window to update: it is built on the
+// spot by the right-click handler. Nothing is stored here — a Menu is only
+// worth building when the person is about to look at it, and the fields it
+// reads are already fresh in h.settings and h.devices.
 func (h *Host) refreshMenu() {
-	if h.tray == nil || h.menu == nil {
+	if h.tray == nil {
 		return
 	}
-	h.menu = h.buildMenu()
-	h.tray.SetMenu(h.menu)
+	h.tray.SetTitle(h.title())
+	h.tray.SetIcon(h.iconForState(), true)
 }
 
 // checkUpdate asks the configured feed once. The menu label doubles as the
@@ -1129,7 +1158,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 	if len(items) > maxTrayItems {
 		itemMenu = append(itemMenu, &mygo.MenuItem{
 			Label: fmt.Sprintf("还有 %d 项…", len(items)-maxTrayItems),
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app") },
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/") },
 		})
 	}
 	if len(itemMenu) == 0 {
@@ -1143,8 +1172,8 @@ func (h *Host) buildMenu() *mygo.Menu {
 			Label:    deviceLabel(d),
 			Subtitle: deviceSubtitle(d),
 			Submenu: []*mygo.MenuItem{
-				{Label: "预览", Click: func(*mygo.MenuItem, *mygo.Window) {
-					go h.openLocal("/settings#devices")
+				{Label: "预览画面", Click: func(*mygo.MenuItem, *mygo.Window) {
+					h.openSettings("devices")
 				}},
 				{Label: "立即刷新", Click: func(*mygo.MenuItem, *mygo.Window) {
 					h.srv.ForceRefresh(d.ID)
@@ -1187,14 +1216,12 @@ func (h *Host) buildMenu() *mygo.Menu {
 	menu = append(menu, itemMenu...)
 	menu = append(menu,
 		&mygo.MenuItem{Label: "添加事项…", Accelerator: "CmdOrCtrl+N",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app?focus=add") }},
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/?focus=add") }},
 		mygo.Separator(),
 		&mygo.MenuItem{Label: "打开今日页面", Accelerator: "CmdOrCtrl+O",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/app") }},
-		&mygo.MenuItem{Label: "快速面板",
-			Click: func(*mygo.MenuItem, *mygo.Window) { h.togglePanel() }},
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/") }},
 		&mygo.MenuItem{Label: "管理事项",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/items") }},
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/search") }},
 		mygo.Separator(),
 		&mygo.MenuItem{Label: "设备", Submenu: deviceItems},
 		&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub,
@@ -1229,7 +1256,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 		&mygo.MenuItem{Label: "复制局域网地址",
 			Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr() + "/app") }},
 		&mygo.MenuItem{Label: "设置…", Accelerator: "CmdOrCtrl+,",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/settings") }},
+			Click: func(*mygo.MenuItem, *mygo.Window) { h.openSettings("") }},
 		&mygo.MenuItem{Label: "偏好", Submenu: []*mygo.MenuItem{
 			{ID: "autostart", Label: "开机自启", Type: mygo.MenuItemCheckbox, Checked: login,
 				KeepOpen: true, Click: func(item *mygo.MenuItem, _ *mygo.Window) {
@@ -1340,36 +1367,11 @@ var weekdayZH = [...]string{"周日", "周一", "周二", "周三", "周四", "�
 // when it decodes, otherwise the hand-drawn fallback. `alert` adds the small
 // solid dot at the top-right, which is the only "needs attention" mark.
 func trayIcon(base []byte, alert bool) []byte {
-	if img, err := png.Decode(bytes.NewReader(base)); err == nil {
-		if !alert {
-			var b bytes.Buffer
-			if err := png.Encode(&b, img); err == nil {
-				return b.Bytes()
-			}
-		}
-		// The artwork is 18x18; the dot sits in the corner, outside the
-		// rounded frame, so it never covers the tick.
-		bounds := img.Bounds()
-		out := image.NewNRGBA(bounds)
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				out.Set(x, y, img.At(x, y))
-			}
-		}
-		ink := color.NRGBA{A: 255}
-		cx, cy := float64(bounds.Max.X)-3, 2.5
-		for y := bounds.Min.Y; y < 5; y++ {
-			for x := bounds.Max.X - 5; x < bounds.Max.X; x++ {
-				dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
-				if dx*dx+dy*dy <= 5.5 {
-					out.SetNRGBA(x, y, ink)
-				}
-			}
-		}
-		var b bytes.Buffer
-		if err := png.Encode(&b, out); err == nil {
-			return b.Bytes()
-		}
+	// resources/gen already drew both states (the alert one carries its corner
+	// dot), so the only work here is making sure the bytes are a PNG the tray
+	// can decode. The hand-drawn fallback stays for a failed embed.
+	if _, err := png.Decode(bytes.NewReader(base)); err == nil {
+		return base
 	}
 	return drawTrayGlyph(alert)
 }

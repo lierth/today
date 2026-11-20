@@ -1,12 +1,12 @@
-// Package server exposes the Today HTTP API, the HTMX pages and the device
-// frame endpoint. It depends on store and frame; it never imports host.
+// Package server exposes the Today API, the React page, the menu-bar app's
+// bindings and the device frame endpoint. It depends on store and frame; it
+// never imports host.
 package server
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"today/internal/config"
+	"today/internal/server/webapp"
 	"today/internal/store"
 	"today/internal/weather"
-	"today/web"
 )
 
 // Config configures the HTTP listener.
@@ -61,6 +61,11 @@ type Server struct {
 	mux  *http.ServeMux
 	http *http.Server
 
+	// svc is the rulebook the pages, the /api/v2 JSON API and the Mac app's
+	// mygo bindings all call. It holds no *http.Request, so a rule can be
+	// tested once and reused by every front end.
+	svc *Service
+
 	listenMu sync.Mutex
 	ln       net.Listener
 	addr     string
@@ -88,7 +93,6 @@ type Server struct {
 
 	localTokens localTokenStore
 	limiter     *loginLimiter
-	tmpl        *template.Template
 	sleep       func(time.Duration)
 
 	weather *weather.Client
@@ -139,14 +143,22 @@ func New(st *store.Store, cfg Config) (*Server, error) {
 		sleep:      time.Sleep,
 		now:        st.Now,
 	}
-	tmpl, err := template.New("today").Funcs(templateFuncs()).ParseFS(web.Templates(), "*.html")
-	if err != nil {
-		return nil, err
-	}
-	s.tmpl = tmpl
 	// WeatherAPI is the one request a frame makes to the internet; it must
 	// honour the proxy setting like every other outbound call.
 	s.weather.HTTP = s.outbound
+	s.svc = newService(ServiceOptions{
+		Store:   st,
+		Logger:  cfg.Logger,
+		Clock:   func() time.Time { return s.clock() },
+		Weather: s.weather,
+		Paths:   cfg.Paths,
+		RefreshAll: func() {
+			s.ForceFullRefresh()
+		},
+		RefreshOne: func(deviceID string) {
+			s.ForceRefresh(deviceID)
+		},
+	})
 	s.routes()
 	s.http = &http.Server{
 		Handler:           s.withOriginCheck(s.mux),
@@ -165,13 +177,14 @@ func (s *Server) Handler() http.Handler { return s.withOriginCheck(s.mux) }
 // another origin. See checkWriteOrigin for the rule.
 func (s *Server) withOriginCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A browser must not re-interpret a JSON error or a PNG as HTML, and
+		// the value is harmless for the pages, so it goes on every answer.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if !checkWriteOrigin(r) {
-			if strings.HasPrefix(r.URL.Path, "/api/") {
-				http.Error(w, "cross-origin request refused", http.StatusForbidden)
-				return
-			}
-			s.renderStatus(w, r, http.StatusForbidden, "login.html",
-				pageData{Title: "登录", Error: "来自其他网站的请求已被拒绝。"})
+			// The React page and the app's fetch both send one of the headers
+			// checkWriteOrigin accepts, so this only fires for a stranger's
+			// form post.
+			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -180,43 +193,28 @@ func (s *Server) withOriginCheck(next http.Handler) http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
-	s.mux.HandleFunc("GET /panel", s.handlePanel)
 	s.mux.HandleFunc("GET /local", s.handleLocalLogin)
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginPost)
+	// The login page names these in its <head>, and a browser asks for them
+	// before it has a session; behind requireSession they would answer 302.
+	for _, name := range loginIcons {
+		s.mux.HandleFunc("GET /"+name, s.handleIcon)
+	}
 
 	s.mux.HandleFunc("GET /v1/devices/{id}/frame", s.handleFrame)
 	s.mux.HandleFunc("GET /v1/devices/{id}/firmware", s.handleFirmware)
 	s.mux.HandleFunc("POST /v1/devices/{id}/acks", s.handleAcks)
 
-	s.mux.HandleFunc("GET /app", s.requireSession(s.handleApp))
-	s.mux.HandleFunc("GET /items", s.requireSession(s.handleItemsPage))
-	s.mux.HandleFunc("GET /history", s.requireSession(s.handleHistory))
-	s.mux.HandleFunc("GET /items/{id}", s.requireSession(s.handleItemPage))
-	s.mux.HandleFunc("POST /items/{id}", s.requireSession(s.handleItemPatch))
-	s.mux.HandleFunc("POST /items/{id}/delete", s.requireSession(s.handleItemDeletePost))
-	s.mux.HandleFunc("GET /settings", s.requireSession(s.handleSettingsPage))
-	s.mux.HandleFunc("GET /", s.handleRoot)
+	s.routesV2()
 
-	s.mux.HandleFunc("GET /api/items", s.requireSession(s.handleItemsList))
-	s.mux.HandleFunc("POST /api/items", s.requireSession(s.handleItemCreate))
-	s.mux.HandleFunc("PATCH /api/items/{id}", s.requireSession(s.handleItemPatch))
-	s.mux.HandleFunc("DELETE /api/items/{id}", s.requireSession(s.handleItemDelete))
-	s.mux.HandleFunc("POST /api/items/{id}/restore", s.requireSession(s.handleRestore))
-	s.mux.HandleFunc("POST /api/items/{id}/status/{status}", s.requireSession(s.handleStatusUndo))
-	s.mux.HandleFunc("POST /api/items/carry", s.requireSession(s.handleCarry))
-	s.mux.HandleFunc("POST /api/items/uncarry", s.requireSession(s.handleUncarry))
-	s.mux.HandleFunc("POST /api/items/reorder", s.requireSession(s.handleReorder))
-	s.mux.HandleFunc("POST /api/items/move", s.requireSession(s.handleReorderGroup))
-	s.mux.HandleFunc("POST /api/items/parse", s.requireSession(s.handleParsePreview))
-	s.mux.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupNow))
-	s.mux.HandleFunc("POST /api/backup/restore", s.requireSession(s.handleBackupRestore))
-	s.mux.HandleFunc("GET /search", s.requireSession(s.handleSearch))
-	s.mux.HandleFunc("GET /api/settings", s.requireSession(s.handleSettingsGet))
-	s.mux.HandleFunc("POST /api/settings", s.requireSession(s.handleSettingsPost))
-	s.mux.HandleFunc("GET /api/devices/{id}/preview.png", s.requireSession(s.handlePreview))
-
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(web.Static())))
+	// The React app owns everything else. The explicit routes above win over
+	// this pattern, so /login stays the inline form and /api/v2 keeps its
+	// JSON errors; everything else is a page, and a page needs a session.
+	app := webapp.Handler(s.cfg.Dev)
+	s.mux.Handle("GET /", s.requireSession(func(w http.ResponseWriter, r *http.Request) {
+		app.ServeHTTP(w, r)
+	}))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -230,14 +228,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // addresses and keeps the one that answers with a matching id, so a foreign
 // listener squatting on 127.0.0.1:8787 cannot hijack the tray's links.
 func (s *Server) InstanceID() string { return s.instanceID }
-
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	http.Redirect(w, r, "/app", http.StatusFound)
-}
 
 // Start listens on the configured address and serves in the background. When
 // the port is taken by another program it falls back to a free port on the
@@ -700,3 +690,8 @@ func (s *Server) Stats(ctx context.Context) (store.Stats, error) {
 
 // Store exposes the store to the host (devices page uses it too).
 func (s *Server) Store() *store.Store { return s.st }
+
+// Service is the rules layer the page, the API and the app's bindings all
+// share. Returning it keeps those three on one implementation instead of
+// three copies that drift.
+func (s *Server) Service() *Service { return s.svc }

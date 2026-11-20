@@ -12,15 +12,16 @@ import (
 func TestDeepLinkTarget(t *testing.T) {
 	const base = "http://127.0.0.1:8787"
 	cases := map[string]string{
-		"":                   base + "/app",
-		"today://":           base + "/app",
-		"today://app":        base + "/app",
+		"":                   base + "/",
+		"today://":           base + "/",
+		"today://app":        base + "/",
 		"today://settings":   base + "/settings",
-		"today://items":      base + "/items",
-		"today://item/abc":   base + "/items/abc",
-		"today://unknown":    base + "/app",
+		"today://items":      base + "/search",
+		"today://item/abc":   base + "/?item=abc",
+		"today://item/a/b":   base + "/search",
+		"today://unknown":    base + "/",
 		"https://example.co": "https://example.co",
-		"garbage":            base + "/app",
+		"garbage":            base + "/",
 	}
 	for raw, want := range cases {
 		if got := deepLinkTarget(raw, base); got != want {

@@ -141,8 +141,8 @@ func (s *Server) CheckPassword(ctx context.Context, pw string) (bool, error) {
 // SetPassword replaces the password and rotates the session key, which
 // invalidates every existing cookie.
 func (s *Server) SetPassword(ctx context.Context, pw string) error {
-	if len([]rune(pw)) < 8 {
-		return errors.New("口令至少 8 位")
+	if len([]rune(strings.TrimSpace(pw))) < MinPasswordLength {
+		return fmt.Errorf("口令至少 %d 位", MinPasswordLength)
 	}
 	h, err := hashPassword(pw)
 	if err != nil {
@@ -312,10 +312,10 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if s.validSession(r) {
-		http.Redirect(w, r, "/app", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	s.render(w, r, "login.html", pageData{Title: "登录"})
+	s.renderLogin(w, http.StatusOK, "")
 }
 
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
@@ -328,15 +328,13 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	now := time.Now()
 	if !s.limiter.allow(ip, now) {
-		s.renderStatus(w, r, http.StatusTooManyRequests, "login.html",
-			pageData{Title: "登录", Error: "尝试太频繁，请稍后再试。"})
+		s.renderLogin(w, http.StatusTooManyRequests, "尝试太频繁，请稍后再试。")
 		return
 	}
 	pw := r.FormValue("password")
 	hash, err := s.st.Setting(ctx, "auth_password_hash")
 	if err != nil {
-		s.renderStatus(w, r, http.StatusInternalServerError, "login.html",
-			pageData{Title: "登录", Error: "服务暂时不可用。"})
+		s.renderLogin(w, http.StatusInternalServerError, "服务暂时不可用。")
 		return
 	}
 	if pw == "" || !verifyPassword(hash, pw) {
@@ -348,21 +346,33 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 			}
 		}
-		s.renderStatus(w, r, http.StatusUnauthorized, "login.html",
-			pageData{Title: "登录", Error: "口令不对。"})
+		s.renderLogin(w, http.StatusUnauthorized, "口令不对。")
 		return
 	}
 	s.limiter.success(ip)
 	s.setSessionCookie(w, r)
-	http.Redirect(w, r, "/app", http.StatusFound)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// loginLimiter enforces 5 attempts per minute per IP and an increasing
-// delay after each failure (1s, 2s, 4s, capped at 8s).
+// MinPasswordLength is the one length rule: the login form, the web settings
+// page, the Mac app and SetPassword all quote this number, so a password is
+// never accepted by one door and refused by another.
+const MinPasswordLength = 8
+
+// loginLimiter slows password guessing: 5 attempts per minute per address,
+// an increasing delay after each failure (1s, 2s, 4s, capped at 8s), and a
+// global ceiling so a Funnel visitor cannot dodge the per-address rule by
+// changing addresses.
 type loginLimiter struct {
-	mu    sync.Mutex
-	fails map[string][]time.Time
+	mu     sync.Mutex
+	fails  map[string][]time.Time
+	global []time.Time
 }
+
+// globalFailCap is how many failures a minute the whole process absorbs
+// before every address has to wait. A household that mistypes its password a
+// few times stays far below it; a script spraying addresses does not.
+const globalFailCap = 30
 
 func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{fails: make(map[string][]time.Time)}
@@ -371,18 +381,40 @@ func newLoginLimiter() *loginLimiter {
 func (l *loginLimiter) allow(ip string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	list := l.recent(ip, now)
-	return len(list) < 5
+	if len(l.recent(ip, now)) >= 5 {
+		return false
+	}
+	return len(l.recentGlobal(now)) < globalFailCap
 }
 
+// fail records one failure and returns the delay the caller should wait.
 func (l *loginLimiter) fail(ip string, now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	list := append(l.recent(ip, now), now)
 	l.fails[ip] = list
+	l.global = append(l.recentGlobal(now), now)
+	return l.delayLocked(list)
+}
+
+// delay is the wait the next failure from this address would earn, without
+// recording one: the password-change route rejects and then sleeps, so it can
+// use the same curve as the login form.
+func (l *loginLimiter) delay(ip string, now time.Time) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	list := l.recent(ip, now)
+	next := append(list, now)
+	return l.delayLocked(next)
+}
+
+func (l *loginLimiter) delayLocked(list []time.Time) time.Duration {
 	delay := time.Second << min(len(list)-1, 3)
 	if delay > 8*time.Second {
 		delay = 8 * time.Second
+	}
+	if delay < 0 {
+		return 0
 	}
 	return delay
 }
@@ -403,5 +435,17 @@ func (l *loginLimiter) recent(ip string, now time.Time) []time.Time {
 		}
 	}
 	l.fails[ip] = kept
+	return kept
+}
+
+func (l *loginLimiter) recentGlobal(now time.Time) []time.Time {
+	cutoff := now.Add(-time.Minute)
+	kept := l.global[:0]
+	for _, t := range l.global {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	l.global = kept
 	return kept
 }

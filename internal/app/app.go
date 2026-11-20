@@ -81,6 +81,9 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
+	// The flag as given, before PathsFor replaces it with the resolved path:
+	// cloudDocsFor needs to know whether this boot was pointed elsewhere.
+	override := cfg.DBPath
 	paths, pathNote := PathsFor(cfg.DBPath, cfg.Logger)
 	// The app bundle has no terminal: keep a copy of the log in the data root
 	// so a failure after a restart is still readable.
@@ -116,7 +119,7 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 			Root: paths.Root, DB: paths.DB, Backups: paths.Backups,
 			Firmware: paths.Firmware, DataNote: pathNote,
 			// The shell is the one place that may look at the real home.
-			CloudDocs: cloudDocsFor(cfg),
+			CloudDocs: cloudDocsFor(cfg, override),
 		},
 	})
 	if err != nil {

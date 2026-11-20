@@ -127,3 +127,8 @@ func (s *Server) previewPending(deviceID string) bool {
 	defer s.preview.mu.Unlock()
 	return s.preview.want[deviceID]
 }
+
+// PreviewPendingForTest reports whether a one-shot preview is queued for the
+// board. The frame handler consumes the flag, so a test that wants to see it
+// queued must ask before fetching a frame.
+func (s *Server) PreviewPendingForTest(deviceID string) bool { return s.previewPending(deviceID) }

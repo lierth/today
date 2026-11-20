@@ -62,16 +62,10 @@ func TestOutboundProxyRule(t *testing.T) {
 	}
 
 	// A bad URL is refused with a message on the settings page, not stored.
-	e.login(e.password())
-	resp, err := e.client.PostForm(e.ts.URL+"/api/settings", url.Values{
-		"action": {"general"}, "proxy_url": {"ftp://nope:1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bad proxy URL: %d", resp.StatusCode)
+	// The proxy lives in the Mac app, so the message comes from the method
+	// its binding calls; over HTTP the whole key is off limits.
+	if err := e.srv.SetSetting(ctx, "proxy_url", "ftp://nope:1"); err == nil {
+		t.Fatal("a bad proxy URL was accepted")
 	}
 	if v, _ := e.st.Setting(ctx, "proxy_url"); v != "http://127.0.0.1:3128" {
 		t.Fatalf("bad value stored: %q", v)
@@ -80,23 +74,21 @@ func TestOutboundProxyRule(t *testing.T) {
 
 // The settings card states the mode, and the checkbox pair (hidden marker +
 // checkbox) can switch it off, which a bare checkbox cannot express.
+// Turning the proxy off is a plain "off"; the settings window states the mode
+// instead of relying on a checkbox that cannot tell "unset" from "off".
 func TestProxyTogglePersists(t *testing.T) {
 	e := newTestEnv(t)
-	e.login(e.password())
 	ctx := context.Background()
-	resp, err := e.client.PostForm(e.ts.URL+"/api/settings", url.Values{
-		"action": {"general"}, "proxy_mode_present": {"1"}, "proxy_url": {""},
-	})
-	if err != nil {
-		t.Fatal(err)
+	// The Mac app writes through PatchSettings; the browser cannot reach it.
+	if _, err := e.srv.PatchSettings(ctx, map[string]string{"proxy_mode": "off", "proxy_url": ""}); err != nil {
+		t.Fatalf("patch proxy_mode: %v", err)
 	}
-	_ = resp.Body.Close()
 	if v, _ := e.st.Setting(ctx, "proxy_mode"); v != "off" {
-		t.Fatalf("unchecked proxy_mode = %q", v)
+		t.Fatalf("proxy_mode = %q", v)
 	}
-	page := string(e.body("/settings"))
-	if !strings.Contains(page, "代理已关闭") {
-		t.Fatal("page does not say the proxy is off")
+	st, _ := e.srv.Service().Settings(ctx)
+	if st["proxy_mode"] != "off" {
+		t.Fatalf("settings read back %q", st["proxy_mode"])
 	}
 }
 

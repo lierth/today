@@ -50,6 +50,8 @@ var KnownSettings = []string{
 	"update_auto_download",
 	"update_skip_version",
 	"backup_icloud",
+	"theme",
+	"color_blind",
 }
 
 // DefaultSettings returns the values used when a key is absent.
@@ -91,12 +93,18 @@ func DefaultSettings() map[string]string {
 		"update_auto_download":     "false",
 		"update_skip_version":      "",
 		"backup_icloud":            "true",
+		"theme":                    "system",
+		"color_blind":              "false",
 	}
 }
 
 // deviceCityPrefix scopes a city to one device: weather_city_dev1. The suffix
 // is a device id, so the list of known keys cannot name them in advance.
 const deviceCityPrefix = "weather_city_"
+
+// IsKnownSetting reports whether the app understands this key. The JSON API
+// refuses unknown names so a typo in a front end does not pile up dead rows.
+func IsKnownSetting(key string) bool { return knownSetting(key) }
 
 func knownSetting(key string) bool {
 	if strings.HasPrefix(key, deviceCityPrefix) && len(key) > len(deviceCityPrefix) {

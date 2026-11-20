@@ -13,5 +13,14 @@
       "LSUIElement": true,
       "NSLocalNetworkUsageDescription": "Today 需要访问局域网，才能让桌上的显示屏取到今天的事项。"
     }
-  }
+  },
+  "devUrl": "http://localhost:5173",
+  "devCommand": "pnpm -C frontend install --frozen-lockfile && pnpm -C frontend/desktop dev",
+  "buildCommand": "pnpm -C frontend install --frozen-lockfile && pnpm -C frontend build",
+  "frontendDist": "frontend/desktop/dist",
+  "bindings": "frontend/desktop/src/mygo.ts",
+  "resourcesExclude": [
+    "gen",
+    "*.svg"
+  ]
 }

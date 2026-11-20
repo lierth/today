@@ -25,6 +25,15 @@ func main() {
 		fmt.Println(host.AppVersion())
 		return
 	}
+	// mygo generate: register the bindings and let App.Run write mygo.ts.
+	// Nothing is booted, so generating never opens the database.
+	if os.Getenv("MYGO_GENERATE") != "" {
+		if err := host.GenerateOnly(); err != nil {
+			fmt.Fprintln(os.Stderr, "today:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if !host.Claim(*addr) {
 		return
 	}

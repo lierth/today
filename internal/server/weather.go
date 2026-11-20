@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -88,6 +89,25 @@ type weatherStatus struct {
 	Detail   string
 	Fetched  time.Time
 	Disabled bool
+}
+
+// redactURL hides the password in a proxy URL. The settings page shows the
+// address so a person can see which proxy is configured, but the password in
+// it is a secret just like the weather key: anyone who can read the settings
+// (a Funnel visitor with the password, a screenshot, a log) must not get it.
+func redactURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "••••"
+	}
+	if u.User == nil {
+		return raw
+	}
+	return u.Redacted()
 }
 
 // maskKey keeps the last four characters visible, the way API consoles do.

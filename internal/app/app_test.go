@@ -84,3 +84,25 @@ func TestRestartWaitsForTicker(t *testing.T) {
 		}
 	}
 }
+
+// A --db run keeps everything beside that database. It used to keep its
+// backups in ~/.today, so a smoke test with --db wrote its rows into the
+// person's real backup folder and from there into iCloud.
+func TestDbOverrideKeepsTheLayoutTogether(t *testing.T) {
+	dir := t.TempDir()
+	paths, note := PathsFor(filepath.Join(dir, "today.db"), log.New(io.Discard, "", 0))
+	if paths.Root != dir || paths.Backups != filepath.Join(dir, "backups") {
+		t.Fatalf("layout: %+v (note %q)", paths, note)
+	}
+	if got := cloudDocsFor(Config{}, filepath.Join(dir, "today.db")); got != "" {
+		t.Fatalf("a --db run would copy into %q", got)
+	}
+	// An explicit folder still wins, so the shell can pass one in tests.
+	if got := cloudDocsFor(Config{CloudDocs: "/tmp/x"}, "elsewhere.db"); got != "/tmp/x" {
+		t.Fatalf("explicit cloud folder lost: %q", got)
+	}
+	// A plain boot with SkipCloud asks nobody either.
+	if got := cloudDocsFor(Config{SkipCloud: true}, ""); got != "" {
+		t.Fatalf("SkipCloud was ignored: %q", got)
+	}
+}

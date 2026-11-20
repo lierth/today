@@ -16,7 +16,7 @@ import (
 func TestLocalLoginTokenLifecycle(t *testing.T) {
 	e := newTestEnv(t)
 	now := e.srv.Clock()
-	link, err := e.srv.LocalLoginToken(context.Background(), "/settings", now)
+	link, err := e.srv.LocalLoginToken(context.Background(), "/", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,11 +28,11 @@ func TestLocalLoginTokenLifecycle(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first use: %d %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "settings-panel") {
-		t.Fatalf("the link should land on the settings page: %s", body)
+	if !strings.Contains(string(body), "id=\"root\"") {
+		t.Fatalf("the link should land on the app shell: %s", body)
 	}
 	// The cookie is now a real session.
-	page, err := e.client.Get(e.ts.URL + "/app")
+	page, err := e.client.Get(e.ts.URL + "/api/v2/today")
 	if err != nil {
 		t.Fatal(err)
 	}
