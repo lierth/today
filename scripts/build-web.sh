@@ -12,14 +12,21 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "build-web: pnpm not found; install Node 22 and pnpm 12 first (see docs/developing.md)" >&2
+# Use the pnpm pinned in package.json (corepack), not whatever is on PATH: a
+# node_modules laid out by one pnpm version makes another want to purge it,
+# and with no TTY (mygo build, CI) that purge aborts the build.
+if command -v corepack >/dev/null 2>&1; then
+  PNPM="corepack pnpm"
+elif command -v pnpm >/dev/null 2>&1; then
+  PNPM="pnpm"
+else
+  echo "build-web: neither corepack nor pnpm found; install Node 22 (see docs/developing.md)" >&2
   exit 1
 fi
 
-echo "== building the web frontend"
-pnpm -C frontend install --frozen-lockfile
-pnpm -C frontend build
+echo "== building the web frontend ($($PNPM --version))"
+$PNPM -C frontend install --frozen-lockfile
+$PNPM -C frontend build
 
 DEST=internal/server/webapp/build
 rm -rf "$DEST"

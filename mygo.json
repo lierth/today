@@ -15,8 +15,8 @@
     }
   },
   "devUrl": "http://localhost:5173",
-  "devCommand": "pnpm -C frontend install --frozen-lockfile && pnpm -C frontend/desktop dev",
-  "buildCommand": "pnpm -C frontend install --frozen-lockfile && pnpm -C frontend build",
+  "devCommand": "corepack pnpm -C frontend install --frozen-lockfile && corepack pnpm -C frontend/desktop dev",
+  "buildCommand": "sh scripts/build-web.sh",
   "frontendDist": "frontend/desktop/dist",
   "bindings": "frontend/desktop/src/mygo.ts",
   "resourcesExclude": [
