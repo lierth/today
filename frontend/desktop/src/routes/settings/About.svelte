@@ -76,14 +76,17 @@
           · 开发版{/if}
       </div>
     </div>
+    <span class="grow"></span>
+    <button type="button" class="btn" onclick={check} disabled={busy || update.updating}>
+      {busy ? '检查中…' : '检查更新'}
+    </button>
   </div>
 
   <Card title="更新">
-    <Row label="当前版本" hint={data.version} stacked />
-    <Row label="检查更新" hint={update.status || '上次还没检查过'} stacked>
-      <button type="button" class="btn" onclick={check} disabled={busy || update.updating}>
-        检查
-      </button>
+    <Row label="上次检查" hint={update.status || '还没检查过'} stacked>
+      {#if update.latest}
+        <span class="latest">最新 {update.latest}</span>
+      {/if}
     </Row>
     {#if newer}
       <Row label="有新版本 {update.latest}" hint="下载后退出 Today 时安装" stacked>
@@ -139,7 +142,9 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 6px 4px 2px;
+    /* The cards below inset their contents by 14 px; the hero matches that so
+       the mark and "Today" sit on the same column as the row labels. */
+    padding: 2px 14px 0;
   }
   .hero :global(svg) {
     color: var(--fg);
@@ -151,6 +156,16 @@
   }
   .version {
     font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The version is the label of the product, so the update action lives on the
+     hero line instead of a card row that repeats the version a second time. */
+  .grow {
+    flex: 1;
+  }
+  .latest {
+    font-size: 11.5px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }

@@ -93,7 +93,7 @@
 
 <main>
   <header>
-    <Snail size={20} />
+    <Snail size={18} />
     <div class="title">
       <div class="line">
         <span class="name">today</span>
@@ -194,18 +194,22 @@
   main {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     /* FitContent sizes the window from this box: the width is fixed so the
        panel does not wobble as titles change, the height follows the rows. */
     width: 340px;
     box-sizing: border-box;
-    padding: 12px 12px 10px;
+    padding: 12px;
   }
+  /* One gutter for the whole panel. Rows inset their content by 14 left and
+     12 right; the header, the carry note and the footer use the same values,
+     so the mark sits exactly over the checkboxes and "today" starts on the
+     same x as every item title (18 + 10 = 18 + 10 = 28 past the gutter). */
   header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 2px;
+    gap: 10px;
+    padding: 0 12px 0 14px;
   }
   header :global(svg) {
     color: var(--fg);
@@ -218,6 +222,10 @@
     display: flex;
     align-items: baseline;
     gap: 6px;
+    /* A fixed line box keeps the two-line title steady while the date and the
+       lunar text swap characters; mixed 13/12 px CJK otherwise shifts the
+       whole header by a pixel from one day to the next. */
+    line-height: 16px;
   }
   .name {
     font-size: 13px;
@@ -234,6 +242,7 @@
   }
   .sub {
     font-size: 11px;
+    line-height: 13px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
@@ -277,7 +286,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 0 4px;
+    padding: 0 12px 0 14px;
     font-size: 11.5px;
     color: var(--muted);
   }
@@ -327,7 +336,7 @@
   }
   .empty {
     margin: 0;
-    padding: 14px 14px 16px;
+    padding: 14px;
     color: var(--muted);
     font-size: 12px;
   }
@@ -356,7 +365,7 @@
   }
   .error {
     margin: 0;
-    padding: 0 4px;
+    padding: 0 12px 0 14px;
     color: var(--error);
     font-size: 11.5px;
   }
@@ -365,7 +374,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 0 4px;
+    padding: 0 12px 0 14px;
     font-size: 11px;
     color: var(--muted);
   }
@@ -410,7 +419,7 @@
   }
   .hint {
     margin: 0;
-    padding: 0 4px;
+    padding: 0 12px 0 14px;
     color: var(--muted);
     font-size: 11.5px;
   }

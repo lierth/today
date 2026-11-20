@@ -381,13 +381,16 @@ func fullSnail() snail {
 		spiralRMax: 10.8,
 		spiralRMin: 1.6,
 		spiralK:    0.62,
-		groove:     1.0,
-		antA:       pt{33.4, 21.4},
-		antB:       pt{34.4, 12.0},
-		antHalf:    1.25,
-		bulbC:      pt{34.7, 10.9},
-		bulbR:      2.40,
-		eyeR:       0.85,
+		// A thin groove: at 1.0 the coil ate half the shell and the icon read
+		// as a set of rings with holes between them rather than a solid shell
+		// with a spiral cut into it.
+		groove:  0.62,
+		antA:    pt{33.6, 21.0},
+		antB:    pt{31.4, 12.2},
+		antHalf: 1.15,
+		bulbC:   pt{31.2, 11.0},
+		bulbR:   2.35,
+		eyeR:    0.80,
 		slits: [][2]pt{
 			{{5.4, 31.8}, {9.8, 32.4}},
 			{{6.2, 34.4}, {10.0, 34.6}},

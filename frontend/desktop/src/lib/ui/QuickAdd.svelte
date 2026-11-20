@@ -107,6 +107,9 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* The field sits in the same content column as the rows above it, so its
+       left edge lands on the checkbox column instead of the card's border. */
+    padding: 0 12px 0 14px;
   }
   input {
     width: 100%;
@@ -131,7 +134,9 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    padding-left: 2px;
+    /* The chips line up with the input's own text, which starts one border and
+       ten padding past the field's edge. */
+    padding-left: 11px;
   }
   .chip {
     display: inline-flex;

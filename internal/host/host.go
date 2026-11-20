@@ -28,12 +28,17 @@ import (
 // Version is surfaced in the menu; release builds overwrite it.
 var Version = "dev"
 
+// devVersion is the placeholder AppVersion returns when nothing stamped a real
+// version and there is no bundle to read one from.
+const devVersion = "dev"
+
 // AppVersion prefers an explicit build version, then the packaged bundle's
 // Info.plist version. It is safe to call before Run.
 func AppVersion() string {
-	if Version != "dev" {
+	if Version != devVersion {
 		return Version
 	}
+	// A bundle answers here; a `go run` does not, and the menu then says dev.
 	if v := strings.TrimSpace(mygo.App.Version()); v != "" {
 		return v
 	}
@@ -239,7 +244,13 @@ func (h *Host) SetFirstRunPassword(pw string) { h.firstPass = pw }
 func (h *Host) Run() error {
 	Version = AppVersion()
 	mygo.App.SetName("Today")
-	mygo.App.SetVersion(Version)
+	// Only an explicit build version is pushed into mygo. Pushing "dev" here
+	// would overwrite the version mygo reads from the bundle, and every later
+	// AppVersion call would keep answering "dev" — which is how a packaged app
+	// ended up showing "关于 Today dev".
+	if Version != devVersion {
+		mygo.App.SetVersion(Version)
+	}
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 	// The panel's bindings have to exist before Run: `mygo generate` writes
 	// mygo.ts from the registered services, and a late binding would be
@@ -253,6 +264,14 @@ func (h *Host) ready() {
 	// Both states come from the generated artwork; trayIcon only transcodes.
 	h.iconNormal = trayIcon(trayPNG, false)
 	h.iconError = trayIcon(trayAlertPNG, true)
+
+	// The shell is up now, so the bundle can be read: a build that was not
+	// stamped with -X takes its version from Info.plist here instead of
+	// calling itself dev in the menu and the about page.
+	if v := AppVersion(); v != Version {
+		Version = v
+		mygo.App.SetVersion(v)
+	}
 	settings, err := h.srv.Settings(context.Background())
 	if err != nil {
 		h.log.Printf("host: settings: %v", err)
@@ -1254,7 +1273,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 				}
 			}},
 		&mygo.MenuItem{Label: "复制局域网地址",
-			Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr() + "/app") }},
+			Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr()) }},
 		&mygo.MenuItem{Label: "设置…", Accelerator: "CmdOrCtrl+,",
 			Click: func(*mygo.MenuItem, *mygo.Window) { h.openSettings("") }},
 		&mygo.MenuItem{Label: "偏好", Submenu: []*mygo.MenuItem{
