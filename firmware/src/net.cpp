@@ -5,8 +5,31 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "wifista.h"
+
 namespace net {
 namespace {
+
+// The driver's last drop, kept for the panel and the setup page. RAM only: a
+// reboot has no story to tell, and every reader is in the same power cycle.
+uint8_t g_reason = 0;
+bool g_listening = false;
+wifista::Station g_station;
+
+void OnStationEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+  g_reason = info.wifi_sta_disconnected.reason;
+  g_station.Touch(millis());
+  Serial.printf("wifi: disconnected, reason %u\n", static_cast<unsigned>(g_reason));
+}
+
+// Listen once. Registration is idempotent in the core, but a static guard keeps
+// the intent obvious and the loop quiet.
+void ListenOnce() {
+  if (g_listening) return;
+  g_listening = true;
+  WiFi.onEvent(OnStationEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+}
 
 String Join(const storage::Config& cfg, const char* path) {
   String base = cfg.server;
@@ -39,18 +62,30 @@ void Prepare(HTTPClient& http) {
 
 void EnsureSta(const storage::Config& cfg) {
   if (cfg.wifiSsid.isEmpty()) return;
-  if (WiFi.status() == WL_CONNECTED) return;
+  ListenOnce();
+  const uint32_t now = millis();
+  const int status = WiFi.status();
+  g_station.Note(status, now);
+  if (!g_station.ShouldBegin(now)) return;
   // A provisioning hotspot must survive the retry: raise the station beside
   // the AP instead of replacing it, or the phone drops off the setup page.
   WiFi.mode(WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA
                 ? WIFI_AP_STA
                 : WIFI_STA);
   WiFi.setSleep(true);  // modem sleep: the loop is idle between fetches
-  // The driver keeps retrying on its own between our calls; this call resets
-  // the attempt so a router that just came back is picked up within one tick.
+  // The driver retries on its own between our calls; begin() here only starts
+  // a fresh attempt once the previous one has settled (connected, failed, or
+  // its own timeout). Calling it mid-handshake answers 0x3007 and tears down
+  // the attempt that was about to succeed.
   WiFi.setAutoReconnect(true);
+  g_reason = 0;
+  g_station.Began(now);
   WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
 }
+
+uint8_t LastDisconnectReason() { return g_reason; }
+
+void ForgetDisconnectReason() { g_reason = 0; }
 
 bool Connected() { return WiFi.status() == WL_CONNECTED; }
 int Rssi() { return WiFi.RSSI(); }

@@ -9,9 +9,22 @@ namespace net {
 
 // EnsureSta starts (or restarts) the station with the stored credentials and
 // returns immediately: the link comes up in the background, so a dead router
-// never blocks the keys. Safe to call repeatedly; a connected station is left
-// alone. Keeps AP_STA when a provisioning hotspot is up.
+// never blocks the keys. Safe to call repeatedly, but it will not call begin()
+// while the driver is mid-handshake: doing that returns 0x3007 and, at one
+// call every 20 s, tore down the attempt that was about to succeed. When it
+// does nothing, the driver's own retry is in charge. Keeps AP_STA when a
+// provisioning hotspot is up.
 void EnsureSta(const storage::Config& cfg);
+
+// LastDisconnectReason is the ESP-IDF reason of the most recent drop (0 when
+// the link is up or nothing has failed yet). It lives in RAM: a reboot has no
+// story to tell, and the panel reads it within the same power cycle.
+uint8_t LastDisconnectReason();
+
+// ForgetDisconnectReason clears it once the link is back, so a banner never
+// shows a stale password complaint long after a successful join.
+void ForgetDisconnectReason();
+
 bool Connected();
 int Rssi();
 

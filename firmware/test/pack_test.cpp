@@ -1,9 +1,7 @@
 // Host-side test for the ST7305 packer and the TBF parser. No Arduino
 // dependency: build and run on the Mac with
 //
-//   clang++ -std=c++17 -Wall -Wextra -I firmware/src \
-//     firmware/test/pack_test.cpp firmware/src/st7305.cpp firmware/src/tbf.cpp firmware/src/fontcheck.cpp firmware/src/netescape.cpp firmware/src/portal_plan.cpp firmware/src/sound_synth.cpp firmware/src/sound_policy.cpp firmware/src/screens.cpp firmware/src/version.cpp \
-//     -o /tmp/pack_test && /tmp/pack_test
+//   firmware/test/host.sh
 //
 // It also parses a fmt-3 frame produced by `todayd preview` (pass its path as
 // argv[1]) and checks the widget table matches the server contract.
@@ -28,6 +26,7 @@
 #include "fontcheck.h"
 #include "netescape.h"
 #include "portal_plan.h"
+#include "logo_inc.h"
 #include "screens.h"
 #include "sound_policy.h"
 #include "version.h"
@@ -36,6 +35,7 @@
 #include "night.h"
 #include "st7305.h"
 #include "tbf.h"
+#include "wifista.h"
 
 namespace {
 
@@ -166,13 +166,21 @@ void TestBannerGeometry() {
 // "WIFI LOST - HOLD KEY 3S TO SET UP" replaces the 13 px lunar line under the
 // date, so it must fit that strip at scale 2 without touching the widgets.
 void TestWifiLostBannerFits() {
-  const char* text = "WIFI LOST - HOLD KEY 3S TO SET UP";
-  const int width = static_cast<int>(strlen(text)) * 6 * 2;
-  printf("wifi lost banner: %d chars at scale 2 = %d px (panel %d)\n",
-         static_cast<int>(strlen(text)), width, st7305::kWidth);
-  if (width > st7305::kWidth - 4) {
-    printf("FAIL banner is %d px wide, panel is %d\n", width, st7305::kWidth);
-    g_failures++;
+  // Every text the band can carry: the plain one and one per reason. The band
+  // replaces the lunar line and does not clip, so each has to fit the strip.
+  const char* details[] = {"",           "WRONG PASSWORD?", "NETWORK NOT FOUND",
+                           "SIGNAL TOO WEAK", "ROUTER WENT AWAY", "CONNECTION FAILED",
+                           "WIFI ERROR"};
+  for (const char* detail : details) {
+    char text[wifista::kBannerCap];
+    wifista::Banner(detail, text, sizeof(text));
+    const int width = static_cast<int>(strlen(text)) * 6 * 2;
+    printf("wifi banner: \"%s\" %d chars at scale 2 = %d px (panel %d)\n", text,
+           static_cast<int>(strlen(text)), width, st7305::kWidth);
+    if (width > st7305::kWidth - 4) {
+      printf("FAIL banner is %d px wide, panel is %d\n", width, st7305::kWidth);
+      g_failures++;
+    }
   }
 }
 
@@ -617,35 +625,58 @@ void TestDeviceScreens(const char* outDir) {
   char path[256];
   snprintf(path, sizeof(path), "%s/device-boot.pbm", outDir);
   WritePBM(path, bmp, screens::kWidth, screens::kHeight);
-  // The boot screen is mostly white with a centred logo block.
+  // The boot screen is mostly white, with the snail mark centred and the
+  // version line under it.
   int black = 0;
   for (size_t i = 0; i < screens::kBytes; i++) {
     black += 8 - __builtin_popcount(bmp[i]);
   }
-  Expect(black > 2000 && black < 12000, "boot screen has a logo, not a black page");
-  // The done disc is at (x0+32, y0+28) with radius 10; the tick is white
-  // inside it. Check the tick has both a descending and an ascending arm and
-  // that they meet: two disconnected slashes are the bug this asserts away.
-  const int w = 168;
-  const int x0 = (static_cast<int>(screens::kWidth) - w) / 2;
-  const int y0 = 56;
-  const int cx = x0 + 32, cy = y0 + 28;
+  Expect(black > 700 && black < 12000, "boot screen has a logo, not a black page");
   auto white = [&](int x, int y) {
     return ((bmp[static_cast<size_t>(y) * screens::kStride + static_cast<size_t>(x) / 8] &
              (0x80 >> (x % 8))) != 0);
   };
-  int leftArm = 0, rightArm = 0, joint = 0;
-  for (int dy = -6; dy <= 7; dy++) {
-    for (int dx = -7; dx <= 7; dx++) {
-      if (dx * dx + dy * dy > 10 * 10) continue;
-      if (!white(cx + dx, cy + dy)) continue;
-      if (dx < 0 && dy <= 5) leftArm++;
-      if (dx >= 0 && dy < 0) rightArm++;
-      if (abs(dx) <= 1 && abs(dy - 5) <= 1) joint++;
+  // The mark is the generated bitmap, drawn 1:1 and centred. Compare it with
+  // logo_inc.h pixel for pixel: if the drawing loop is off by a row or a byte,
+  // the two disagree.
+  const int artX = (static_cast<int>(screens::kWidth) - logo::kWidth) / 2;
+  const int artY = 44;
+  int ink = 0, wanted = 0, wrong = 0;
+  for (int y = 0; y < logo::kHeight; y++) {
+    for (int x = 0; x < logo::kWidth; x++) {
+      const bool wantInk =
+          (logo::kBits[y * logo::kStride + x / 8] >> (7 - x % 8)) & 1;
+      const bool gotInk = !white(artX + x, artY + y);
+      if (wantInk) {
+        ink++;
+        wanted++;
+      }
+      if (gotInk != wantInk) wrong++;
     }
   }
-  printf("boot tick: left arm %d px, right arm %d px, joint %d\n", leftArm, rightArm, joint);
-  Expect(leftArm > 4 && rightArm > 4 && joint > 0, "boot tick is a joined check, not two slashes");
+  printf("boot snail: %d ink px of %d wanted, %d wrong\n", ink, wanted, wrong);
+  Expect(wanted > 300, "the boot mark has real ink (the shell is solid)");
+  Expect(wrong == 0, "the boot mark is the generated bitmap, pixel for pixel");
+  // Centred: the left and right margins around the mark are equal.
+  int leftMargin = 0, rightMargin = 0;
+  for (int y = artY; y < artY + logo::kHeight; y++) {
+    for (int x = 0; x < artX; x++) {
+      if (!white(x, y)) leftMargin++;
+    }
+    for (int x = artX + logo::kWidth; x < static_cast<int>(screens::kWidth); x++) {
+      if (!white(x, y)) rightMargin++;
+    }
+  }
+  Expect(leftMargin == rightMargin, "the boot mark is centred");
+  // The version line sits under the mark and has ink of its own.
+  int versionInk = 0;
+  for (int y = 210; y < 232; y++) {
+    for (int x = 0; x < static_cast<int>(screens::kWidth); x++) {
+      if (!white(x, y)) versionInk++;
+    }
+  }
+  printf("boot version ink: %d px\n", versionInk);
+  Expect(versionInk > 40, "the boot screen prints the firmware version");
 }
 
 // The board upgrades only to a strictly newer version. An "a != b" test
@@ -718,6 +749,105 @@ void TestFrameFile(const char* path) {
 
 }  // namespace
 
+// The 0x3007 bug in one place: a station that is still handshaking must not be
+// told to begin() again, or the attempt that was about to succeed is torn down.
+void TestWifiRetry() {
+  using wifista::Station;
+  // First call ever: nothing has been tried, so begin() runs.
+  Station a;
+  a.Note(wifista::kDisconnected, 0);
+  Expect(a.ShouldBegin(0), "first begin always runs");
+
+  // After begin(), the driver is handshaking and retrying on its own: the
+  // status keeps flipping between 6 and 0/1. Nothing may be reset while it
+  // moves, however long the outage lasts.
+  Station b;
+  b.Note(wifista::kDisconnected, 0);
+  b.Began(0);
+  Expect(!b.ShouldBegin(30000), "30 s: no begin yet");
+  for (uint32_t t = 10000; t <= 180000; t += 10000) {
+    b.Note((t / 10000) % 2 == 0 ? wifista::kDisconnected : wifista::kNoSsidAvail, t);
+    Expect(!b.ShouldBegin(t), "driver still retrying: no begin");
+  }
+
+  // Two silent minutes mean a driver that stopped retrying: the watchdog may
+  // kick it. One silent minute is still the driver's own business.
+  Station c;
+  c.Note(wifista::kDisconnected, 0);
+  c.Began(0);
+  Expect(!c.ShouldBegin(59000), "one silent minute: too early");
+  Expect(!c.ShouldBegin(119000), "119 s quiet: still too early");
+  Expect(c.ShouldBegin(120000), "two silent minutes: the driver gave up, begin again");
+
+  // Connected is never reset.
+  Station d;
+  d.Note(wifista::kDisconnected, 0);
+  d.Began(0);
+  d.Note(wifista::kConnected, 30000);
+  Expect(!d.ShouldBegin(300000), "connected: never begin");
+
+  // A status that keeps changing (the driver's own retries) never qualifies.
+  Station e;
+  e.Note(wifista::kDisconnected, 0);
+  e.Began(0);
+  for (uint32_t t = 10000; t <= 300000; t += 10000) {
+    e.Note((t / 10000) % 2 == 0 ? wifista::kDisconnected : wifista::kIdle, t);
+    Expect(!e.ShouldBegin(t), "handshake in motion: no begin");
+  }
+
+  // A station whose status never moves but whose driver keeps firing
+  // disconnect events is retrying, not stuck: the events must keep resetting
+  // the quiet clock, or the watchdog would tear down a live retry every two
+  // minutes (that was the last 0x3007 seen on the board).
+  Station g;
+  g.Note(wifista::kDisconnected, 0);
+  g.Began(0);
+  for (uint32_t t = 30000; t <= 600000; t += 30000) {
+    g.Touch(t);  // reason 15 arrives every few seconds on the real board
+    g.Note(wifista::kDisconnected, t);
+    Expect(!g.ShouldBegin(t), "events keep coming: no begin, however long");
+  }
+  g.Touch(900000);
+  Expect(!g.ShouldBegin(960000), "event 60 s ago: still the driver's business");
+
+  // millis() wrap: last begin just before, now just after.
+  Station f;
+  f.Note(wifista::kDisconnected, 0xFFFFF000u);
+  f.Began(0xFFFFF000u);
+  f.Note(wifista::kDisconnected, 0x00001000u);  // 8 s later
+  Expect(!f.ShouldBegin(0x00008000u), "wrap: 36 s quiet is too early");
+  Expect(f.ShouldBegin(0x00040000u), "wrap: 132 s quiet may begin");
+
+  char buf[wifista::kBannerCap];
+  wifista::ReasonText(15, buf, sizeof(buf));
+  Expect(strcmp(buf, "WRONG PASSWORD?") == 0, "reason 15 is a password problem");
+  wifista::ReasonText(202, buf, sizeof(buf));
+  Expect(strcmp(buf, "WRONG PASSWORD?") == 0, "reason 202 is a password problem");
+  wifista::ReasonText(201, buf, sizeof(buf));
+  Expect(strcmp(buf, "NETWORK NOT FOUND") == 0, "reason 201 is a missing network");
+  wifista::ReasonText(23, buf, sizeof(buf));
+  Expect(strcmp(buf, "WIFI ERROR") == 0, "reason 23 has no special text");
+
+  // The banner is drawn at scale 2 on a 400 px panel: 33 characters is the
+  // most that fits (pack_test asserts the pixel width below).
+  const char* reasons[] = {"", "WRONG PASSWORD?", "NETWORK NOT FOUND", "SIGNAL TOO WEAK",
+                           "ROUTER WENT AWAY", "CONNECTION FAILED", "WIFI ERROR"};
+  for (const char* detail : reasons) {
+    wifista::Banner(detail, buf, sizeof(buf));
+    Expect(strlen(buf) <= 33, "wifi banner fits the strip");
+  }
+  wifista::Banner("", buf, sizeof(buf));
+  Expect(strcmp(buf, "WIFI LOST - HOLD KEY 3S TO SET UP") == 0, "plain banner text");
+
+  // The setup page gets the same failure as a sentence.
+  char advice[wifista::kAdviceCap];
+  wifista::ReasonAdvice(15, advice, sizeof(advice));
+  Expect(strlen(advice) > 8, "advice is a sentence");
+  Expect(strstr(advice, "2.4 GHz") != nullptr, "advice names the band");
+  wifista::ReasonAdvice(201, advice, sizeof(advice));
+  Expect(strstr(advice, "5 GHz") != nullptr, "missing network names the band");
+}
+
 int main(int argc, char** argv) {
   TestCorners();
   TestAllBlack();
@@ -726,6 +856,7 @@ int main(int argc, char** argv) {
   TestEscaping();
   TestPortalPlan();
   TestWifiLostBannerFits();
+  TestWifiRetry();
   TestSoundSynth();
   TestSoundPolicy();
   TestDeviceScreens("/tmp/todayui");

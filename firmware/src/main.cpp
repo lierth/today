@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <stdio.h>
 
 #include "board.h"
 #include "display.h"
@@ -27,6 +28,7 @@
 #include "screens.h"
 #include "st7305.h"
 #include "storage.h"
+#include "wifista.h"
 #include "tbf.h"
 #include "version.h"
 
@@ -659,9 +661,35 @@ WindowExit SerialWindow(uint32_t windowMs) {
   bool keyWasDown = false;
   bool bootWasDown = false;
   uint32_t keyDownAt = 0;
+  // The station runs here too. A board with Wi-Fi but no server/token spends
+  // this window waiting for a person, and an earlier version simply blocked:
+  // the radio never got a begin(), so the serial log showed no connection
+  // attempt at all and the saved password was never tested.
+  uint32_t lastStaAt = 0;
+  int lastStaStatus = -1;
   Serial.printf("keys: KEY(GPIO%d)=%d BOOT(GPIO%d)=%d (0 = pressed)\n", board::kPinKey,
                 digitalRead(board::kPinKey), board::kPinBoot, digitalRead(board::kPinBoot));
   while (millis() - start < windowMs) {
+    if (!cfg.wifiSsid.isEmpty() && (lastStaAt == 0 || millis() - lastStaAt >= board::kWifiRetryMs)) {
+      lastStaAt = millis();
+      net::EnsureSta(cfg);
+    }
+    if (!cfg.wifiSsid.isEmpty()) {
+      const int status = WiFi.status();
+      if (status != lastStaStatus) {
+        lastStaStatus = status;
+        char want[wifista::kBannerCap];
+        const uint8_t reason = net::LastDisconnectReason();
+        if (reason != 0) wifista::ReasonText(reason, want, sizeof(want));
+        Serial.printf("wifi: status %d%s%s%s\n", status, status == WL_CONNECTED ? " (connected)" : "",
+                      reason != 0 ? ", last reason: " : "", reason != 0 ? want : "");
+      }
+      if (status == WL_CONNECTED && lastStaAt != 0 && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        Serial.printf("wifi: got ip %s rssi %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        lastStaAt = 0;  // announce once
+        lastStaStatus = -2;
+      }
+    }
     // The KEY gesture has to work here too: a board with no credentials has
     // no other way into the SoftAP portal, and this window runs before loop().
     const bool keyDown = digitalRead(board::kPinKey) == board::kButtonActiveLevel;
@@ -743,6 +771,14 @@ void StopPortal(const char* why) {
     PaintMessage("SETUP ENDED", "1. HOLD KEY FOR 3 SECONDS", "2. THE HOTSPOT REOPENS");
     return;
   }
+  // Paint() draws nothing without a frame, so a board that never fetched one
+  // (the common case for the automatic hotspot) would keep the hotspot's
+  // countdown frozen on the panel after the door closed. Say where we are
+  // instead of leaving a stale screen.
+  if (!haveFrame) {
+    PaintMessage("WAITING", "1. THE BOARD POLLS EVERY MINUTE", "2. KEY 3S TO SET UP WI-FI");
+    return;
+  }
   Paint();
 }
 
@@ -752,9 +788,18 @@ void StopPortal(const char* why) {
 void PaintWifiLostOverlay() {
   // The band replaces the lunar line, not a row: every item stays visible.
   // 33 chars at scale 2 is 396 px, which fits the strip's 8 px padding on
-  // both sides only just; DrawBanner does not clip, so the literal is the
-  // widest string that may go here (pack_test asserts it).
-  widgets::DrawBanner(20, 24, "WIFI LOST - HOLD KEY 3S TO SET UP", 2, false);
+  // both sides only just; DrawBanner does not clip, so wifista::Banner keeps
+  // every detail it can produce inside that width. Naming the reason is the
+  // difference between "it is broken" and "the password is wrong".
+  char detail[wifista::kBannerCap];
+  wifista::ReasonText(net::LastDisconnectReason(), detail, sizeof(detail));
+  char line[wifista::kBannerCap];
+  if (net::LastDisconnectReason() == 0) {
+    wifista::Banner("", line, sizeof(line));
+  } else {
+    wifista::Banner(detail, line, sizeof(line));
+  }
+  widgets::DrawBanner(20, 24, line, 2, false);
 }
 
 void PaintWifiLost() {
@@ -902,6 +947,16 @@ void setup() {
     PaintMessage("WAITING", "1. THE BOARD POLLS EVERY MINUTE", "2. KEY 3S TO SET UP WI-FI");
   }
 
+  if (!storage::Configured() && !cfg.wifiSsid.isEmpty()) {
+    // The network is set up; the account is not. The board cannot fetch a
+    // frame until the Mac hands it a server address and token, so say that
+    // instead of the "polls every minute" line, which would be a lie.
+    Serial.printf("setup: wifi saved (%s), no server/token yet - add the device in the Mac app\n",
+                  cfg.wifiSsid.c_str());
+    const String step = String("2. ADD DEVICE ") + cfg.device;
+    PaintMessage("ADD THIS DEVICE", "1. OPEN TODAY ON YOUR MAC", step.c_str());
+  }
+
   if (!storage::Configured()) {
     const WindowExit exit = SerialWindow(10 * 60 * 1000);
     cfg = storage::LoadConfig();
@@ -980,15 +1035,31 @@ void loop() {
       if (wifiFailures < 255) wifiFailures++;
     }
     if (wifiFailures == board::kWifiFailuresBeforePortal && !lostBannerShown &&
-        haveFrame && !portal::Active()) {
-      // The banner rides above the row list so the list stays usable; it is
-      // painted once, and Paint() clears it when the link returns.
+        !portal::Active()) {
       lostBannerShown = true;
-      PaintWifiLost();
+      if (haveFrame) {
+        // The banner rides above the row list so the list stays usable; it is
+        // painted once, and Paint() clears it when the link returns.
+        PaintWifiLost();
+      } else {
+        // Nothing cached yet: say what failed instead of sitting on WAITING
+        // forever. The reason is the only actionable part of the message.
+        char detail[wifista::kBannerCap];
+        const uint8_t reason = net::LastDisconnectReason();
+        if (reason != 0) {
+          wifista::ReasonText(reason, detail, sizeof(detail));
+        } else {
+          detail[0] = '\0';
+        }
+        char step[wifista::kBannerCap];
+        snprintf(step, sizeof(step), "1. %s", detail[0] ? detail : "CHECK THE ROUTER");
+        PaintMessage("NO WI-FI", step, "2. HOLD KEY 3 SECONDS TO SET UP");
+      }
     }
   } else if (wifiFailures > 0) {
     wifiFailures = 0;
     lastFrameAt = 0;
+    net::ForgetDisconnectReason();
     if (lostBannerShown) {
       lostBannerShown = false;
       Paint();

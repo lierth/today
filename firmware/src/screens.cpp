@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "font.h"
+#include "logo_inc.h"
 
 namespace screens {
 namespace {
@@ -159,79 +160,26 @@ void DrawPortal(uint8_t* out, const char* ssid, const char* password, const char
 void DrawBoot(uint8_t* out, const char* version) {
   if (out == nullptr) return;
   memset(out, 0xFF, kBytes);
-  // The app icon at half size: a rounded screen (84x64 at 2x) centred, with a
-  // filled circle + tick for the first row and two hollow circles below.
-  const int w = 168;
-  const int h = 128;
-  const int x0 = (static_cast<int>(kWidth) - w) / 2;
-  const int y0 = 56;
-  // Rounded frame: a 2 px box inset by the corner radius.
-  const int r = 12;
-  for (int x = x0 + r; x < x0 + w - r; x++) {
-    Fill(out, x, y0, 1, 2, true);
-    Fill(out, x, y0 + h - 2, 1, 2, true);
-  }
-  for (int y = y0 + r; y < y0 + h - r; y++) {
-    Fill(out, x0, y, 2, 1, true);
-    Fill(out, x0 + w - 2, y, 2, 1, true);
-  }
-  // Corners: four small arcs approximated with a 4-step staircase each.
-  for (int i = 0; i < 6; i++) {
-    const int dx = r - i - 1;
-    const int dy = r - static_cast<int>(sqrtf(static_cast<float>(r * r - dx * dx)) + 0.5f);
-    Fill(out, x0 + i, y0 + dy, 1, 2, true);
-    Fill(out, x0 + w - i - 1, y0 + dy, 1, 2, true);
-    Fill(out, x0 + i, y0 + h - dy - 2, 1, 2, true);
-    Fill(out, x0 + w - i - 1, y0 + h - dy - 2, 1, 2, true);
-  }
-  // Three rows inside: done, open, open.
-  //
-  // The done row is a filled disc with a tick punched out, like the app icon.
-  // Drawn as two short strokes with real thickness: the earlier two-pixel
-  // diagonal pairs read as "\\" at this size, not as a check.
-  const int rowY[3] = {y0 + 28, y0 + 62, y0 + 96};
-  for (int i = 0; i < 3; i++) {
-    const int cx = x0 + 32;
-    const int radius = 10;  // 20 x 20 disc; the tick spans 12 x 12 inside
-    if (i == 0) {
-      for (int dy = -radius; dy <= radius; dy++) {
-        for (int dx = -radius; dx <= radius; dx++) {
-          if (dx * dx + dy * dy <= radius * radius) Pixel(out, cx + dx, rowY[i] + dy, true);
-        }
-      }
-      // Tick: (cx-5, rowY+1) -> (cx-1, rowY+5) -> (cx+6, rowY-5), 2 px wide.
-      const int x1 = cx - 5, y1 = rowY[i] + 1;
-      const int x2 = cx - 1, y2 = rowY[i] + 5;
-      const int x3 = cx + 6, y3 = rowY[i] - 5;
-      auto stroke = [out](int ax, int ay, int bx, int by) {
-        const int steps = abs(bx - ax) > abs(by - ay) ? abs(bx - ax) : abs(by - ay);
-        for (int s = 0; s <= steps; s++) {
-          const int x = ax + (bx - ax) * s / steps;
-          const int y = ay + (by - ay) * s / steps;
-          Fill(out, x, y, 2, 2, false);
-        }
-      };
-      stroke(x1, y1, x2, y2);
-      stroke(x2, y2, x3, y3);
-    } else {
-      // Hollow circle: an 18 px ring.
-      for (int a = 0; a < 40; a++) {
-        const float t = 6.2831853f * static_cast<float>(a) / 40.0f;
-        const int px = cx + static_cast<int>(9.0f * cosf(t));
-        const int py = rowY[i] + static_cast<int>(9.0f * sinf(t));
-        Fill(out, px, py, 2, 2, true);
-      }
+  // The snail mark, drawn 1:1 from the generated bitmap (resources/gen writes
+  // firmware/src/logo_inc.h from the same geometry as the app icon).
+  const int artW = logo::kWidth;
+  const int artH = logo::kHeight;
+  const int artX = (static_cast<int>(kWidth) - artW) / 2;
+  const int artY = 44;
+  for (int y = 0; y < artH; y++) {
+    for (int x = 0; x < artW; x++) {
+      const uint8_t byte = logo::kBits[y * logo::kStride + x / 8];
+      if ((byte >> (7 - x % 8)) & 1) Pixel(out, artX + x, artY + y, true);
     }
-    Fill(out, x0 + 56, rowY[i] - 5, 88 - i * 18, 10, true);
   }
   if (version != nullptr && version[0] != '\0') {
     char line[24];
     snprintf(line, sizeof(line), "V%s", version);
     const int tw = TextWidth(line, 2);
-    DrawString(out, (static_cast<int>(kWidth) - tw) / 2, 218, line, 2);
+    DrawString(out, (static_cast<int>(kWidth) - tw) / 2, 214, line, 2);
   }
   const char* boot = "TODAY";
-  DrawString(out, (static_cast<int>(kWidth) - TextWidth(boot, 3)) / 2, 250, boot, 3);
+  DrawString(out, (static_cast<int>(kWidth) - TextWidth(boot, 3)) / 2, 244, boot, 3);
 }
 
 }  // namespace screens

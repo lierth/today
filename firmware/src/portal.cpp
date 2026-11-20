@@ -5,10 +5,12 @@
 #include <string.h>
 #include <WiFi.h>
 
+#include "net.h"
 #include "netescape.h"
 #include "portal_config.h"
 #include "portal_plan.h"
 #include "storage.h"
+#include "wifista.h"
 
 namespace portal {
 namespace {
@@ -27,6 +29,7 @@ struct Network {
   char ssid[33];
   int8_t rssi;
   bool secure;
+  uint8_t channel;
 };
 Network s_networks[kMaxNetworks];
 int s_networkCount = 0;
@@ -71,6 +74,7 @@ void CacheScanResults(int found) {
     if (name.isEmpty() || name.length() > 32) continue;
     const int8_t rssi = static_cast<int8_t>(WiFi.RSSI(i));
     const bool secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    const int chan = WiFi.channel(i);
     int slot = -1;
     for (int j = 0; j < s_networkCount; j++) {
       if (name == s_networks[j].ssid) {
@@ -82,6 +86,7 @@ void CacheScanResults(int found) {
       if (rssi > s_networks[slot].rssi) {
         s_networks[slot].rssi = rssi;
         s_networks[slot].secure = secure;
+        s_networks[slot].channel = static_cast<uint8_t>(chan);
       }
       continue;
     }
@@ -91,6 +96,7 @@ void CacheScanResults(int found) {
     n.ssid[sizeof(n.ssid) - 1] = '\0';
     n.rssi = rssi;
     n.secure = secure;
+    n.channel = static_cast<uint8_t>(chan);
   }
   // Insertion sort: at most 24 entries, and the list is nearly sorted between
   // rescans.
@@ -268,7 +274,18 @@ String SavedNote() {
   if (cfg.wifiSsid.isEmpty()) return "";
   String note = "<p class=note>当前保存：";
   note += Html(cfg.wifiSsid);
-  note += "（连接失败，可重新选择）</p>";
+  // The reason is the whole difference between "it is broken" and "the
+  // password is wrong": say which one the driver reported.
+  char advice[wifista::kAdviceCap];
+  const uint8_t reason = net::LastDisconnectReason();
+  if (reason != 0) {
+    wifista::ReasonAdvice(reason, advice, sizeof(advice));
+    note += "（连不上：";
+    note += Html(String(advice));
+    note += "）</p>";
+  } else {
+    note += "（还没连上过，可重新选择）</p>";
+  }
   return note;
 }
 
@@ -356,6 +373,20 @@ void Prepare() {
   s_password = pw;
 }
 
+// SavedChannel: the channel the scan saw the saved network on, or 1 (the AP's
+// default) when the scan has not found it yet.
+uint8_t SavedChannel() {
+  const String saved = SavedSsid();
+  if (saved.isEmpty()) return 1;
+  for (int i = 0; i < s_networkCount; i++) {
+    if (String(s_networks[i].ssid) != saved) continue;
+    if (s_networks[i].channel >= 1 && s_networks[i].channel <= 13) {
+      return static_cast<uint8_t>(s_networks[i].channel);
+    }
+  }
+  return 1;
+}
+
 void Start() {
   if (s_active) return;
   Prepare();
@@ -366,7 +397,11 @@ void Start() {
   // even show. The list is filled by an async scan started below; the page
   // polls /scan for it.
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(s_ssid.c_str(), s_password.c_str());
+  // Pin the hotspot to the channel the saved network already uses when we know
+  // it. Left to itself the AP starts on the STA's channel and moves as the STA
+  // retries, and every move drops the phone that is filling in the form.
+  const int channel = SavedChannel();
+  WiFi.softAP(s_ssid.c_str(), s_password.c_str(), channel);
   delay(200);
   s_dns.start(53, "*", WiFi.softAPIP());
   s_http.on("/", HTTP_GET, HandleRoot);
