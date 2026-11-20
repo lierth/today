@@ -1,0 +1,10 @@
+packages:
+  - shared
+  - web
+  - desktop
+
+# pnpm 11+ refuses to run dependency build scripts unless they are allowed
+# here: esbuild's postinstall fetches its native binary, so without this the
+# build step fails on a clean checkout. Nothing else needs install scripts.
+allowBuilds:
+  esbuild: true

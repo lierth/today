@@ -1,0 +1,24 @@
+{
+  "name": "today-frontend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@11.28.12",
+  "scripts": {
+    "check": "\"$npm_execpath\" -r --no-bail check && \"$npm_execpath\" check:fmt",
+    "check:fmt": "prettier --check .",
+    "lint": "\"$npm_execpath\" -r --no-bail lint",
+    "test": "\"$npm_execpath\" -r --no-bail test",
+    "build": "\"$npm_execpath\" -C web build && \"$npm_execpath\" -C desktop build",
+    "dev:web": "\"$npm_execpath\" -C web dev",
+    "dev:desktop": "\"$npm_execpath\" -C desktop dev",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "prettier-plugin-svelte": "^4.2.0",
+    "typescript": "^5.9.2"
+  }
+}

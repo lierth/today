@@ -1,0 +1,132 @@
+/*
+ * The design system's variables, mapped onto shadcn's names.
+ *
+ * shadcn components only ever read --background, --foreground, --primary,
+ * --muted, --border, --ring and friends; every one of them points at the
+ * shared palette, so a component can be replaced without a colour changing.
+ * Values come from @today/shared/tokens.css, imported first.
+ */
+@import '@today/shared/tokens.css';
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--card);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--popover-bg);
+  --color-popover-foreground: var(--fg);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-fg);
+  --color-secondary: var(--pill);
+  --color-secondary-foreground: var(--fg-2);
+  --color-muted: var(--pill);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--pill-hover);
+  --color-accent-foreground: var(--fg);
+  --color-destructive: var(--error);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-error: var(--error);
+  --color-error-soft: var(--error-soft);
+  --color-faint: var(--faint);
+  --color-ctl-fg: var(--ctl-fg);
+
+  --radius: 11px;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  /*
+   * Floating layers (popovers, menus, the command palette) are the same paper,
+   * blurred, not a second opaque card. Radix portals them to <body>, so this
+   * applies to every one of them at once.
+   */
+  [data-slot='popover-content'],
+  [data-slot='dropdown-menu-content'],
+  [data-slot='dropdown-menu-sub-content'],
+  [data-slot='select-content'],
+  [data-slot='command'],
+  [role='dialog'] {
+    backdrop-filter: var(--popover-blur);
+    -webkit-backdrop-filter: var(--popover-blur);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Buttons and tabs are chrome: selecting their text is never useful, and a
+     stray drag turns a click into a selection. Values, errors and notes stay
+     selectable because people copy them. */
+  button,
+  [role='tab'],
+  [role='menuitem'],
+  [role='option'],
+  label {
+    user-select: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer base {
+  /* Interface words are chrome, not text to copy: a label, a tab, a section
+     heading. Values a person might want (a title, a time, an error) opt back
+     in with .select-text, which ItemRow and the forms already carry. */
+  button,
+  [role='tab'],
+  [role='menuitem'],
+  kbd,
+  dt,
+  th,
+  .chrome {
+    user-select: none;
+  }
+}

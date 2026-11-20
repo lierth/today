@@ -48,6 +48,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The React pages and the mygo desktop bundle are built from frontend/,
+      # so the runner needs Node and the pnpm version pinned in package.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.28.12 --activate
+          pnpm --version
+
       - name: Install PlatformIO
         run: pipx install platformio
 
@@ -87,6 +99,9 @@ jobs:
           TZ=UTC go test ./...
           TZ=UTC go test -race -count=3 ./...
           python3 -I firmware/test/check_partitions.py firmware/partitions.csv
+          firmware/test/host.sh
+          pnpm -C frontend install --frozen-lockfile
+          pnpm -C frontend check
 
       - name: Build, sign, package
         run: scripts/release.sh "${{ steps.version.outputs.ver }}"

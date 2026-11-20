@@ -1,0 +1,19 @@
+{
+  "name": "@today/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./snail": "./src/snail.ts",
+    "./tokens.css": "./src/tokens.css"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "lint": "echo shared: no lint",
+    "test": "echo shared: no tests"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

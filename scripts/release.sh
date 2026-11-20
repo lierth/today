@@ -43,6 +43,10 @@ fi
 
 if [ "${SKIP_APP:-0}" != "1" ]; then
   echo "== building Today ${VER}"
+  # The React pages are embedded into the Go binary, so they have to exist
+  # before the compile: build-web.sh also produces the desktop bundle mygo
+  # picks up from frontendDist.
+  scripts/build-web.sh
   # mygo takes the bundle version from mygo.json and has no env override, so
   # the tag is written there for the build and the file is restored afterwards
   # (never hand-edited, never committed with a build-time version). -ldflags

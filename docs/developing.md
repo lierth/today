@@ -6,10 +6,11 @@
 |---|---|
 | `internal/frame` | 帧契约（fmt 3）、版式、字体、1-bit 渲染、PNG/PBM 预览、农历 |
 | `internal/store` | SQLite：事项、重复物化、设备、op 去重、设置 |
-| `internal/server` | 路由、口令会话、设备 token、ETag 帧、JSON API、设置页 |
-| `internal/host` | mygo 托盘、菜单、单实例、深链、Funnel 守护、休眠唤醒、回环探测、本地网络权限探测 |
+| `internal/server` | 路由、口令会话、设备 token、ETag 帧、JSON API `/api/v2`、设置页；`service.go` 是与界面无关的规则层 |
+| `internal/server/webapp` | React 构建产物的托管（根路径兜底路由）；仓库里只有占位页，发布时嵌入真构建 |
+| `internal/host` | mygo 托盘、菜单、单实例、深链、Funnel 守护、休眠唤醒、回环探测、本地网络权限探测；`bindings.go` 是给 Svelte 面板的 mygo 绑定 |
 | `internal/config` | 启动前可读的 `config.json`（监听端口） |
-| `web/` | 模板与静态资源（HTMX + 一份 `app.css`） |
+| `frontend/` | pnpm workspace：`shared/`（TS 类型与语义色）、`web/`（React + shadcn/ui，网页）、`desktop/`（Svelte 5 + mygo，菜单栏面板与设置窗口） |
 | `firmware/` | ESP32-S3 + ST7305 固件（PlatformIO，常亮双键） |
 | `cmd/todayd` | 无 GUI 的 serve / preview / decode / sim / passwd |
 
@@ -20,7 +21,42 @@ go test ./...                                   # 全部
 TZ=UTC go test ./...                            # 不依赖宿主时区
 TZ=UTC go test -race -count=3 ./...             # 提交前必过：数据竞争 + 偶发失败
 go test ./internal/frame -run TestBuildGolden -update   # 重生成 golden PBM
+pnpm -C frontend check                          # 前端：tsc / svelte-check / eslint / prettier
+pnpm -C frontend test                           # 前端：web 与 desktop 的 vitest
 ```
+
+前端需要 Node 22 与 pnpm 10 以上（`frontend/package.json` 的 `engines` 是下限）。`packageManager`
+钉在 **pnpm 11.28.12**，不是最新的 12：Node 22 自带的 corepack 0.31 只会用 `bin/pnpm.cjs`
+启动 pnpm，而 pnpm 12 只发 `bin/pnpm.mjs`，于是每条 `corepack pnpm …` 都报
+`Error: Cannot find module '…/bin/pnpm.cjs'`。11.28.12 两个入口都发，所以 corepack 能用，
+直接跑 `pnpm` 也能用。CI 用 `corepack prepare pnpm@11.28.12 --activate` 钉自己那份。
+
+另一件坑：mise/Homebrew 装的 pnpm 10.x 读到 `packageManager` 会往 `~/Library/pnpm` 再下载一份
+自己的二进制，下载残缺时那个 shim 是没有 shebang 的脚本，之后每条命令都报
+`Error: Unknown system error -8`。`frontend/.npmrc` 的 `manage-package-manager-versions=false`
+就是关掉这个行为。真撞上了，删掉 `~/Library/pnpm` 里对应版本的目录再装一次即可。
+
+`frontend/package.json` 的脚本都写 `"$npm_execpath"` 而不是 `pnpm`：脚本内部再调 `pnpm`
+会解析到 PATH 上另一个版本，pnpm 看到 `packageManager` 不符就报 `ERR_PNPM_BAD_PM_VERSION`。
+
+`go test ./...` 本身不需要 Node：`internal/server/webapp`
+嵌的是仓库里提交的占位页，只有 `scripts/build-web.sh` 或 `scripts/release.sh` 才会把
+`frontend/web/dist` 拷进 `internal/server/webapp/build` 供发布版嵌入。
+
+开发时两层前端各自热更新：
+
+```sh
+go run . &                                     # Go 服务，默认 8787
+pnpm -C frontend dev:web                       # React，http://localhost:5173，代理 /api /login /logout
+pnpm -C frontend dev:desktop                   # Svelte 面板，端口 5173；mygo dev 会把 devUrl 指向它
+go tool mygo dev                               # 托盘 app + Svelte 热更新
+```
+
+`go run .` 会优先用磁盘上的 `frontend/web/dist`（存在就直出真页面），所以改完 React 只需
+`pnpm -C frontend build`，不用重编 Go。`mygo.json` 的 `bindings` 指向
+`frontend/desktop/src/mygo.ts`：`go tool mygo generate` 或 `mygo dev` 会从 `internal/host/bindings.go`
+的类型注释重新生成它，**不要手改**。`main.go` 在 `MYGO_GENERATE` 下只注册服务、不打开数据库，
+所以生成不会碰真实数据。
 
 `-race` 不是可选项：帧渲染共享一份 `opentype.Face`，它的 `Metrics`/`Glyph` 用内部缓冲
 （`internal/frame/font.go` 的全局渲染锁就是为此），设备并发取帧时普通测试看不出来。
@@ -30,10 +66,7 @@ go test ./internal/frame -run TestBuildGolden -update   # 重生成 golden PBM
 固件侧的主机测试（不需要 Arduino、不需要板子）：
 
 ```sh
-clang++ -std=c++17 -Wall -Wextra -I firmware/src \
-  firmware/test/pack_test.cpp firmware/src/st7305.cpp firmware/src/tbf.cpp firmware/src/fontcheck.cpp firmware/src/netescape.cpp firmware/src/portal_plan.cpp firmware/src/sound_synth.cpp firmware/src/sound_policy.cpp firmware/src/screens.cpp firmware/src/version.cpp \
-  -o /tmp/pack_test
-/tmp/pack_test /tmp/frame.bin    # /tmp/frame.bin 由 todayd preview --out 生成
+firmware/test/host.sh   # 编译并运行 pack_test（源文件清单只写在这个脚本里）
 ```
 
 它写出的是 PBM（P4），不是 PNG：测试里不再手写 PNG 编码器（旧的实现把 chunk CRC 算错、zlib 流也没结束，看图的人会卡住）。转成 PNG：
@@ -48,13 +81,26 @@ done
 
 ## 图标
 
-图标只有一个源文件，改完重新生成：
+图标只有一个源文件：`resources/gen/main.go` 里的蜗牛几何（44×44 网格上的贝塞尔轮廓）。
+改完重新生成：
 
 ```sh
-resources/gen/render.sh     # 需要 rsvg-convert（brew install librsvg）
+go run ./resources/gen            # 生成全部产物
+go run ./resources/gen -ascii     # 在终端里看形状，16/18/24/32 px 也逐像素打印
 ```
 
-它把 `resources/icon.svg` 渲染成 `icon.png`（1024）、`favicon.png`（32）、`apple-touch-icon.png`（180），把 `resources/tray.svg` 渲染成 18/36 px 的模板图并把颜色压成纯黑（macOS 按菜单栏明暗自动反色）。网页用的三张图标另有一份在 `web/static/`，菜单栏那一份在 `internal/host/assets/`（`go:embed` 只能嵌入本包目录下的文件，所以是复制而非引用）。
+它输出 `resources/logo.svg`（≥32 px 用）、`logo-small.svg`（14–24 px 用）、`icon.svg` 与
+`icon.png`（1024，macOS squircle，`mygo.json` 打包的就是它）、`tray.svg` 与 18/36 px 的模板
+PNG（正常与「需要注意」两态）、浅色与暗色两版 favicon、`apple-touch-icon.png`，板子开机画面
+用的 `firmware/src/logo_inc.h`（48×34 的 1-bit 位图），以及面板里那段蜗牛动画的三段路径
+`frontend/shared/src/snail.ts`。预览图写到 `/tmp/todayui/hw13/`。
+
+网页、菜单栏和内置占位页各自需要一份副本：`frontend/web/public/`、
+`internal/server/webapp/dist/` 与 `internal/host/assets/`（`go:embed` 只能嵌入本包目录下的
+文件，所以是复制而非引用），生成器会一并更新它们。
+
+蜗牛动画（`frontend/desktop/src/Snail.svelte`）按 SKILL §8.5 把触角、尾尖、身体三段分开
+旋转，只在窗口打开与鼠标悬停时各播一次；`prefers-reduced-motion: reduce` 时只画静止的。
 
 macOS 本地网络权限的探测（`internal/host/localnet.go`）在 CI 上会真的发一次局域网连接；`TODAY_NO_LOCAL_NETWORK_PROBE=1` 可关掉，直接按已授权处理。
 
@@ -111,10 +157,19 @@ pio run -e esp32-s3-devkitc1-n16r8-debug -t upload
 ## 打包
 
 ```sh
+scripts/build-web.sh           # React 产物 → internal/server/webapp/build（嵌入用）
 go tool mygo build             # dist/darwin-arm64/Today.app + dmg
 ```
 
-配置在 `mygo.json`：`LSUIElement`（不占 Dock）、`today://` URL scheme、应用图标。版本号只在 tag 上：`scripts/release.sh` 在构建期间把 tag 写进 `mygo.json`，构建完再还原，**不要手改** `mygo.json` 的 `version`。
+`go tool mygo build` 自己会跑 `mygo.json` 的 `buildCommand`（`pnpm -C frontend install
+--frozen-lockfile && pnpm -C frontend build`），并把它 `frontendDist` 指向的
+`frontend/desktop/dist` 注入 app；`scripts/build-web.sh` 多做的是把 `frontend/web/dist`
+拷进 `internal/server/webapp/build`，让 Go 的 `//go:embed` 带上网页。`scripts/release.sh`
+两件都做，所以发版只需一条命令。
+
+配置在 `mygo.json`：`LSUIElement`（不占 Dock）、`today://` URL scheme、应用图标、`devUrl`
+（`http://localhost:5173`）、`frontendDist`（`frontend/desktop/dist`）、`bindings`
+（`frontend/desktop/src/mygo.ts`）。版本号只在 tag 上：`scripts/release.sh` 在构建期间把 tag 写进 `mygo.json`，构建完再还原，**不要手改** `mygo.json` 的 `version`。
 
 ## 发版与自动更新
 
