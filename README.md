@@ -4,7 +4,9 @@ Mac mini 上的单用户「今天」应用：菜单栏外壳 + 本地 HTTP 服�
 
 ![今日页面](docs/img/web-today-light.png)
 
-## 下载安装
+
+
+## 后续安装包的使用方式
 
 从 [GitHub Releases](https://github.com/lierth/today/releases) 下载 `Today-<版本>.dmg`，把 Today 拖到「应用程序」，然后打开菜单栏图标。当前安装包适用于 Apple Silicon Mac，未经过苹果公证；首次打开时可能需要按系统提示允许运行。
 
