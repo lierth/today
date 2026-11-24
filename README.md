@@ -6,9 +6,9 @@ Mac mini 上的单用户「今天」应用：菜单栏外壳 + 本地 HTTP 服�
 
 ## 下载安装
 
-从 [GitHub Releases](https://github.com/lierth/today/releases) 下载 `Today-0.2.0.dmg`，把 Today 拖到「应用程序」，然后打开菜单栏图标。当前安装包适用于 Apple Silicon Mac，未经过苹果公证；首次打开时可能需要按系统提示允许运行。
+从 [GitHub Releases](https://github.com/lierth/today/releases) 下载 `Today-<版本>.dmg`，把 Today 拖到「应用程序」，然后打开菜单栏图标。当前安装包适用于 Apple Silicon Mac，未经过苹果公证；首次打开时可能需要按系统提示允许运行。
 
-没有板子也可以使用 Mac 面板和网页。显示屏的应用固件为 `today-rlcd-0.2.0.bin`；`-full.bin` 仅用于首次 USB 刷机，见[刷机教程](docs/flashing.md)。
+没有板子也可以使用 Mac 面板和网页。显示屏的应用固件为 `today-rlcd-<版本>.bin`；`-full.bin` 仅用于首次 USB 刷机，见[刷机教程](docs/flashing.md)。
 
 0.2.0 的自动测试和刷机校验已通过。
 
