@@ -97,3 +97,53 @@ func TestGetMissingIsErrMissing(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestGetSupportsLegacyPasswordWithoutBypassingDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name, current, want string
+		legacy, missing     bool
+	}{
+		{"prefers current", "printf 'current\\n'", "current", false, false},
+		{"reads old install", "exit 44", "legacy", true, false},
+		{"respects denied access", "exit 36", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := filepath.Join(dir, "security")
+			calls := filepath.Join(dir, "calls")
+			body := "#!/bin/sh\nprintf '%s\\n' \"$3\" >> " + ShellQuote(calls) + "\n" +
+				"case \"$3\" in\n" + Service + ") " + tc.current + ";;\n" +
+				legacyService + ") printf 'legacy\\n';;\nesac\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			Command = script
+			t.Cleanup(func() { Command = "/usr/bin/security" })
+			got, err := Get(context.Background())
+			if got != tc.want || (tc.missing && err != ErrMissing) || (!tc.missing && err != nil) {
+				t.Fatalf("password=%q error=%v", got, err)
+			}
+			log, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(log), legacyService) != tc.legacy {
+				t.Fatalf("unexpected legacy access: %s", log)
+			}
+		})
+	}
+}
+
+func TestDeleteAlsoRemovesLegacyPassword(t *testing.T) {
+	dir := stub(t)
+	if err := Delete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), Service) || !strings.Contains(string(args), legacyService) {
+		t.Fatalf("both password records must be removed: %s", args)
+	}
+}

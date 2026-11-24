@@ -20,6 +20,9 @@ import (
 // as the item's name when the person searches for Today.
 const Service = "com.lierth.today"
 
+// Old installs keep working until their password is next saved under Service.
+const legacyService = "com.lierth.today"
+
 // Account is the account field of the item.
 const Account = "login"
 
@@ -62,14 +65,25 @@ func Get(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, Command,
 		"find-generic-password", "-s", Service, "-a", Account, "-w").Output()
 	if err != nil {
-		return "", ErrMissing
+		var exit *exec.ExitError
+		// security returns 44 for a missing item. Do not fall back after denial.
+		if !errors.As(err, &exit) || exit.ExitCode() != 44 {
+			return "", ErrMissing
+		}
+		out, err = exec.CommandContext(ctx, Command,
+			"find-generic-password", "-s", legacyService, "-a", Account, "-w").Output()
+		if err != nil {
+			return "", ErrMissing
+		}
 	}
 	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
 // Delete removes the item; a missing item is success.
 func Delete(ctx context.Context) error {
-	_ = exec.CommandContext(ctx, Command,
-		"delete-generic-password", "-s", Service, "-a", Account).Run()
+	for _, service := range []string{Service, legacyService} {
+		_ = exec.CommandContext(ctx, Command,
+			"delete-generic-password", "-s", service, "-a", Account).Run()
+	}
 	return nil
 }
