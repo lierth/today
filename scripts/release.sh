@@ -77,6 +77,7 @@ if [ "${SKIP_APP:-0}" != "1" ]; then
   fi
   # Ship the documented recovery CLI in the same signed bundle.
   GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$APP/Contents/MacOS/todayd" ./cmd/todayd
+  cp LICENSE "$APP/Contents/Resources/Today-LICENSE.txt"
 
   if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     echo "== signing with ${CODESIGN_IDENTITY}"
