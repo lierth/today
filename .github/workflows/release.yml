@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     env:
       # A step-level `if:` cannot read `secrets`; map them to the environment
       # first and test the environment variable instead.
