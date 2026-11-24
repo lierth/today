@@ -278,8 +278,7 @@ func (s *Server) RevokeDevice(ctx context.Context, id string) error {
 	return s.st.RevokeDevice(ctx, id)
 }
 
-// FirmwareVersion is the version of the image a board would download now: the
-// staged upgrade if one waits, otherwise the running build.
+// FirmwareVersion is the staged version shown in settings, or the live version.
 func (s *Server) FirmwareVersion(ctx context.Context) string {
 	st, err := s.st.Settings(ctx)
 	if err != nil {

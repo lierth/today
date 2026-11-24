@@ -21,7 +21,8 @@ go test ./...                                   # 全部
 TZ=UTC go test ./...                            # 不依赖宿主时区
 TZ=UTC go test -race -count=3 ./...             # 提交前必过：数据竞争 + 偶发失败
 go test ./internal/frame -run TestBuildGolden -update   # 重生成 golden PBM
-pnpm -C frontend check                          # 前端：tsc / svelte-check / eslint / prettier
+pnpm -C frontend check                          # 前端：tsc / svelte-check / prettier
+pnpm -C frontend lint                           # React 与 Svelte 的 ESLint
 pnpm -C frontend test                           # 前端：web 与 desktop 的 vitest
 ```
 
@@ -173,16 +174,20 @@ go tool mygo build             # dist/darwin-arm64/Today.app + dmg
 
 ## 发版与自动更新
 
-一条命令做完整包：
+GitHub 开源发行不要求 Apple Developer 账号。一条命令生成安装包：
 
 ```sh
 TODAY_RELEASE_KEY_FILE=~/.today/release-key \
 TODAY_RELEASE_PUBLIC_KEY=$PUBLIC_KEY \
-CODESIGN_IDENTITY="Today Self-Signed" \
+TODAY_RELEASE_REPO=owner/today \
 scripts/release.sh 0.4.0
 ```
 
-产物在 `dist/release/`：`Today-0.4.0-arm64.zip`、`Today-0.4.0.dmg`、`today-rlcd-0.4.0.bin`、`SHA256SUMS`、`SHA256SUMS.sig`。CI（`.github/workflows/release.yml`）在推送 `v*` tag 时跑同一个脚本并创建 release。
+产物在 `dist/release/`：`Today-0.4.0-arm64.zip`、`Today-0.4.0.dmg`、`today-rlcd-0.4.0.bin`（OTA）、`today-rlcd-0.4.0-full.bin`（USB）、`SHA256SUMS`、`SHA256SUMS.sig`。CI（`.github/workflows/release.yml`）在推送 `v*` tag 时跑同一个脚本并创建 release；手动运行时填写版本号。
+
+默认使用 ad-hoc 签名，可以发布到 GitHub Releases。首次打开时 macOS 可能阻止运行，需要使用者确认来源并按系统提示允许打开。清单的 ed25519 签名用于校验更新包，与苹果公证是两件事。
+
+苹果公证为可选功能。若需要，设置 Developer ID `CODESIGN_IDENTITY`，用 `xcrun notarytool store-credentials today-release` 保存凭据，再传入 `NOTARY_PROFILE=today-release PUBLIC_RELEASE=1`。CI 中配置 `APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` 后才运行公证步骤。开启后，公证必须成功才会发布。
 
 ### 更新密钥（ed25519）
 
@@ -191,7 +196,8 @@ todayd release-keygen --out ~/.today/release-key      # 私钥 0600，公钥打�
 ```
 
 - 公钥通过 `-ldflags -X today/internal/release.PublicKey=<base64>` 编进 app；`scripts/release.sh` 从 `TODAY_RELEASE_PUBLIC_KEY` 取。fork 的人用自己的密钥，别人的 release 签不动。
-- GitHub Secrets：`TODAY_RELEASE_KEY`（私钥文件内容，base64）、`TODAY_RELEASE_PUBLIC_KEY`（公钥）、`TODAY_CODESIGN_P12`、`TODAY_CODESIGN_PASSWORD`、`CODESIGN_IDENTITY`。
+- 自动更新所需的 GitHub Secrets：`TODAY_RELEASE_KEY`（私钥文件内容，base64）、`TODAY_RELEASE_PUBLIC_KEY`（公钥）。两者都未设置时，CI 仍会发布安装包和 SHA256SUMS，应用使用手动下载更新。不会自动安装未验证的更新包。苹果证书相关的 `TODAY_CODESIGN_P12`、`TODAY_CODESIGN_PASSWORD`、`CODESIGN_IDENTITY` 为可选项。
+- 本地生成这种手动更新包时传入 `ALLOW_UNSIGNED_RELEASE=1`，并留空更新公钥；省略这个开关时，脚本仍要求签名密钥。
 - CI 在临时 keychain 里导入 p12，最后（`if: always()`）删掉。公钥的一半在 `release.PublicKey` 为空时也能构建，但自动更新会拒绝一切（「no public key built in」）——这是故意的，不做「无签名也照装」。
 
 ### 代码签名证书（免费自签名）
@@ -202,7 +208,7 @@ scripts/make-signing-cert.sh            # CN 默认 Today Self-Signed，可用�
 
 它用 openssl 生成一张 10 年、带 `codeSigning` EKU 的自签名证书，导出 p12 导入登录钥匙串，再用 `security add-trusted-cert` 设为可信的代码签名证书（这一步会弹系统密码框，脚本里已经说明），最后把 base64 的 p12 和三行 secrets 写进一个 0600 文件。私钥不会打印到终端，也不会进仓库；用完 `rm -rf $TMPDIR/today-signing`。
 
-`CODESIGN_IDENTITY` 没设时退回 ad-hoc 签名并打警告。**hardened runtime（`--options runtime`）没有开**：mygo 的更新窗口是 WKWebView，自签名证书带不动库校验所需的 entitlements，开了只会让 app 起不来；app 不离开本机，这一条写在这里作为记录。
+免费自签名只适合本机开发，不能代替 Developer ID 和公证。`CODESIGN_IDENTITY` 没设时退回 ad-hoc 签名并打警告；Developer ID 签名会启用 hardened runtime（`--options runtime`）和可信时间戳。
 
 ### 更新时的两道校验
 

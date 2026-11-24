@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CalendarDays, Clock, Pin, PinOff, Repeat, Trash2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -79,16 +79,27 @@ export function ItemDrawer({
   const [rrule, setRrule] = useState('');
   const [custom, setCustom] = useState('');
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const previous = useRef<typeof item.data>(undefined);
+  const closing = useRef(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const it = item.data;
     if (!it) return;
-    setTitle(it.title);
-    setNotes(it.description ?? '');
-    setDate(it.date_local);
-    setTime(it.starts_at && !it.all_day ? it.starts_at.slice(11, 16) : '');
-    setRrule(it.rrule ?? '');
-    setCustom(it.rrule ?? '');
+    const before = previous.current;
+    const reset = before?.id !== it.id;
+    const oldTime = before?.starts_at && !before.all_day ? before.starts_at.slice(11, 16) : '';
+    const nextTime = it.starts_at && !it.all_day ? it.starts_at.slice(11, 16) : '';
+    // An autosave response may arrive while the person edits another field.
+    setTitle((value) => (reset || value === before?.title ? it.title : value));
+    setNotes((value) =>
+      reset || value === (before?.description ?? '') ? (it.description ?? '') : value,
+    );
+    setDate((value) => (reset || value === before?.date_local ? it.date_local : value));
+    setTime((value) => (reset || value === oldTime ? nextTime : value));
+    setRrule((value) => (reset || value === (before?.rrule ?? '') ? (it.rrule ?? '') : value));
+    setCustom((value) => (reset || value === (before?.rrule ?? '') ? (it.rrule ?? '') : value));
+    previous.current = it;
   }, [item.data]);
 
   const row = item.data;
@@ -111,22 +122,25 @@ export function ItemDrawer({
     return next;
   }, [row, title, notes, date, time, rrule]);
 
-  const close = useCallback(() => {
-    if (id) {
-      const next = pending();
-      if (Object.keys(next).length > 0) {
-        // Fire and forget: the panel is going away, and TanStack keeps the
-        // mutation alive above it. A failure still raises a toast.
-        patch.mutate(
-          { id, patch: next },
-          {
-            onSuccess: () => onChanged?.(),
-            onError: (err) => toast.error(err.message),
-          },
-        );
+  const close = useCallback(async () => {
+    if (closing.current) return;
+    closing.current = true;
+    setSaving(true);
+    try {
+      if (id) {
+        const next = pending();
+        if (Object.keys(next).length > 0) {
+          await patch.mutateAsync({ id, patch: next });
+          onChanged?.();
+        }
       }
+      onClose();
+    } catch {
+      // The mutation shows the error; keep the editor and draft available for retry.
+    } finally {
+      closing.current = false;
+      setSaving(false);
     }
-    onClose();
   }, [id, pending, patch, onChanged, onClose]);
 
   const updateRRule = (value: string) => {
@@ -142,7 +156,12 @@ export function ItemDrawer({
   };
 
   return (
-    <Sheet open={Boolean(id)} onOpenChange={(open) => (!open ? close() : undefined)}>
+    <Sheet
+      open={Boolean(id)}
+      onOpenChange={(open) => {
+        if (!open) void close();
+      }}
+    >
       <SheetContent
         side="right"
         data-drawer="item"
@@ -273,6 +292,7 @@ export function ItemDrawer({
                 size="sm"
                 className="gap-1.5 text-[var(--error)]"
                 aria-label="删除事项"
+                disabled={saving}
                 onClick={() => {
                   if (!id) return;
                   remove.mutate(id, { onSuccess: () => onClose() });
@@ -280,8 +300,15 @@ export function ItemDrawer({
               >
                 <Trash2 className="size-3.5" /> 删除
               </Button>
-              <Button variant="secondary" size="sm" onClick={close}>
-                完成
+              <span role="status" className="ml-auto mr-3 text-[11px] text-[var(--muted)]">
+                {saving || patch.isPending
+                  ? '正在保存…'
+                  : Object.keys(pending()).length
+                    ? '有未保存的更改'
+                    : '已保存'}
+              </span>
+              <Button variant="secondary" size="sm" onClick={() => void close()} disabled={saving}>
+                {saving ? '保存中…' : '完成'}
               </Button>
             </div>
           </div>

@@ -4,6 +4,16 @@ Mac mini 上的单用户「今天」应用：菜单栏外壳 + 本地 HTTP 服�
 
 ![今日页面](docs/img/web-today-light.png)
 
+## 下载安装
+
+从 [GitHub Releases](https://github.com/lierth/today/releases) 下载 `Today-0.2.0.dmg`，把 Today 拖到「应用程序」，然后打开菜单栏图标。当前安装包适用于 Apple Silicon Mac，未经过苹果公证；首次打开时可能需要按系统提示允许运行。
+
+没有板子也可以使用 Mac 面板和网页。显示屏的应用固件为 `today-rlcd-0.2.0.bin`；`-full.bin` 仅用于首次 USB 刷机，见[刷机教程](docs/flashing.md)。
+
+0.2.0 的自动测试和刷机校验已通过。
+
+未配置更新签名密钥的发行包使用手动下载更新。项目源码采用 [MIT 许可证](LICENSE)，第三方组件和字体保留各自许可证。
+
 ## 硬件
 
 - **微雪 ESP32-S3-RLCD-4.2**（ESP32-S3-WROOM-1-N16R8，16 MB Flash / 8 MB PSRAM）
@@ -38,7 +48,7 @@ go test ./...                  # 服务端与帧渲染，不需要 Node
 go run . --dev                 # 菜单栏应用（托盘 + 本地服务）
 ```
 
-前端（Mac app 的 Svelte 页面与网页的 React 页面）在 `frontend/`，需要 Node 22 与 pnpm 12：
+前端（Mac app 的 Svelte 页面与网页的 React 页面）在 `frontend/`，需要 Node 22 以上与 pnpm 11.28.12（项目已固定版本）：
 
 ```sh
 pnpm -C frontend install

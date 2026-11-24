@@ -15,6 +15,7 @@ import { TooltipProvider } from './components/Hint';
 import { Snail } from './components/Snail';
 import { useTheme } from './lib/theme';
 import { api } from './lib/api';
+import { useRefreshLists } from './lib/queries';
 import { cn } from './lib/utils';
 import {
   DropdownMenu,
@@ -210,6 +211,7 @@ function MobileAccount({
  */
 function MobileAdd() {
   const [open, setOpen] = useState(false);
+  const refresh = useRefreshLists();
   return (
     <>
       <Button
@@ -242,6 +244,7 @@ function MobileAdd() {
             <QuickAdd
               autoFocus
               onSaved={() => {
+                void refresh();
                 setOpen(false);
               }}
             />

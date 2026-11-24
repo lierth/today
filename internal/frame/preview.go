@@ -93,7 +93,7 @@ func drawWidgetSamples(img *image.Gray) {
 		x, y := int(w.X), int(w.Y)
 		switch w.Kind {
 		case WidgetClock:
-			textAt(22, "14:05", x+8, y+24)
+			textAt(24, "14:05", x+int(w.W)-66, y+25)
 		case WidgetWifi:
 			// Three ascending bars; the frame declares where, not what.
 			for i, h := range []int{4, 7, 10} {

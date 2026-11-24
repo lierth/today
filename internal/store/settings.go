@@ -23,6 +23,8 @@ var KnownSettings = []string{
 	"device_token_hint",
 	"firmware_version",
 	"firmware_pending_version",
+	"firmware_slot",
+	"firmware_pending_slot",
 	"update_feed",
 	"night_off",
 	"night_start",

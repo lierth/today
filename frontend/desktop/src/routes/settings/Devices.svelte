@@ -17,6 +17,7 @@
   let { data, reload }: Props = $props();
 
   let adding = $state(false);
+  let busy = $state(false);
   let newID = $state('');
   let newName = $state('');
   let error = $state('');
@@ -27,17 +28,21 @@
 
   /** Every one-shot call goes through here so a failure is shown, not lost. */
   async function run(job: () => Promise<unknown>) {
+    if (busy) return;
+    busy = true;
     error = '';
     try {
       await job();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy = false;
     }
   }
 
   async function add() {
     if (!newID.trim()) return;
-    try {
+    await run(async () => {
       await Panel.addDevice(
         newID.trim().toLowerCase(),
         newName.trim() || newID.trim().toLowerCase(),
@@ -46,19 +51,19 @@
       newID = '';
       newName = '';
       await reload();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
+    });
   }
 
-  async function token(id: string) {
-    error = '';
-    try {
-      setup = await Panel.deviceToken(id);
-      setupFor = id;
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
+  async function token(device: DeviceRow) {
+    if (
+      (device.online || device.firmware || setupFor === device.id) &&
+      !window.confirm(`重新生成口令后，${device.name} 需要重新配对。继续？`)
+    )
+      return;
+    await run(async () => {
+      setup = await Panel.deviceToken(device.id);
+      setupFor = device.id;
+    });
   }
 
   async function frame(id: string) {
@@ -67,25 +72,27 @@
       previewOf = '';
       return;
     }
-    try {
+    await run(async () => {
       preview = await Panel.previewFrame(id, 1);
       previewOf = id;
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
+    });
   }
 
   async function revoke(device: DeviceRow) {
-    try {
+    if (!window.confirm(`取消配对后，${device.name} 将无法连接。需要重新配对才能恢复。继续？`))
+      return;
+    await run(async () => {
       await Panel.revokeDevice(device.id);
+      if (setupFor === device.id) {
+        setup = null;
+        setupFor = '';
+      }
       await reload();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
+    });
   }
 </script>
 
-<div class="stack">
+<fieldset class="stack" disabled={busy} aria-busy={busy}>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
   <Card title="设备">
@@ -117,18 +124,23 @@
           <button type="button" onclick={() => frame(device.id)}>
             {previewOf === device.id ? '收起预览' : '预览画面'}
           </button>
-          <button type="button" onclick={() => token(device.id)}>生成 token</button>
-          <button type="button" class="danger" onclick={() => revoke(device)}>吊销</button>
+          <button type="button" onclick={() => token(device)}>生成配对口令</button>
+          <button type="button" class="danger" onclick={() => revoke(device)}>取消配对</button>
         </div>
         {#if previewOf === device.id && preview}
           <img class="frame" src={preview} alt="{device.name} 的画面预览" />
         {/if}
         {#if setupFor === device.id && setup}
+          {@const pairing = setup}
           <div class="setup">
             <p>
-              在板子上长按 KEY 开热点，连上后在配网页逐行执行（token 只显示这一次，{setup.hint}）：
+              长按 KEY 3 秒打开配网热点，在配网页填写服务器地址、设备 ID
+              和配对口令。口令只显示这一次。下面的命令用于 USB 串口配置（{pairing.hint}）。
             </p>
-            {#each setup.lines as line (line)}
+            <button type="button" onclick={() => run(() => Panel.copyText(pairing.token))}>
+              复制配对口令
+            </button>
+            {#each pairing.lines as line (line)}
               <button
                 type="button"
                 class="cmd"
@@ -161,10 +173,14 @@
   {:else}
     <button type="button" class="add" onclick={() => (adding = true)}>添加一台设备</button>
   {/if}
-</div>
+</fieldset>
 
 <style>
   .stack {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -173,7 +189,7 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 10px 14px;
+    padding: 14px;
     border-top: 1px solid var(--line-2);
   }
   .device:first-child {
@@ -225,8 +241,13 @@
   button:hover {
     background: var(--pill);
   }
-  button.danger {
+  button.danger:hover {
     color: var(--error);
+    background: var(--error-soft);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .frame {
     width: 100%;

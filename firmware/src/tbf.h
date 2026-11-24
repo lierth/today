@@ -12,6 +12,9 @@ constexpr uint8_t kFormatVersion = 3;
 constexpr size_t kMaxRows = 16;
 constexpr size_t kMaxFooters = 8;
 constexpr size_t kMaxWidgets = 8;
+constexpr size_t kBitmapBytes = 400 * 300 / 8;
+constexpr size_t kMaxFrameBytes = 24 + kMaxRows * 20 + 1 + kMaxFooters * 2 +
+                                 1 + kMaxWidgets * 9 + kBitmapBytes + 4;
 
 constexpr uint8_t kFlagForceFull = 1 << 0;
 

@@ -22,11 +22,6 @@ void DrawWifi(const tbf::Widget& rect, int rssi, bool connecting, bool portal, b
 void DrawClimate(const tbf::Widget& rect, float temperatureC, float humidity, bool ok);
 void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb);
 
-// Local overlays for the base bitmap: the cursor inverts a whole row, a done
-// toggle adds the strike-through. Both work offline (no server frame change).
-void InvertRow(int y, int height);
-void StrikeRow(int y, int height);
-
 // DrawBanner paints one full-width strip with vertically centred text. With
 // `invert` the strip is black and the text white; otherwise the strip is
 // white with black text. The reminder and the lost-Wi-Fi line share it.

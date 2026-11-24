@@ -15,16 +15,6 @@ import type { Group } from '@today/shared';
  */
 const search = vi.fn<(q: string) => Promise<{ groups: Group[] | null; query: string }>>();
 
-// cmdk measures its list with a ResizeObserver; jsdom has none.
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
-// cmdk scrolls the highlighted row into view; jsdom has no layout to scroll.
-Element.prototype.scrollIntoView ??= function scrollIntoView() {};
-
 vi.mock('@/lib/api', () => ({
   api: {
     search: (q: string) => search(q),

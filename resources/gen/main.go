@@ -680,9 +680,9 @@ func inkBounds(r *raster) (x0, y0, x1, y1 float64) {
 const iconCanvas = 1024.0
 
 // iconFill is how much of the squircle's inner width the mark spans. Apple's
-// grid leaves generous margins: at 0.72 the shell sits well inside the tile
+// grid leaves generous margins: at 0.76 the shell sits well inside the tile
 // instead of crowding the rounded corners.
-const iconFill = 0.72
+const iconFill = 0.76
 
 // iconTransform centres the mark's bounding box inside the squircle and sizes
 // it to `fill` of the squircle's width. Centring the box (not the art origin)
@@ -691,13 +691,13 @@ func iconTransform(r *raster, fill float64) (tx, ty, scale float64) {
 	x0, y0, x1, y1 := inkBounds(r)
 	scale = fill * 824 / (x1 - x0)
 	tx = iconCanvas/2 - ((x0+x1)/2)*scale
-	ty = iconCanvas/2 - ((y0+y1)/2)*scale
+	ty = iconCanvas/2 - ((y0+y1)/2)*scale - 10
 	return
 }
 
 func writeIcon(p string, s snail, px int) error {
 	q := squircle{x: 100, y: 100, w: 824, h: 824, r: 185}
-	r := newRaster(s, 12)
+	r := newRaster(s, 24)
 	tx, ty, scale := iconTransform(r, iconFill)
 
 	img := image.NewNRGBA(image.Rect(0, 0, px, px))
@@ -737,6 +737,11 @@ func writeIcon(p string, s snail, px int) error {
 				rgb[1] += (0x16 - rgb[1]) * cov
 				rgb[2] += (0x16 - rgb[2]) * cov
 			}
+			// Composite the paper over a black shadow, including edge pixels.
+			// White RGB outside the tile made the old shadow a pale double rim.
+			for channel := range rgb {
+				rgb[channel] *= inside / a
+			}
 			i := y*img.Stride + x*4
 			img.Pix[i+0] = uint8(clamp(rgb[0], 0, 255) + 0.5)
 			img.Pix[i+1] = uint8(clamp(rgb[1], 0, 255) + 0.5)
@@ -760,7 +765,7 @@ func logoSVG(s snail, title string) string {
 
 func iconSVG(s snail) string {
 	solid, holes := s.pieces()
-	tx, ty, scale := iconTransform(newRaster(s, 12), iconFill)
+	tx, ty, scale := iconTransform(newRaster(s, 24), iconFill)
 	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Today">
   <title>Today</title>
   <defs>

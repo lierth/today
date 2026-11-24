@@ -14,6 +14,8 @@
   let busy = $state(false);
   let error = $state('');
   let note = $state('');
+  let firmwarePath = $state('');
+  let firmwareVersion = $state('');
 
   async function backupNow() {
     busy = true;
@@ -66,17 +68,30 @@
     try {
       const path = await Panel.chooseFirmware();
       if (!path) return;
-      const version =
-        path
-          .split('/')
-          .pop()
-          ?.replace(/^today-/, '')
-          .replace(/\.bin$/, '') ?? '';
-      const staged = await Panel.uploadFirmware(path, version);
-      note = '固件已上传：' + staged;
+      if (path.endsWith('-full.bin')) {
+        error = '合并镜像仅用于 USB 刷机，请选择不带 -full 的应用固件。';
+        return;
+      }
+      firmwarePath = path;
+      const name = path.split('/').pop() ?? '';
+      firmwareVersion = name.replace(/^today-(?:rlcd-)?/, '').replace(/\.bin$/, '');
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function uploadFirmware() {
+    busy = true;
+    error = '';
+    try {
+      const staged = await Panel.uploadFirmware(firmwarePath, firmwareVersion);
+      note = `已上传 ${staged}，点击推送升级后发送给设备。`;
+      firmwarePath = '';
       await reload();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy = false;
     }
   }
 </script>
@@ -97,8 +112,15 @@
   </Card>
 
   <Card title="恢复">
-    <Row label="选择备份" hint="恢复前会再问一次">
-      <select aria-label="选择备份" bind:value={picked}>
+    <Row
+      label="选择备份"
+      hint={data.backups.length ? '恢复前会再问一次' : '还没有备份，请先创建一份'}
+    >
+      <select
+        aria-label="选择备份"
+        bind:value={picked}
+        disabled={busy || data.backups.length === 0}
+      >
         {#each data.backups as b (b.name)}
           <option value={b.name}>{b.when} · {b.where} · {b.size}</option>
         {/each}
@@ -116,13 +138,38 @@
     </Row>
   </Card>
 
-  <Card title="固件">
-    <Row label="当前固件" hint={data.firmware || '设备还没上报过'} stacked />
-    <Row label="上传固件" hint="选一个 .bin，板子下次取帧后升级">
+  <Card title="固件升级">
+    <Row label="当前提供的版本" hint={data.firmware || '尚未上传固件'} />
+    <Row label="选择应用固件" hint={firmwarePath.split('/').pop() || '使用不带 -full 的 .bin 文件'}>
       <button type="button" class="btn" onclick={chooseFirmware} disabled={busy}>选择文件</button>
     </Row>
-    <Row label="推给设备" hint="已上传但没推的时候用">
-      <button type="button" class="btn" onclick={pushFirmware} disabled={busy}>推送</button>
+    {#if firmwarePath}
+      <Row label="固件版本" hint="与这份固件的版本保持一致">
+        <input aria-label="固件版本" bind:value={firmwareVersion} placeholder="0.2.0" />
+        <button
+          type="button"
+          class="btn"
+          onclick={uploadFirmware}
+          disabled={busy || !firmwareVersion.trim()}
+        >
+          {busy ? '上传中…' : '上传'}
+        </button>
+      </Row>
+    {/if}
+    <Row
+      label="推送到显示屏"
+      hint={data.settings['firmware_pending_version']
+        ? `待推送 ${data.settings['firmware_pending_version']}，升级后设备会自动重启`
+        : '先选择并上传固件，再推送升级'}
+    >
+      <button
+        type="button"
+        class="btn"
+        onclick={pushFirmware}
+        disabled={busy || !data.settings['firmware_pending_version']}
+      >
+        推送升级
+      </button>
     </Row>
   </Card>
 
@@ -137,6 +184,7 @@
     flex-direction: column;
     gap: 14px;
   }
+  input,
   select {
     height: 25px;
     max-width: 260px;

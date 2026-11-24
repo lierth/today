@@ -217,9 +217,7 @@ int DrawString(int x, int y, const char* text, int scale) {
 }
 
 void DrawBanner(int y, int height, const char* text, int scale, bool invert) {
-  // One strip serves both banners: the lost-Wi-Fi line is white with black
-  // ink over the header, the reminder is the inverse. Same geometry, so the
-  // two never read as different kinds of thing.
+  // A shared monochrome strip for reminders and offline status.
   for (int yy = y; yy < y + height && yy < board::kHeight; yy++) {
     for (int x = 0; x < board::kWidth; x++) Pixel(x, yy, invert);
   }
@@ -235,23 +233,6 @@ void FillRect(int x, int y, int w, int h, int color) {
   for (int yy = y; yy < y + h; yy++) {
     for (int xx = x; xx < x + w; xx++) Pixel(xx, yy, color == kBlack);
   }
-}
-
-void InvertRow(int y, int height) {
-  if (y < 0 || height <= 0) return;
-  for (int row = y; row < y + height && row < board::kHeight; row++) {
-    for (int x = 0; x < board::kWidth; x++) {
-      const st7305::Cell cell =
-          st7305::CellFor(static_cast<uint16_t>(x), static_cast<uint16_t>(row));
-      display::Buffer()[cell.index] ^= cell.mask;
-    }
-  }
-}
-
-void StrikeRow(int y, int height) {
-  if (y < 0 || height <= 0) return;
-  const int lineY = y + height - 7;
-  for (int x = 24; x < board::kWidth - 16; x++) Pixel(x, lineY, true);
 }
 
 int BatteryPercent(int millivolts) {

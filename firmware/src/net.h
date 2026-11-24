@@ -31,6 +31,7 @@ int Rssi();
 struct FetchResult {
   int status = -1;            // HTTP status, -1 on transport error
   bool changed = false;       // body parsed and bitmap replaced
+  size_t encodedBytes = 0;    // complete validated TBF, including metadata and CRC
   bool forceFull = false;     // server asked for a full refresh
   bool refresh = false;       // X-Refresh: repaint even on 304
   uint32_t seq = 0;
@@ -49,7 +50,7 @@ struct FetchResult {
 // FetchFrame writes the bitmap into `buf` and points `out->bitmap` into it.
 // The cursor is drawn on the device; the request never carries it.
 FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool force,
-                       uint8_t* buf, size_t cap, tbf::Frame* out);
+                       uint8_t (&buf)[tbf::kMaxFrameBytes], tbf::Frame* out);
 
 // PostAcks sends one JSON payload and returns the HTTP status (or <0).
 int PostAcks(const storage::Config& cfg, const String& json);

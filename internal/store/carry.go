@@ -283,11 +283,15 @@ func (s *Store) Upcoming(ctx context.Context, today string, days int, limit int)
 	seen := map[string]bool{}
 	out := make([]Item, 0, len(items))
 	for _, it := range items {
-		if it.SeriesID != "" {
-			if seen[it.SeriesID] {
+		series := it.SeriesID
+		if series == "" && it.RRule != "" {
+			series = it.ID
+		}
+		if series != "" && it.Status != StatusDone {
+			if seen[series] {
 				continue
 			}
-			seen[it.SeriesID] = true
+			seen[series] = true
 		}
 		out = append(out, it)
 	}

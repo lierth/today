@@ -108,7 +108,7 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := st.EnsureDevice(ctx, "dev1", "开发设备"); err != nil {
+	if _, err := st.EnsureDevice(ctx, "dev1", "桌面显示屏"); err != nil {
 		_ = st.Close()
 		return nil, "", err
 	}

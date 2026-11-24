@@ -52,11 +52,11 @@
     border-color: var(--ctl-fg, #63636b);
   }
   .check.checked {
-    background: var(--accent);
-    border-color: var(--accent);
+    background: var(--fg);
+    border-color: var(--fg);
   }
   .check.checked svg {
-    stroke: var(--accent-fg);
+    stroke: var(--card);
   }
   .check.failed {
     border-color: var(--error);

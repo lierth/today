@@ -84,6 +84,25 @@ func TestBuildIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestWidgetInkFitsWithoutOverlappingNeighbours(t *testing.T) {
+	for i, a := range WidgetRects {
+		if a.X+a.W > Width || a.Y+a.H > HeaderHeight {
+			t.Fatalf("widget %d leaves the header: %+v", a.Kind, a)
+		}
+		if a.Kind == WidgetClock && a.W < 5*6*3 {
+			t.Fatal("the clock's five glyphs need 90 pixels, including the clear region")
+		}
+		if a.Kind == WidgetPower && a.W < 20+4*6 {
+			t.Fatal("the battery and 100% label do not fit")
+		}
+		for _, b := range WidgetRects[i+1:] {
+			if a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H {
+				t.Fatalf("widgets %d and %d overlap", a.Kind, b.Kind)
+			}
+		}
+	}
+}
+
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	f, err := Build(testInput(t))
 	if err != nil {

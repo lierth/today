@@ -4,8 +4,12 @@
 #include <Update.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <time.h>
 
 #include "wifista.h"
+
+extern const uint8_t kCertBundleStart[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t kCertBundleEnd[] asm("_binary_x509_crt_bundle_end");
 
 namespace net {
 namespace {
@@ -15,6 +19,28 @@ namespace {
 uint8_t g_reason = 0;
 bool g_listening = false;
 wifista::Station g_station;
+
+// HTTPClient decodes both chunked and fixed-length responses into this bounded sink.
+class FrameSink final : public Stream {
+ public:
+  FrameSink(uint8_t* data, size_t cap) : data_(data), cap_(cap) {}
+  size_t write(uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t* data, size_t len) override {
+    if (len > cap_ - size_) { setWriteError(); return 0; }
+    memcpy(data_ + size_, data, len);
+    size_ += len;
+    return len;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  size_t size() const { return size_; }
+ private:
+  uint8_t* data_;
+  size_t cap_;
+  size_t size_ = 0;
+};
 
 void OnStationEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
@@ -58,6 +84,17 @@ void Prepare(HTTPClient& http) {
   http.setConnectTimeout(8000);
 }
 
+void PrepareTLS(WiFiClientSecure& tls) {
+  // The pinned ESP-IDF SDK includes its full public CA bundle.
+  tls.setCACertBundle(kCertBundleStart, kCertBundleEnd - kCertBundleStart);
+  static bool ntpStarted = false;
+  if (!ntpStarted) {
+    // Bootstrap certificate dates on a new board without a valid RTC.
+    configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
+    ntpStarted = true;
+  }
+}
+
 }  // namespace
 
 void EnsureSta(const storage::Config& cfg) {
@@ -91,7 +128,7 @@ bool Connected() { return WiFi.status() == WL_CONNECTED; }
 int Rssi() { return WiFi.RSSI(); }
 
 FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool force,
-                       uint8_t* buf, size_t cap, tbf::Frame* out) {
+                       uint8_t (&buf)[tbf::kMaxFrameBytes], tbf::Frame* out) {
   FetchResult res;
   if (cfg.server.isEmpty() || cfg.device.isEmpty() || cfg.token.isEmpty()) return res;
   String path = "/v1/devices/" + cfg.device + "/frame";
@@ -102,7 +139,7 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool forc
   HTTPClient http;
   Prepare(http);
   const bool secure = url.startsWith("https://");
-  if (secure) tls.setInsecure();  // Funnel serves a public, rotating cert.
+  if (secure) PrepareTLS(tls);
   const bool began = secure ? http.begin(tls, url) : http.begin(plain, url);
   if (!began) {
     res.status = -2;
@@ -139,18 +176,24 @@ FetchResult FetchFrame(const storage::Config& cfg, const String& etag, bool forc
     return res;
   }
 
-  const String body = http.getString();
+  if (http.getSize() > static_cast<int>(sizeof(buf))) {
+    res.status = -3;
+    http.end();
+    return res;
+  }
+  FrameSink sink(buf, sizeof(buf));
+  const int received = http.writeToStream(&sink);
   http.end();
-  if (body.length() == 0 || body.length() > cap) {
+  if (received <= 0 || sink.size() == 0) {
     res.status = -3;
     return res;
   }
-  memcpy(buf, body.c_str(), body.length());
-  if (!tbf::Parse(buf, body.length(), out)) {
+  if (!tbf::Parse(buf, sink.size(), out)) {
     res.status = -4;
     return res;
   }
   res.changed = true;
+  res.encodedBytes = sink.size();
   res.forceFull = (out->flags & tbf::kFlagForceFull) != 0;
   return res;
 }
@@ -163,7 +206,7 @@ int PostAcks(const storage::Config& cfg, const String& json) {
   HTTPClient http;
   Prepare(http);
   const bool secure = url.startsWith("https://");
-  if (secure) tls.setInsecure();
+  if (secure) PrepareTLS(tls);
   if (!(secure ? http.begin(tls, url) : http.begin(plain, url))) return -2;
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Token", cfg.token);
@@ -181,7 +224,7 @@ bool DownloadFirmware(const storage::Config& cfg) {
   http.setTimeout(30000);
   http.setConnectTimeout(8000);
   const bool secure = url.startsWith("https://");
-  if (secure) tls.setInsecure();
+  if (secure) PrepareTLS(tls);
   const bool began = secure ? http.begin(tls, url) : http.begin(plain, url);
   if (!began) return false;
   http.addHeader("X-Device-Token", cfg.token);

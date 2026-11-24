@@ -75,7 +75,7 @@ export type {
  * Everything a write can change: the day's list, the counts, the upcoming
  * buckets and the history are all derived from the same rows.
  */
-function useRefreshLists() {
+export function useRefreshLists() {
   const client = useQueryClient();
   return async () => {
     await Promise.all([
@@ -189,7 +189,6 @@ export function useCarry() {
 }
 
 export function usePatchItem() {
-  const client = useQueryClient();
   const refresh = useRefreshLists();
   const undo = useUndo();
   return useMutation({
@@ -197,7 +196,6 @@ export function usePatchItem() {
       api.patch(vars.id, vars.patch),
     onSuccess: async (out, vars) => {
       await refresh();
-      void client.invalidateQueries({ queryKey: keys.item(vars.id) });
       if (!out.undo) return;
       // A pin or a move: the server sent back the fields that changed.
       const what =

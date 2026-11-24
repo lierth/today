@@ -37,18 +37,18 @@ const (
 	WidgetPower   = 4 // battery / USB
 )
 
-// WidgetRects is the v2 layout: clock on the far right, wifi and power share
-// the row above climate on its left (spec-statusbar.md "定稿版式 v2").
+// WidgetRects reserves the actual 5x8 clock glyphs at scale 3 (90 px).
+// Wi-Fi, power and climate stay to its left, including their clear regions.
 //
-//	clock   (320, 6, 64, 32)
-//	wifi    (232, 4, 40, 14)
-//	power   (276, 4, 40, 14)
-//	climate (232, 20, 84, 14)
+//	clock   (294, 6, 90, 32)
+//	wifi    (224, 4, 20, 14)
+//	power   (246, 4, 44, 14)
+//	climate (224, 22, 66, 14)
 var WidgetRects = []Widget{
-	{Kind: WidgetClock, X: 320, Y: 6, W: 64, H: 32},
-	{Kind: WidgetWifi, X: 232, Y: 4, W: 40, H: 14},
-	{Kind: WidgetPower, X: 276, Y: 4, W: 40, H: 14},
-	{Kind: WidgetClimate, X: 232, Y: 20, W: 84, H: 14},
+	{Kind: WidgetClock, X: 294, Y: 6, W: 90, H: 32},
+	{Kind: WidgetWifi, X: 224, Y: 4, W: 20, H: 14},
+	{Kind: WidgetPower, X: 246, Y: 4, W: 44, H: 14},
+	{Kind: WidgetClimate, X: 224, Y: 22, W: 66, H: 14},
 }
 
 // Frame flag bits.

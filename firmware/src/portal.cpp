@@ -9,6 +9,7 @@
 #include "netescape.h"
 #include "portal_config.h"
 #include "portal_plan.h"
+#include "portalscan.h"
 #include "storage.h"
 #include "wifista.h"
 
@@ -23,8 +24,11 @@ String s_ssid;
 String s_password;
 String s_submittedSsid;
 
-// Scan cache. Filled once before the AP starts, refreshed on /scan.
+// Scan cache. The first kick happens right after the hotspot comes up, and
+// /scan refreshes it.
 constexpr int kMaxNetworks = 24;
+// How long to wait before kicking another scan after the driver refused one.
+constexpr uint32_t kScanRetryMs = 3000;
 struct Network {
   char ssid[33];
   int8_t rssi;
@@ -33,7 +37,12 @@ struct Network {
 };
 Network s_networks[kMaxNetworks];
 int s_networkCount = 0;
-bool s_scanning = false;
+// A scan that never starts (the radio is mid-handshake, or the AP/STA switch
+// has not settled) used to leave s_networkCount at zero with nothing to show
+// for it, so the page looked like the neighbourhood was empty. portalscan
+// keeps the last refusal and a backoff deadline so the page can say so and
+// try again, and the host tests can drive it without a radio.
+portalscan::State s_scan;
 uint32_t s_scannedAt = 0;
 uint32_t s_startedAt = 0;
 bool s_userOpened = false;
@@ -113,24 +122,36 @@ void CacheScanResults(int found) {
 }
 
 // Scanning with the AP up makes the radio hop channels; phones can drop the
-// association for a second or two. That is why the boot scan runs in STA mode
-// *before* the hotspot is raised.
+// association for a second or two, which is why the page warns about it.
 // A rescan while the hotspot is up is asynchronous: a synchronous scan would
 // block the HTTP server (and the keys) for seconds. /scan starts it, the page
 // polls until the results land.
 void StartRescan() {
-  if (s_scanning) return;
-  if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) return;
-  s_scanning = true;
-  WiFi.scanNetworks(true, false);  // async, no hidden networks
+  if (s_scan.scanning) return;
+  if (!portalscan::Ready(s_scan, millis())) return;
+  if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+    portalscan::NoteKick(s_scan, portalscan::Kick::Busy, 0, millis(), kScanRetryMs);
+    return;
+  }
+  // scanNetworks() kicks the scan and answers WIFI_SCAN_RUNNING; anything else
+  // means esp_wifi_scan_start() refused (WIFI_SCAN_FAILED, usually because the
+  // station is still associating). Recording it turns a silent empty list into
+  // a visible "scan failed, tap rescan" and lets the retry back off.
+  const int16_t started = WiFi.scanNetworks(true, false);  // async, no hidden networks
+  const portalscan::Kick kick =
+      started == WIFI_SCAN_RUNNING ? portalscan::Kick::Started : portalscan::Kick::Refused;
+  portalscan::NoteKick(s_scan, kick, started, millis(), kScanRetryMs);
+  if (kick == portalscan::Kick::Refused) {
+    Serial.printf("portal: scan refused (%d), retry in %lu ms\n", s_scan.error,
+                  static_cast<unsigned long>(kScanRetryMs));
+  }
 }
 
 // Polls the asynchronous scan; returns true while one is in flight.
 bool PollRescan() {
-  if (!s_scanning) return false;
+  if (!s_scan.scanning) return false;
   const int state = WiFi.scanComplete();
-  if (state == WIFI_SCAN_RUNNING) return true;
-  s_scanning = false;
+  if (portalscan::NotePoll(s_scan, state, millis(), kScanRetryMs)) return true;
   if (state >= 0) {
     CacheScanResults(state);
     WiFi.scanDelete();
@@ -140,6 +161,9 @@ bool PollRescan() {
       if (saved.length() > 0 && String(s_networks[i].ssid) == saved) s_savedSeen = true;
     }
     s_scanFresh = true;
+  } else {
+    Serial.printf("portal: scan failed (%d), retry in %lu ms\n", s_scan.error,
+                  static_cast<unsigned long>(kScanRetryMs));
   }
   return false;
 }
@@ -156,6 +180,12 @@ String Bars(int8_t rssi) {
 
 String ScanListHtml() {
   if (s_networkCount == 0) {
+    if (s_scan.error != 0) {
+      String out = "<p class=empty>扫描失败（";
+      out += String(s_scan.error);
+      out += "），请点「重新扫描」。</p>";
+      return out;
+    }
     return "<p class=empty>没有扫描到网络。可手动输入隐藏网络的名称。</p>";
   }
   String out;
@@ -181,6 +211,10 @@ String ScanListHtml() {
 String ScanJson(bool scanning) {
   String out = "{\"scanning\":";
   out += scanning ? "true" : "false";
+  out += ",\"failed\":";
+  out += (s_scan.error != 0 && !scanning) ? "true" : "false";
+  out += ",\"error\":";
+  out += String(s_scan.error);
   out += ",\"scanned_ms\":";
   out += String(millis() - s_scannedAt);
   out += ",\"networks\":[";
@@ -250,6 +284,9 @@ String Page(const String& savedNote, const String& body) {
   html += "document.querySelectorAll('.net').forEach(function(b){b.onclick=function(){pick(b)}});";
   html +=
       "function render(d){var box=document.getElementById('nets');box.innerHTML='';"
+      "if(!d.networks.length){var p=document.createElement('p');p.className='empty';"
+      "p.textContent=d.failed?'扫描失败（'+d.error+'），请点「重新扫描」。':"
+      "'没有扫描到网络。可手动输入隐藏网络的名称。';box.appendChild(p);}"
       "d.networks.forEach(function(n){"
       "var b=document.createElement('button');b.type='button';b.className='net';"
       "b.dataset.ssid=n.ssid;b.dataset.secure=n.secure?'1':'0';"
@@ -257,14 +294,21 @@ String Page(const String& savedNote, const String& body) {
       "var mt=document.createElement('span');mt.className='meta';"
       "var lvl=n.rssi>-80?(n.rssi>-65?3:2):1;"
       "mt.textContent=['●○○','●●○','●●●'][lvl-1]+(n.secure?' 🔒':'')+(n.saved?' ★':'');"
-      "b.appendChild(nm);b.appendChild(mt);b.onclick=function(){pick(b)};box.appendChild(b);});}"
+      "b.appendChild(nm);b.appendChild(mt);b.onclick=function(){pick(b)};box.appendChild(b);});}";
+  html +=
       "var rb=document.getElementById('rescan');"
       "function poll(tries){fetch('/scan').then(function(r){return r.json()}).then(function(d){"
-      "if(d.scanning&&tries>0){setTimeout(function(){poll(tries-1)},700);return;}"
-      "render(d);rb.disabled=false;rb.textContent='重新扫描';"
-      "}).catch(function(){rb.disabled=false;rb.textContent='重新扫描';});}"
-      "if(rb)rb.onclick=function(){rb.disabled=true;rb.textContent='扫描中…';"
-      "document.getElementById('hint').style.display='';poll(20)};";
+      // Keep trying through the driver's backoff: a refusal is usually the
+      // radio still associating, and the next kick a few seconds later lands.
+      "if((d.scanning||d.failed)&&tries>0){setTimeout(function(){poll(tries-1)},900);return;}"
+      "render(d);if(rb){rb.disabled=false;rb.textContent='重新扫描';}"
+      "}).catch(function(){if(rb){rb.disabled=false;rb.textContent='重新扫描';}});}"
+      "function start(){if(rb){rb.disabled=true;rb.textContent='扫描中…';}"
+      "var h=document.getElementById('hint');if(h)h.style.display='';poll(20);}";
+  // An empty list is the normal first paint (nothing cached yet), so kick a
+  // scan without making the person find the rescan button first.
+  html += "if(!document.querySelectorAll('#nets .net').length)start();"
+          "if(rb)rb.onclick=start;";
   html += "</script>";
   return html;
 }
@@ -337,8 +381,13 @@ void HandleScan() {
   const bool fresh = s_scanFresh;
   s_scanFresh = false;
   if (!running && !fresh) {
-    StartRescan();
-    running = true;
+    // After a refusal wait out the backoff instead of hammering the driver on
+    // every 700 ms poll; the reply then carries failed=true so the page can
+    // say what happened.
+    if (portalscan::Ready(s_scan, millis())) {
+      StartRescan();
+      running = s_scan.scanning;
+    }
   }
   s_http.send(running ? 202 : 200, "application/json; charset=utf-8", ScanJson(running));
 }

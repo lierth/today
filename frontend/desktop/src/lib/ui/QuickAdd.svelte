@@ -109,11 +109,11 @@
     gap: 6px;
     /* The field sits in the same content column as the rows above it, so its
        left edge lands on the checkbox column instead of the card's border. */
-    padding: 0 12px 0 14px;
+    padding: 0;
   }
   input {
     width: 100%;
-    height: 30px;
+    height: 34px;
     padding: 0 10px;
     border-radius: 8px;
     border: 1px solid var(--line);
@@ -123,7 +123,7 @@
     box-shadow: 0 1px 1px rgb(20 20 30 / 4%);
   }
   input::placeholder {
-    color: var(--faint);
+    color: var(--ctl-fg);
   }
   input:focus {
     outline: none;

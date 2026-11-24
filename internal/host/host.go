@@ -940,7 +940,7 @@ func (h *Host) togglePanel() {
 		Tray:         h.tray,
 		Placement:    mygo.PlacementBottom,
 		Gap:          6,
-		Width:        340,
+		Width:        360,
 		MinWidth:     320,
 		MaxWidth:     420,
 		FitContent:   true,
@@ -1232,36 +1232,40 @@ func (h *Host) buildMenu() *mygo.Menu {
 		header,
 		mygo.Separator(),
 	}
-	menu = append(menu, itemMenu...)
 	menu = append(menu,
+		&mygo.MenuItem{Label: "今天的事项", Badge: fmt.Sprintf("%d/%d", done, total), Submenu: itemMenu},
 		&mygo.MenuItem{Label: "添加事项…", Accelerator: "CmdOrCtrl+N",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/?focus=add") }},
 		mygo.Separator(),
 		&mygo.MenuItem{Label: "打开今日页面", Accelerator: "CmdOrCtrl+O",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/") }},
-		&mygo.MenuItem{Label: "管理事项",
+		&mygo.MenuItem{Label: "即将到来",
+			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/upcoming") }},
+		&mygo.MenuItem{Label: "搜索事项",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/search") }},
 		mygo.Separator(),
 		&mygo.MenuItem{Label: "设备", Submenu: deviceItems},
-		&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub,
-			Type: mygo.MenuItemCheckbox, Checked: funnelOn, KeepOpen: true, Disabled: h.dev,
-			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
-				if _, err := h.srv.UpdateSettings(context.Background(),
-					map[string]string{"funnel": boolString(item.Checked)}); err != nil {
-					h.log.Printf("host: funnel setting: %v", err)
-					return
-				}
-				h.kick()
-			}},
-		&mygo.MenuItem{Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
-			Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() }},
-		&mygo.MenuItem{Label: "外网地址", Disabled: funnelHost == "",
-			Submenu: []*mygo.MenuItem{
-				{Label: "复制地址", Badge: funnelHost, Disabled: funnelHost == "",
-					Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(funnelHost) }},
-				{Label: "在浏览器打开", Disabled: funnelHost == "",
-					Click: func(*mygo.MenuItem, *mygo.Window) { _ = mygo.Shell.OpenExternal(funnelHost) }},
-			}},
+		&mygo.MenuItem{Label: "远程访问", Submenu: []*mygo.MenuItem{
+			&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub,
+				Type: mygo.MenuItemCheckbox, Checked: funnelOn, KeepOpen: true, Disabled: h.dev,
+				Click: func(item *mygo.MenuItem, _ *mygo.Window) {
+					if _, err := h.srv.UpdateSettings(context.Background(),
+						map[string]string{"funnel": boolString(item.Checked)}); err != nil {
+						h.log.Printf("host: funnel setting: %v", err)
+						return
+					}
+					h.kick()
+				}},
+			&mygo.MenuItem{Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
+				Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() }},
+			&mygo.MenuItem{Label: "外网地址", Disabled: funnelHost == "",
+				Submenu: []*mygo.MenuItem{
+					{Label: "复制地址", Badge: funnelHost, Disabled: funnelHost == "",
+						Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(funnelHost) }},
+					{Label: "在浏览器打开", Disabled: funnelHost == "",
+						Click: func(*mygo.MenuItem, *mygo.Window) { _ = mygo.Shell.OpenExternal(funnelHost) }},
+				}},
+		}},
 		&mygo.MenuItem{Label: "⚠ 设备无法连入：允许本地网络…",
 			Disabled: !localNetWarn, Hidden: localNetHide,
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.RequestLocalNetwork() }},

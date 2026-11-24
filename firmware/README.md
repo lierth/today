@@ -80,12 +80,16 @@ LittleFS partition. `otadata` must sit at `0xe000` because PlatformIO writes
 flash corrupt the start of NVS. `python3 test/check_partitions.py` enforces it.
 
 NVS keeps Wi-Fi credentials, device token, cursor, outbox and the row table;
-the 15 KB frame cache lives in LittleFS (`/frame.bin`) so it does not crowd
+the complete TBF frame (about 15 KB, including widget geometry and CRC) lives
+in LittleFS (`/frame.bin`) so it does not crowd
 the small NVS partition. The mount passes the partition name explicitly
 (`LittleFS.begin(true, "/littlefs", 10, "littlefs")`): the Arduino default
-label is `spiffs`, which would fail silently against our `littlefs` partition. OTA: upload an ESP32 image from Settings → 固件, the
-next frame response carries `X-Firmware-Version`, and the device streams the
-image into the inactive slot.
+label is `spiffs`, which would fail silently against our `littlefs` partition.
+OTA: choose the application `.bin` in Settings → 数据 → 固件升级, upload it,
+then click 推送升级. Until that click, devices still download the previous
+published image. The next frame response carries `X-Firmware-Version`, and
+the device streams the image into the inactive slot. The `-full.bin` image is
+only for USB flashing.
 
 PlatformIO pins a pioarduino Arduino-ESP32 3.x build (ESP-IDF 5). With the
 Arduino IDE, select "ESP32S3 Dev Module", 16 MB flash, OPI PSRAM, the same
@@ -163,8 +167,9 @@ and the board goes back to normal within a tick of the old network returning
 until its five minutes are up). The panel shows the hotspot password with a
 `M:SS` countdown in the corner.
 
-HTTPS works but uses `WiFiClientSecure::setInsecure()` because the Funnel
-certificate is public and rotates; pin a CA for a trusted deployment.
+HTTPS verifies the server certificate against the public CA bundle in the
+pinned ESP-IDF SDK. A new board starts NTP for certificate dates; the system
+clock stays in UTC, and the server's UTC offset is used for the display and RTC.
 
 ## State machine
 
@@ -218,18 +223,17 @@ centred half-size app icon plus the firmware version; the setup hotspot keeps
 the same header and puts the password at scale 5. `pack_test` renders each one
 to `/tmp/todayui/device-*.pbm`; `go run ./cmd/todayd pbm2png in.pbm out.png`
 turns them into PNGs for review. (The test does not encode PNG: a hand-written
-encoder once produced a bad chunk CRC, and a viewer reading those files hung.) The reminder band and the
-`WIFI LOST` banner are the same inverted strip, so the two never look like
-different things.
+encoder once produced a bad chunk CRC, and a viewer reading those files hung.)
+The reminder appears below the header. `WIFI LOST` replaces the bottom key
+legend, leaving the clock, status widgets and all task rows readable.
 
 ## Current limits
 
-- Local toggles are not drawn until the next fetched frame reflects the ack;
-  the request is immediate, but the panel updates when the server answers.
+- The selection and checkbox update locally, including offline; the title's
+  strike-through follows the next acknowledged server frame.
 - The night window comes from the server, so the first boot before any frame
   has no night mode. While dark, fetches still update the controller RAM but
   never send DISPON; only a key or the end of the window lights the panel.
-- HTTPS certificate validation is disabled (see above).
 - No config portal on first boot until the 10-minute serial window ends.
 - OTA trusts the uploaded image as far as `Update` validates it; the upload is
   protected by the web session, the download by the device token.

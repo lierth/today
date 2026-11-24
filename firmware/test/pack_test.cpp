@@ -26,6 +26,7 @@
 #include "fontcheck.h"
 #include "netescape.h"
 #include "portal_plan.h"
+#include "portalscan.h"
 #include "logo_inc.h"
 #include "screens.h"
 #include "sound_policy.h"
@@ -848,6 +849,59 @@ void TestWifiRetry() {
   Expect(strstr(advice, "5 GHz") != nullptr, "missing network names the band");
 }
 
+void TestPortalScanStates() {
+  using portalscan::State;
+  using portalscan::Kick;
+
+  // A refused kick must not look like a scan in flight, and must come with a
+  // backoff deadline: the old code set the "scanning" flag and dropped the
+  // return value, so the page spun "扫描中…" against a radio that never
+  // answered and then showed an empty list with no explanation.
+  State s;
+  portalscan::NoteKick(s, Kick::Refused, -2, 1000, 3000);
+  Expect(!s.scanning, "refused kick is not a running scan");
+  Expect(s.error == -2, "refused kick keeps the driver code");
+  Expect(!portalscan::Ready(s, 3999), "refused kick backs off");
+  Expect(portalscan::Ready(s, 4000), "backoff expires at the deadline");
+
+  // A started kick clears the old error and reports the scan as running.
+  portalscan::NoteKick(s, Kick::Started, -1, 5000, 3000);
+  Expect(s.scanning, "started kick runs");
+  Expect(s.error == 0, "started kick clears the error");
+
+  // While running, polls keep it running.
+  Expect(portalscan::NotePoll(s, -1, 6000, 3000), "running poll says running");
+  Expect(s.scanning, "still scanning after a running poll");
+
+  // The driver answering with a count ends the scan cleanly.
+  Expect(!portalscan::NotePoll(s, 7, 7000, 3000), "finished poll ends the scan");
+  Expect(!s.scanning, "not scanning after a finished poll");
+  Expect(s.error == 0, "finished poll leaves no error");
+
+  // The failure that used to vanish: scanComplete() answers WIFI_SCAN_FAILED.
+  State f;
+  portalscan::NoteKick(f, Kick::Started, -1, 1000, 3000);
+  Expect(!portalscan::NotePoll(f, -2, 2000, 3000), "failed poll ends the scan");
+  Expect(!f.scanning, "not scanning after a failed poll");
+  Expect(f.error == -2, "failed poll records the code");
+  Expect(!portalscan::Ready(f, 4999), "failed poll backs off");
+  Expect(portalscan::Ready(f, 5000), "failed poll retries at the deadline");
+
+  // A kick while another scan is already running is not an error: the page
+  // should keep polling the one in flight.
+  State b;
+  portalscan::NoteKick(b, Kick::Busy, 0, 1000, 3000);
+  Expect(b.scanning, "busy kick still reports a running scan");
+  Expect(b.error == 0, "busy kick is not an error");
+  Expect(portalscan::Ready(b, 1000), "busy kick needs no backoff");
+
+  // millis() wrap: deadline just after the wrap, now just past it.
+  State w;
+  portalscan::NoteKick(w, Kick::Refused, -2, 0xFFFFF000u, 3000);
+  Expect(!portalscan::Ready(w, 0xFFFFF500u), "wrap: 1.3 s in is still a wait");
+  Expect(portalscan::Ready(w, 0xFFFFFBB8u), "wrap: deadline reached");
+}
+
 int main(int argc, char** argv) {
   TestCorners();
   TestAllBlack();
@@ -855,6 +909,7 @@ int main(int argc, char** argv) {
   TestNightWindow();
   TestEscaping();
   TestPortalPlan();
+  TestPortalScanStates();
   TestWifiLostBannerFits();
   TestWifiRetry();
   TestSoundSynth();

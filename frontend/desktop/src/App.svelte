@@ -18,6 +18,8 @@
   let error = $state('');
   let busy = $state(false);
   let loading = $state(true);
+  let refreshing = $state(false);
+  let pending = $state<string[]>([]);
 
   const blind = colorBlind;
 
@@ -37,13 +39,16 @@
   }
 
   async function toggle(id: string, done: boolean) {
-    if (!view) return;
+    if (!view || pending.includes(id)) return;
+    pending = [...pending, id];
     try {
       view = await toggleDone(view, id, done);
       error = '';
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       await load();
+    } finally {
+      pending = pending.filter((value) => value !== id);
     }
   }
 
@@ -55,6 +60,7 @@
       error = '';
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+      throw err;
     } finally {
       busy = false;
     }
@@ -75,8 +81,16 @@
   }
 
   async function refresh() {
-    await Panel.refreshAll();
-    await load();
+    if (!live || refreshing) return;
+    refreshing = true;
+    try {
+      await Panel.refreshAll();
+      await load();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      refreshing = false;
+    }
   }
 
   $effect(() => {
@@ -93,68 +107,98 @@
 
 <main>
   <header>
-    <Snail size={18} />
-    <div class="title">
-      <div class="line">
-        <span class="name">today</span>
-        <span class="date">{view?.date ?? ''}</span>
-        <span class="weekday">{view?.weekday ?? ''}</span>
-      </div>
-      <div class="sub">{view?.lunar ?? ''}</div>
+    <div class="brand"><Snail size={20} /><span>today</span></div>
+    <div class="actions">
+      <button
+        type="button"
+        class="icon"
+        aria-label="刷新"
+        title="刷新"
+        disabled={refreshing}
+        onclick={refresh}
+      >
+        <svg class:spinning={refreshing} viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5.2h-2.6" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="icon"
+        aria-label="设置"
+        title="设置"
+        onclick={() => openSettings()}
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.5 1.5h3l.5 2 1.5.9 2-.5 1.5 2.6-1.5 1.4v1.7l1.5 1.4-1.5 2.6-2-.5-1.5.9-.5 2h-3l-.5-2-1.5-.9-2 .5L1 11l1.5-1.4V7.9L1 6.5l1.5-2.6 2 .5L6 3.5Z"
+          /><circle cx="8" cy="8" r="2.3" />
+        </svg>
+      </button>
     </div>
-    <span class="progress" aria-label="今天的进度">{progress}</span>
-    <button type="button" class="icon" aria-label="刷新" title="刷新" onclick={refresh}>
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5.2h-2.6" />
-      </svg>
-    </button>
-    <button
-      type="button"
-      class="icon"
-      aria-label="设置"
-      title="设置"
-      onclick={() => openSettings()}
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M8 10.1a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2ZM12.9 9.6l1 .8-1.2 2-1.2-.5a4.7 4.7 0 0 1-1.2.7l-.2 1.3H6.9l-.2-1.3a4.7 4.7 0 0 1-1.2-.7l-1.2.5-1.2-2 1-.8a4.8 4.8 0 0 1 0-1.4l-1-.8 1.2-2 1.2.5a4.7 4.7 0 0 1 1.2-.7l.2-1.3h2.2l.2 1.3a4.7 4.7 0 0 1 1.2.7l1.2-.5 1.2 2-1 .8a4.8 4.8 0 0 1 0 1.4Z"
-        />
-      </svg>
-    </button>
   </header>
 
-  {#if !live}
-    <p class="hint">
-      这个页面要在 Today 的窗口里打开：<code>pnpm dev</code> 单独跑时没有 mygo 绑定。
+  <section class="overview" aria-label="今日概览">
+    <div class="day">
+      <h1>{view?.date ?? '今天'} <span>{view?.weekday ?? ''}</span></h1>
+      <span class="progress">{progress ? `已完成 ${progress}` : ''}</span>
+    </div>
+    <p class="subtitle">
+      {view?.lunar ?? '把今天，慢慢做好。'}{#if view?.weather}<span> · {view.weather}</span>{/if}
     </p>
-  {/if}
+    <div
+      class="track"
+      role="progressbar"
+      aria-label="今天的进度"
+      aria-valuemin="0"
+      aria-valuemax={Math.max(1, view?.total ?? 0)}
+      aria-valuenow={view?.done ?? 0}
+    >
+      <span style:width={`${view?.total ? (view.done / view.total) * 100 : 0}%`}></span>
+    </div>
+  </section>
 
+  {#if !live}<p class="hint">请从 Mac 菜单栏打开 Today。</p>{/if}
   {#if view && view.carried.length > 0}
     <div class="carry">
-      <span>之前还有 {view.carried.length} 项没完成</span>
-      <button type="button" onclick={carryAll}>全部移到今天</button>
+      <span>之前还有 {view.carried.length} 项未完成</span><button type="button" onclick={carryAll}>
+        移到今天
+      </button>
     </div>
   {/if}
 
   <div class="scroll">
     <Card>
       {#if loading}
-        <div class="skeleton">
+        <div class="skeleton" aria-label="正在读取事项">
           <span></span><span></span><span></span>
         </div>
       {:else if view && view.items.length === 0}
-        <p class="empty">今天还没有事项。在下面写一行，今天就算开始了。</p>
+        <div class="empty">
+          <Snail size={28} />
+          <p>今天，从一件小事开始。</p>
+          <span>在下面写一行，回车添加。</span>
+        </div>
       {:else}
         {#each view?.items ?? [] as item (item.id)}
           <div class="item" class:done={item.done}>
             <Check
               checked={item.done}
-              label={item.title}
+              disabled={pending.includes(item.id)}
+              label={`${item.done ? '标为未完成' : '标为完成'}：${item.title}`}
               onchange={(next) => toggle(item.id, next)}
             />
-            <span class="label" title={carriedDay(view?.carried ?? [], item.id) || item.title}>
+            <button
+              type="button"
+              class="label"
+              aria-label={`编辑 ${item.title}`}
+              title={carriedDay(view?.carried ?? [], item.id) || item.title}
+              onclick={() => live && Panel.openPage(`/?item=${encodeURIComponent(item.id)}`)}
+            >
               {item.title}
-            </span>
+            </button>
+            {#if item.pinned}<svg class="pin" viewBox="0 0 16 16" role="img" aria-label="已置顶">
+                <path d="M5 2h6l-1 4 3 3v1H9v4l-2-2v-2H3V9l3-3Z" />
+              </svg>{/if}
             {#if item.time}<span class="time">{item.time}</span>{/if}
           </div>
         {/each}
@@ -162,31 +206,37 @@
     </Card>
   </div>
 
-  <QuickAdd {busy} onsubmit={add} />
-
+  <QuickAdd {busy} placeholder="写一行，回车添加…" onsubmit={add} />
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
   <footer>
-    <div class="devices">
-      {#each view?.devices ?? [] as device (device.id)}
-        <span class="device" title="{device.name} · {device.since}">
-          <Dot
-            tone={device.online ? 'ok' : 'bad'}
-            colorBlind={$blind}
-            label={`${device.name}${device.online ? '在线' : '离线'} · ${device.since}`}
-          />
-          <span class="who">{device.name}</span>
-          {#if device.battery}<span class="meta">{device.battery}</span>{/if}
-          {#if device.climate}<span class="meta">{device.climate}</span>{/if}
-        </span>
-      {/each}
-      {#if (view?.devices ?? []).length === 0}
-        <button type="button" class="link" onclick={() => openSettings('devices')}>
-          添加一台设备
-        </button>
-      {/if}
-    </div>
-    <span class="weather">{view?.weather ?? ''}</span>
+    {#if (view?.devices ?? []).length > 0}
+      <div class="devices">
+        {#each view?.devices ?? [] as device (device.id)}
+          <button
+            type="button"
+            class="device"
+            onclick={() => openSettings('devices')}
+            title="查看设备设置"
+          >
+            <Dot
+              tone={device.online ? 'ok' : 'bad'}
+              colorBlind={$blind}
+              label={device.online ? '在线' : '离线'}
+            />
+            <span class="who">{device.name}</span>
+            <span class="meta">
+              {[device.battery, device.climate].filter(Boolean).join(' · ') || device.since}
+            </span>
+          </button>
+        {/each}
+      </div>
+    {:else}<button type="button" class="link" onclick={() => openSettings('devices')}>
+        连接桌上的显示屏
+      </button>{/if}
+    <button type="button" class="open-web" onclick={() => live && Panel.openPage('/')}>
+      <span>打开完整日程</span><span aria-hidden="true">↗</span>
+    </button>
   </footer>
 </main>
 
@@ -195,86 +245,98 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    /* FitContent sizes the window from this box: the width is fixed so the
-       panel does not wobble as titles change, the height follows the rows. */
-    width: 340px;
-    box-sizing: border-box;
-    padding: 12px;
+    width: 360px;
+    padding: 16px;
   }
-  /* One gutter for the whole panel. Rows inset their content by 14 left and
-     12 right; the header, the carry note and the footer use the same values,
-     so the mark sits exactly over the checkboxes and "today" starts on the
-     same x as every item title (18 + 10 = 18 + 10 = 28 past the gutter). */
-  header {
+  header,
+  .brand,
+  .actions,
+  .day {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0 12px 0 14px;
   }
-  header :global(svg) {
-    color: var(--fg);
+  header,
+  .day {
+    justify-content: space-between;
+    gap: 8px;
   }
-  .title {
-    flex: 1;
-    min-width: 0;
-  }
-  .line {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    /* A fixed line box keeps the two-line title steady while the date and the
-       lunar text swap characters; mixed 13/12 px CJK otherwise shifts the
-       whole header by a pixel from one day to the next. */
-    line-height: 16px;
-  }
-  .name {
+  .brand {
+    gap: 7px;
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.01em;
   }
-  .date {
-    font-size: 12px;
-    color: var(--fg-2);
-  }
-  .weekday {
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .sub {
-    font-size: 11px;
-    line-height: 13px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .progress {
-    font-size: 11.5px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
+  .actions {
+    gap: 3px;
   }
   .icon {
-    width: var(--ctl, 26px);
-    height: var(--ctl, 26px);
+    width: 27px;
+    height: 27px;
     display: grid;
     place-items: center;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: 7px;
     background: transparent;
     color: var(--ctl-fg);
-    cursor: pointer;
+    cursor: default;
   }
   .icon:hover {
     background: var(--pill);
     color: var(--fg);
   }
+  .icon:disabled {
+    opacity: 0.5;
+  }
   .icon svg {
-    width: 14px;
-    height: 14px;
+    width: 15px;
+    height: 15px;
     fill: none;
     stroke: currentcolor;
-    stroke-width: 1.4;
+    stroke-width: 1.3;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+  .overview {
+    padding: 2px 0 3px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.035em;
+  }
+  h1 span {
+    margin-left: 3px;
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--muted);
+  }
+  .progress {
+    font-size: 11px;
+    color: var(--ctl-fg);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .subtitle {
+    margin: 3px 0 12px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .track {
+    height: 3px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--line);
+  }
+  .track span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: inherit;
+    transition: width 0.2s var(--ease);
   }
   .scroll {
     max-height: 320px;
@@ -286,32 +348,29 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 0 12px 0 14px;
     font-size: 11.5px;
-    color: var(--muted);
+    color: var(--ctl-fg);
   }
-  /* Accent is for status and reminders. A text action is ink with an
-     underline on hover, so a page of links does not read as a page of alerts. */
-  .carry button {
+  .carry button,
+  .link {
     border: 0;
     background: transparent;
     padding: 0;
     color: var(--fg);
     font: inherit;
-    text-decoration: underline;
-    text-decoration-color: var(--line);
-    text-underline-offset: 2px;
-    cursor: pointer;
+    cursor: default;
   }
-  .carry button:hover {
-    text-decoration-color: var(--fg);
+  .carry button:hover,
+  .link:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
   .item {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: var(--row, 40px);
-    padding: 0 12px 0 14px;
+    min-height: 42px;
+    padding: 0 12px;
     border-top: 1px solid var(--line-2);
   }
   .item:first-child {
@@ -320,37 +379,59 @@
   .label {
     flex: 1;
     min-width: 0;
+    padding: 10px 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    cursor: default;
+  }
+  .label:hover {
+    color: var(--accent);
   }
   .item.done .label {
-    color: var(--faint);
+    color: var(--muted);
     text-decoration: line-through;
     text-decoration-color: var(--faint);
   }
-  .time {
-    font-size: 11.5px;
+  .time,
+  .pin {
+    font-size: 11px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
   .empty {
-    margin: 0;
-    padding: 14px;
+    padding: 24px 12px;
+    text-align: center;
     color: var(--muted);
+  }
+  .empty :global(svg) {
+    display: block;
+    margin: 0 auto 10px;
+    color: var(--fg-2);
+  }
+  .empty p {
+    margin: 0 0 4px;
+    color: var(--fg-2);
     font-size: 12px;
+  }
+  .empty span {
+    font-size: 11px;
   }
   .skeleton {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px 14px 14px;
+    gap: 12px;
+    padding: 16px 12px;
   }
   .skeleton span {
-    height: 10px;
-    border-radius: 6px;
+    height: 12px;
+    border-radius: 4px;
     background: var(--pill);
-    animation: pulse 1.4s ease-in-out infinite;
   }
   .skeleton span:nth-child(2) {
     width: 70%;
@@ -358,73 +439,83 @@
   .skeleton span:nth-child(3) {
     width: 45%;
   }
-  @keyframes pulse {
-    50% {
-      opacity: 0.5;
-    }
-  }
   .error {
     margin: 0;
-    padding: 0 12px 0 14px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--error-soft);
     color: var(--error);
     font-size: 11.5px;
   }
   footer {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     gap: 10px;
-    padding: 0 12px 0 14px;
     font-size: 11px;
     color: var(--muted);
   }
   .devices {
-    display: flex;
-    gap: 10px;
-    min-width: 0;
-    overflow: hidden;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
   }
   .device {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 4px;
-    min-width: 0;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 0;
+    border: 0;
+    background: transparent;
+    color: var(--ctl-fg);
+    font: inherit;
+    text-align: left;
+    cursor: default;
   }
   .who {
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .meta {
+    font-size: 10.5px;
     font-variant-numeric: tabular-nums;
-    color: var(--faint);
+    white-space: nowrap;
   }
-  .link {
-    border: 0;
-    background: transparent;
-    padding: 0;
+  .open-web {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--card);
+    color: var(--ctl-fg);
     font: inherit;
+    cursor: default;
+    box-shadow: 0 1px 1px rgb(20 20 30 / 4%);
+  }
+  .open-web:hover {
     color: var(--fg);
-    text-decoration: underline;
-    text-decoration-color: var(--line);
-    text-underline-offset: 2px;
-    cursor: pointer;
-  }
-  .link:hover {
-    text-decoration-color: var(--fg);
-  }
-  .weather {
-    flex: none;
-    font-variant-numeric: tabular-nums;
+    border-color: var(--muted);
   }
   .hint {
     margin: 0;
-    padding: 0 12px 0 14px;
     color: var(--muted);
     font-size: 11.5px;
   }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
+  .spinning {
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .pin {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.1;
   }
 </style>

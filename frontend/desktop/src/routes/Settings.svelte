@@ -15,14 +15,44 @@
   import Data from './settings/Data.svelte';
   import About from './settings/About.svelte';
 
-  type Tab = { id: string; label: string };
+  type Tab = { id: string; label: string; hint: string; icon: string };
   const tabs: Tab[] = [
-    { id: 'general', label: '常规' },
-    { id: 'devices', label: '设备' },
-    { id: 'display', label: '显示与声音' },
-    { id: 'network', label: '网络' },
-    { id: 'data', label: '数据' },
-    { id: 'about', label: '关于' },
+    {
+      id: 'general',
+      icon: 'M4 7h16M4 17h16M8 4v6M16 14v6',
+      label: '常规',
+      hint: '让 Today 按你的习惯工作。',
+    },
+    {
+      id: 'devices',
+      icon: 'M5 3h14v14H5zM9 21h6M12 17v4',
+      label: '设备',
+      hint: '连接显示屏，查看状态与预览。',
+    },
+    {
+      id: 'display',
+      icon: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4',
+      label: '显示与声音',
+      hint: '安排安静的时段，调整提醒方式。',
+    },
+    {
+      id: 'network',
+      icon: 'M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M9 16a5 5 0 0 1 6 0M12 20h.01',
+      label: '网络',
+      hint: '管理本地连接与远程访问。',
+    },
+    {
+      id: 'data',
+      icon: 'M4 6c0-4 16-4 16 0s-16 4-16 0v12c0 4 16 4 16 0V6M4 12c0 4 16 4 16 0',
+      label: '数据',
+      hint: '你的日程与备份，都在这里。',
+    },
+    {
+      id: 'about',
+      icon: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 11v6M12 7h.01',
+      label: '关于',
+      hint: '版本、更新与应用信息。',
+    },
   ];
 
   const wanted = new URLSearchParams(window.location.search).get('tab') ?? 'general';
@@ -30,6 +60,9 @@
   let data = $state<SettingsView | null>(null);
   let error = $state('');
   let note = $state('');
+  let saving = $state(0);
+  let noticeTimer: ReturnType<typeof setTimeout>;
+  const selected = $derived(tabs.find((t) => t.id === tab)!);
   const live = isMyGo();
 
   async function load() {
@@ -46,20 +79,34 @@
       shows up in the card that owns it. */
   async function save(key: string, value: string) {
     if (!live) return;
+    saving++;
+    clearTimeout(noticeTimer);
     try {
       await Panel.setSetting(key, value);
       note = '已保存';
       await load();
-      setTimeout(() => (note = ''), 1500);
+      noticeTimer = setTimeout(() => (note = ''), 2000);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+    } finally {
+      saving--;
     }
+  }
+
+  function chooseTab(id: string) {
+    tab = id;
+    history.replaceState(null, '', `?tab=${id}`);
   }
 
   /** Arrow keys move between tabs and give the new one focus; the roving
       tabindex keeps only the current tab reachable by Tab itself. */
   function onTabKey(event: KeyboardEvent) {
-    const keys: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1 };
+    const keys: Record<string, number> = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -1,
+      ArrowDown: 1,
+    };
     const step = keys[event.key];
     let next: number;
     if (step) next = (tabs.findIndex((t) => t.id === tab) + step + tabs.length) % tabs.length;
@@ -69,7 +116,7 @@
     event.preventDefault();
     const picked = tabs[next];
     if (!picked) return;
-    tab = picked.id;
+    chooseTab(picked.id);
     const list = (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>(
       '[role="tab"]',
     );
@@ -87,115 +134,211 @@
 </script>
 
 <div class="window">
-  <header>
-    <Snail size={18} />
-    <span class="brand">today</span>
-    <span class="grow"></span>
-    <span class="note" aria-live="polite">{note}</span>
-  </header>
+  <aside>
+    <div class="brand">
+      <Snail size={24} />
+      <div><strong>today</strong><span>偏好设置</span></div>
+    </div>
+    <div
+      class="tabs"
+      role="tablist"
+      aria-label="设置分组"
+      aria-orientation="vertical"
+      tabindex="-1"
+      onkeydown={onTabKey}
+    >
+      {#each tabs as t (t.id)}
+        <button
+          type="button"
+          id={`tab-${t.id}`}
+          role="tab"
+          aria-selected={tab === t.id}
+          aria-controls="settings-content"
+          tabindex={tab === t.id ? 0 : -1}
+          class:on={tab === t.id}
+          onclick={() => chooseTab(t.id)}
+        >
+          <svg class="nav-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d={t.icon} />
+          </svg>{t.label}
+        </button>
+      {/each}
+    </div>
+    <span class="local">Today {data?.version ?? ''}</span>
+  </aside>
 
-  <!-- A tablist is one stop in the tab order: the arrows move between tabs,
-       Home/End jump to the ends, exactly as the platform expects. -->
-  <div class="tabs" role="tablist" aria-label="设置分组" tabindex="-1" onkeydown={onTabKey}>
-    {#each tabs as t (t.id)}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={tab === t.id}
-        tabindex={tab === t.id ? 0 : -1}
-        class:on={tab === t.id}
-        onclick={() => (tab = t.id)}
-      >
-        {t.label}
-      </button>
-    {/each}
-  </div>
-
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-
-  <div class="body">
-    {#if !data}
-      <p class="loading">正在读取设置…</p>
-    {:else if tab === 'general'}
-      <General {data} {save} />
-    {:else if tab === 'devices'}
-      <Devices {data} reload={load} />
-    {:else if tab === 'display'}
-      <Display {data} {save} />
-    {:else if tab === 'network'}
-      <Network {data} {save} />
-    {:else if tab === 'data'}
-      <Data {data} reload={load} />
-    {:else}
-      <About {data} {save} reload={load} />
-    {/if}
-  </div>
+  <section class="content">
+    <header>
+      <div>
+        <h1>{selected.label}</h1>
+        <p>{selected.hint}</p>
+      </div>
+      <span class="note" aria-live="polite">{saving ? '正在保存…' : note}</span>
+    </header>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <div class="body" role="tabpanel" id="settings-content" aria-labelledby={`tab-${tab}`}>
+      {#if !data}
+        <div class="loading">
+          <p>{error ? '设置暂时无法读取。' : '正在读取设置…'}</p>
+          <button type="button" onclick={load}>重新读取</button>
+        </div>
+      {:else}
+        <fieldset disabled={saving > 0} aria-busy={saving > 0}>
+          {#if tab === 'general'}<General {data} {save} />
+          {:else if tab === 'devices'}<Devices {data} reload={load} />
+          {:else if tab === 'display'}<Display {data} {save} />
+          {:else if tab === 'network'}<Network {data} {save} />
+          {:else if tab === 'data'}<Data {data} reload={load} />
+          {:else}<About {data} {save} reload={load} />{/if}
+        </fieldset>
+      {/if}
+    </div>
+  </section>
 </div>
 
 <style>
   .window {
     display: flex;
-    flex-direction: column;
     height: 100vh;
-    padding: 0 0 14px;
+    overflow: hidden;
   }
-  header {
+  aside {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    /* Room for the traffic lights mygo keeps with TitleBarHiddenInset. */
-    padding: calc(var(--mygo-titlebar-height, 28px) + 4px) 18px 6px;
+    flex-direction: column;
+    flex: 0 0 166px;
+    padding: calc(var(--mygo-titlebar-height, 28px) + 20px) 12px 18px;
+    border-right: 1px solid var(--line);
+    background: color-mix(in oklab, var(--bg) 80%, transparent);
   }
   .brand {
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 8px 24px;
+  }
+  .brand div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .brand strong {
+    font-size: 14px;
     font-weight: 600;
+    letter-spacing: -0.01em;
   }
-  .grow {
-    flex: 1;
-  }
-  .note {
-    font-size: 11px;
-    color: var(--success);
+  .brand span {
+    font-size: 10.5px;
+    color: var(--muted);
   }
   .tabs {
     display: flex;
-    justify-content: center;
-    gap: 2px;
-    padding: 0 18px 10px;
+    flex-direction: column;
+    gap: 5px;
   }
   .tabs button {
-    height: 26px;
-    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    height: 36px;
+    padding: 0 9px;
     border: 0;
-    border-radius: 7px;
+    border-radius: 8px;
     background: transparent;
     color: var(--ctl-fg);
     font: inherit;
     font-size: 12px;
-    cursor: pointer;
+    text-align: left;
+    cursor: default;
+    transition: background var(--dur-color);
   }
   .tabs button:hover {
     color: var(--fg);
+    background: var(--pill);
   }
   .tabs button.on {
-    background: var(--card);
+    background: var(--sel);
     color: var(--fg);
-    box-shadow:
-      0 0 0 1px var(--line),
-      0 1px 2px rgb(20 20 30 / 6%);
+    font-weight: 500;
+  }
+  .nav-mark {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .local {
+    margin-top: auto;
+    padding: 20px 8px 0;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    padding-top: calc(var(--mygo-titlebar-height, 28px) + 18px);
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 0 26px 22px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 23px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+  }
+  header p {
+    margin: 5px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .note {
+    font-size: 11px;
+    color: var(--ctl-fg);
+    white-space: nowrap;
   }
   .body {
     flex: 1;
+    min-height: 0;
     overflow: auto;
-    padding: 0 18px;
+    padding: 0 26px 28px;
+  }
+  fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
   }
   .error {
-    margin: 0 18px 8px;
+    margin: 0 26px 12px;
+    padding: 9px 12px;
+    border: 1px solid var(--error);
+    border-radius: 8px;
+    background: var(--error-soft);
     color: var(--error);
     font-size: 12px;
   }
   .loading {
+    padding: 24px 0;
     color: var(--muted);
     font-size: 12px;
+  }
+  .loading button {
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--card);
+    color: var(--fg);
+    font: inherit;
   }
 </style>

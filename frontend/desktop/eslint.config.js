@@ -9,6 +9,10 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   ...svelte.configs['flat/recommended'],
   {
+    files: ['**/*.svelte'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+  },
+  {
     files: ['**/*.{ts,svelte}'],
     languageOptions: { globals: globals.browser },
     rules: { '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }] },

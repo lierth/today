@@ -18,16 +18,16 @@ const (
 	emptyHintFont  = 14
 
 	timeColumnWidth = 56
-	gutterWidth     = 6
-	gutterGap       = 6
+	gutterWidth     = 10
+	gutterGap       = 8
 	timeGap         = 8
 
 	maxRows = 10
 
 	// headerWidth is the room the second header line has before the widgets
-	// (which start at x=232). 212 px was the old cap; the widgets are the real
+	// (which start at x=224). The widgets are the real
 	// limit, so the line may use up to their left edge minus a small gap.
-	headerWidth = 212
+	headerWidth = 196
 )
 
 // BoardRowLimit is how many of a day's rows can appear on the panel. Past it
@@ -114,7 +114,7 @@ func Build(in Input) (*Frame, error) {
 	}
 	hasTime := false
 	for _, it := range items {
-		if it.StartsAt != nil && !it.AllDay {
+		if it.Carried || (it.StartsAt != nil && !it.AllDay) {
 			hasTime = true
 			break
 		}
@@ -140,10 +140,13 @@ func Build(in Input) (*Frame, error) {
 		y := HeaderHeight + i*RowHeight
 		rows = append(rows, Row{Y: uint16(y), Flags: RowFlagSummary})
 		cursor := in.CursorRow == i
-		drawSummaryRow(c, body, summary, y, cursor, in.CursorStyle)
+		drawSummaryRow(c, body, summary, y, hasTime, cursor, in.CursorStyle)
 	}
 	if rowCount == 0 {
 		drawEmpty(c, body, hint)
+	} else {
+		legend := sanitize("KEY 下一项 · 长按勾选 · BOOT 刷新")
+		c.text(hint, legend, px(ContentX), baseline(hint, 284, 16), 0)
 	}
 
 	if in.CursorRow < 0 || in.CursorRow >= rowCount {
@@ -180,7 +183,7 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 
 	// Line 2: 农历十月廿八 · 小雪 · 2/6, 13 px.
 	lunar := LunarFor(in.Now)
-	line2 := lunar.Label
+	line2 := strings.TrimPrefix(lunar.Label, "农历")
 	if lunar.Tag != "" {
 		line2 += " · " + lunar.Tag
 	} else if lunar.Festival != "" {
@@ -223,6 +226,9 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 	}
 	line2 = truncate(small, line2, px(headerWidth))
 	c.text(small, line2, px(ContentX), baseline(small, 22, 18), 0)
+	if len(in.Items) > 0 {
+		c.fillLogical(ContentX, 41, ContentX+headerWidth*done/len(in.Items), 43, 0)
+	}
 
 	// Widget rectangles are left blank in the real frame; the preview fills
 	// them with sample values (drawWidgetSamples).
@@ -256,18 +262,15 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 		c.fillLogical(0, y, Width, y+RowHeight, 0)
 		fg = 0xFF
 	}
-	if cursor {
-		c.fillLogical(ContentX, y+3, ContentX+gutterWidth, y+RowHeight-3, fg)
-	}
+	drawCheck(c, ContentX, y+(RowHeight-10)/2, it.Done, fg)
 
 	base := baseline(body, y, RowHeight)
-	// Timed and all-day rows share one title column; all-day rows carry a
-	// short marker there instead of a time so the alignment stays obvious.
+	// Reserve the shared time column only when this frame needs one.
 	x := ContentX + gutterWidth + gutterGap
 	slot := ""
 	if it.StartsAt != nil && !it.AllDay {
 		slot = it.StartsAt.Format("15:04")
-	} else if it.AllDay {
+	} else if it.AllDay && hasTime {
 		slot = "全天"
 	}
 	if it.Carried {
@@ -280,12 +283,18 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 		tw := font.MeasureString(timeFace, slot).Ceil()
 		c.text(timeFace, slot, px(x+timeColumnWidth)-tw, baseline(timeFace, y, RowHeight), fg)
 	}
-	x += timeColumnWidth + timeGap
+	if hasTime {
+		x += timeColumnWidth + timeGap
+	}
 	title := truncate(body, sanitize(it.Title), px(ContentX+ContentWidth-x))
 	if title == "" {
 		title = " "
 	}
-	c.text(body, title, px(x), base, fg)
+	if it.Pinned && !it.Done {
+		c.textBold(body, title, px(x), base, fg)
+	} else {
+		c.text(body, title, px(x), base, fg)
+	}
 
 	if it.Done || (cursor && style == CursorStyleStrike) {
 		width := font.MeasureString(body, title).Ceil()
@@ -293,7 +302,27 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 	}
 }
 
-func drawSummaryRow(c *canvas, face font.Face, n, y int, cursor bool, style uint8) {
+func drawCheck(c *canvas, x, y int, done bool, fg uint8) {
+	if done {
+		c.fillLogical(x, y, x+10, y+10, fg)
+		for i := range 3 {
+			c.fillLogical(x+2+i, y+4+i, x+3+i, y+5+i, ^fg)
+		}
+		for i := range 5 {
+			c.fillLogical(x+4+i, y+6-i, x+5+i, y+7-i, ^fg)
+		}
+		return
+	}
+	c.fillLogical(x+2, y, x+8, y+1, fg)
+	c.fillLogical(x+2, y+9, x+8, y+10, fg)
+	c.fillLogical(x, y+2, x+1, y+8, fg)
+	c.fillLogical(x+9, y+2, x+10, y+8, fg)
+	for _, corner := range [][2]int{{1, 1}, {8, 1}, {1, 8}, {8, 8}} {
+		c.fillLogical(x+corner[0], y+corner[1], x+corner[0]+1, y+corner[1]+1, fg)
+	}
+}
+
+func drawSummaryRow(c *canvas, face font.Face, n, y int, hasTime, cursor bool, style uint8) {
 	invert := cursor && style == CursorStyleInvert
 	fg := uint8(0)
 	if invert {
@@ -307,7 +336,11 @@ func drawSummaryRow(c *canvas, face font.Face, n, y int, cursor bool, style uint
 	// The summary stands in for the rows that did not fit, so its text starts
 	// where an item title would: one time-column further right than the
 	// gutter. That keeps the left edge straight down the whole list.
-	c.text(face, label, px(ContentX+gutterWidth+gutterGap+timeColumnWidth+timeGap),
+	x := ContentX + gutterWidth + gutterGap
+	if hasTime {
+		x += timeColumnWidth + timeGap
+	}
+	c.text(face, label, px(x),
 		baseline(face, y, RowHeight), fg)
 }
 

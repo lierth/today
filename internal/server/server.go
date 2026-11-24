@@ -83,6 +83,7 @@ type Server struct {
 
 	settingsMu sync.Mutex
 	onSettings func(old, new map[string]string)
+	firmwareMu sync.RWMutex
 
 	// onPassword runs after SetPassword committed the new hash. The host uses
 	// it to keep its keychain copy in step; the server stays platform-neutral.

@@ -15,6 +15,8 @@
 #include <stdio.h>
 
 #include "board.h"
+#include "clocktime.h"
+#include "rowstate.h"
 #include "display.h"
 #include "fontcheck.h"
 #include "net.h"
@@ -53,6 +55,7 @@ storage::Config cfg;
 tbf::Frame frame;
 uint8_t base[(board::kWidth / 8) * board::kHeight];   // server bitmap
 uint8_t work[(board::kWidth / 8) * board::kHeight];   // base + local overlays
+uint8_t wire[tbf::kMaxFrameBytes];                 // complete transport frame
 tbf::Row rows[tbf::kMaxRows];
 uint8_t rowCount = 0;
 uint8_t cursorRow = 0;
@@ -154,6 +157,16 @@ void ReplaceAlarms(const String& text) {
   alarms = merged;
 }
 
+void RebuildDoneMask() {
+  doneMask = rowstate::DoneMask(rows, rowCount);
+  for (uint8_t i = 0; i < storage::OutboxCount(); i++) {
+    storage::OutboxOp op {};
+    if (!storage::LoadOutbox(i, &op)) break;
+    doneMask = rowstate::ApplyOp(doneMask, rows, rowCount, op.id, op.status != 0);
+  }
+  storage::SaveDoneMask(doneMask);
+}
+
 void CaptureFrame() {
   // Remember the focused item before the row table is replaced: the server
   // sinks done rows, so the old index can point at a different item.
@@ -182,13 +195,8 @@ void CaptureFrame() {
     cursorRow = rowCount - 1;
   }
   storage::SaveCursor(cursorRow);
-  // A fetched frame is authoritative for every row: once the server reflects
-  // the toggle, the optimistic bit has done its job.
-  uint32_t serverDone = 0;
-  for (uint8_t i = 0; i < rowCount && i < 32; i++) {
-    if (rows[i].flags & tbf::kRowDone) serverDone |= (1UL << i);
-  }
-  doneMask = serverDone;
+  // Pending operations belong to IDs, so a server reorder cannot move a check.
+  RebuildDoneMask();
 }
 
 uint32_t RowBit(int index) { return index >= 0 && index < 32 ? (1UL << index) : 0; }
@@ -198,12 +206,8 @@ uint32_t RowBit(int index) { return index >= 0 && index < 32 ? (1UL << index) : 
 void ComposeLocal() {
   if (!haveFrame) return;
   memcpy(work, base, sizeof(work));
-  for (uint8_t i = 0; i < rowCount; i++) {
-    if (doneMask & RowBit(i)) widgets::StrikeRow(rows[i].y, board::kRowHeight);
-  }
-  if (rowCount > 0 && cursorRow < rowCount) {
-    widgets::InvertRow(rows[cursorRow].y, board::kRowHeight);
-  }
+  rowstate::Apply(work, rows, rowCount, doneMask, cursorRow,
+                  frame.width ? frame.contentX : 16, board::kRowHeight);
 }
 
 // PushPanel sends the composed bitmap and the widgets. In night mode the
@@ -220,7 +224,7 @@ void PushPanel() {
 
 void DrawWidgets() {
   struct tm now {};
-  const bool haveTime = timeOk && getLocalTime(&now, 0);
+  const bool haveTime = timeOk && clocktime::Local(time(nullptr), utcOffset, &now);
   if (const tbf::Widget* w = tbf::Find(frame, tbf::kWidgetClock)) {
     if (haveTime) {
       widgets::DrawClock(*w, now.tm_hour, now.tm_min);
@@ -346,7 +350,7 @@ void SyncClock(int64_t serverNow, int offset) {
   utcOffset = offset;
   storage::SaveUtcOffset(offset);
   const time_t local = static_cast<time_t>(serverNow) + offset;
-  struct timeval tv = {local, 0};
+  struct timeval tv = {static_cast<time_t>(serverNow), 0};
   settimeofday(&tv, nullptr);
   timeOk = true;
   struct tm localTm {};
@@ -419,11 +423,16 @@ void MaybeUpdate(const String& version) {
 void ApplyFrame(const net::FetchResult& res) {
   if (res.changed) {
     CaptureFrame();
-    storage::SaveFrame(base, sizeof(base));
-    storage::SaveRows(rows, rowCount);
-    storage::SaveSeq(res.seq);
     etag = res.etag;
-    storage::SaveETag(etag);
+    if (storage::SaveFrame(wire, res.encodedBytes)) {
+      storage::SaveRows(rows, rowCount);
+      storage::SaveSeq(res.seq);
+      storage::SaveETag(etag);
+    } else {
+      // An older cache must not be paired with the new frame's ETag.
+      storage::SaveETag("");
+      Serial.println("cache: write failed; next boot will fetch a full frame");
+    }
     availableFirmware = res.firmwareVersion;
   }
   if (res.serverNow > 0) SyncClock(res.serverNow, res.utcOffset);
@@ -447,7 +456,7 @@ void ApplyFrame(const net::FetchResult& res) {
 // composed into RAM but the panel is not lit.
 void Fetch(bool repaintAlways) {
   const bool force = storage::TakeForceFull();
-  net::FetchResult res = net::FetchFrame(cfg, etag, force, work, sizeof(work), &frame);
+  net::FetchResult res = net::FetchFrame(cfg, etag, force, wire, &frame);
   lastFrameAt = millis();
   if (res.status != 304 && res.status != 200) {
     Serial.printf("fetch: %d\n", res.status);
@@ -559,12 +568,12 @@ void HandleKeys() {
   if (longPress) {
     if (rowCount == 0) return;
     tbf::Row& row = rows[cursorRow];
-    const bool wasDone = (doneMask & RowBit(cursorRow)) != 0 ||
-                         (row.flags & tbf::kRowDone) != 0;
+    if (row.flags & tbf::kRowSummary) return;
+    const bool wasDone = (doneMask & RowBit(cursorRow)) != 0;
     const uint32_t seq = storage::LoadOpSeq() + 1;
     if (!storage::AppendOutbox(row.id, wasDone ? 0 : 1, seq)) return;
     storage::SaveOpSeq(seq);
-    // Optimistic local strike, independent of the network.
+    // The checkbox changes locally even while the server is unreachable.
     if (wasDone) {
       doneMask &= ~RowBit(cursorRow);
     } else {
@@ -573,7 +582,7 @@ void HandleKeys() {
     storage::SaveDoneMask(doneMask);
     int done = 0;
     for (uint8_t i = 0; i < rowCount; i++) {
-      const bool d = (doneMask & RowBit(i)) != 0 || (rows[i].flags & tbf::kRowDone) != 0;
+      const bool d = (doneMask & RowBit(i)) != 0;
       if (d) done++;
     }
     const int cue = sound::KeyCue(soundPolicy.keys, soundPolicy.volume, !wasDone, done, rowCount);
@@ -782,15 +791,8 @@ void StopPortal(const char* why) {
   Paint();
 }
 
-// WIFI LOST rides over the second header line: rows stay visible and the keys
-// keep working, only the lunar line is borrowed. Draws into the panel buffer;
-// the caller flushes.
+// Offline status replaces the bottom key legend, keeping the clock and tasks visible.
 void PaintWifiLostOverlay() {
-  // The band replaces the lunar line, not a row: every item stays visible.
-  // 33 chars at scale 2 is 396 px, which fits the strip's 8 px padding on
-  // both sides only just; DrawBanner does not clip, so wifista::Banner keeps
-  // every detail it can produce inside that width. Naming the reason is the
-  // difference between "it is broken" and "the password is wrong".
   char detail[wifista::kBannerCap];
   wifista::ReasonText(net::LastDisconnectReason(), detail, sizeof(detail));
   char line[wifista::kBannerCap];
@@ -799,7 +801,7 @@ void PaintWifiLostOverlay() {
   } else {
     wifista::Banner(detail, line, sizeof(line));
   }
-  widgets::DrawBanner(20, 24, line, 2, false);
+  widgets::DrawBanner(284, 16, line, 1, true);
 }
 
 void PaintWifiLost() {
@@ -916,12 +918,15 @@ void setup() {
   (void)analogReadMilliVolts(board::kPinBattery);
   analogSetPinAttenuation(board::kPinBattery, ADC_11db);
 
+  // mktime is used only to interpret RTC wall fields, before subtracting the offset.
+  setenv("TZ", "UTC0", 1);
+  tzset();
   utcOffset = storage::LoadUtcOffset();
   struct tm rtc {};
   timeOk = sensors::RtcRead(&rtc);
   if (timeOk) {
-    const time_t local = mktime(&rtc);
-    struct timeval tv = {local, 0};
+    const time_t utc = clocktime::UtcFromWall(mktime(&rtc), utcOffset);
+    struct timeval tv = {utc, 0};
     settimeofday(&tv, nullptr);
   }
   batteryMv = static_cast<int>(BatteryMillivolts());
@@ -931,12 +936,23 @@ void setup() {
                 analogReadMilliVolts(board::kPinBattery));
   ReadClimate();
 
-  haveFrame = storage::LoadFrame(base, sizeof(base));
-  rowCount = storage::LoadRows(rows, tbf::kMaxRows);
+  const size_t cached = storage::LoadFrame(wire, sizeof(wire));
+  haveFrame = cached > 0 && tbf::Parse(wire, cached, &frame);
+  if (haveFrame) {
+    memcpy(base, frame.bitmap, sizeof(base));
+    rowCount = frame.rowCount;
+    for (uint8_t i = 0; i < rowCount; i++) rows[i] = frame.rows[i];
+  } else if (cached == sizeof(base) && memcmp(wire, "TBF1", 4) != 0) {
+    // The first upgrade can still show the old raw bitmap until it reconnects.
+    memcpy(base, wire, sizeof(base));
+    rowCount = storage::LoadRows(rows, tbf::kMaxRows);
+    storage::SaveETag("");  // Fetch widget geometry missing from the legacy cache.
+    haveFrame = true;
+  }
   cursorRow = storage::LoadCursor();
-  doneMask = storage::LoadDoneMask();
+  RebuildDoneMask();
   if (rowCount > 0 && cursorRow >= rowCount) cursorRow = rowCount - 1;
-  etag = storage::LoadETag();
+  etag = haveFrame ? storage::LoadETag() : "";
   if (haveFrame) {
     // A cold boot repaints the cache, so a 304 never leaves the board blank.
     Paint();
@@ -1088,7 +1104,7 @@ void loop() {
     const time_t now = time(nullptr);
     if (now > 1600000000) {  // RTC or server time is valid
       struct tm local {};
-      const bool haveTime = getLocalTime(&local, 0);
+      const bool haveTime = clocktime::Local(now, utcOffset, &local);
       const bool nightNow = nightEnabled &&
                             night::Inside(local.tm_hour * 60 + local.tm_min, nightStart, nightEnd);
       const int due = sound::ShouldRing(static_cast<int64_t>(now), alarms, soundPolicy.alarm,
@@ -1116,7 +1132,7 @@ void loop() {
   // The clock must move even when the network is down: redraw the widgets on
   // a minute boundary. A dark panel only updates RAM.
   struct tm minuteTm {};
-  if (getLocalTime(&minuteTm, 0)) {
+  if (clocktime::Local(time(nullptr), utcOffset, &minuteTm)) {
     const int minute = minuteTm.tm_hour * 60 + minuteTm.tm_min;
     if (minute != lastClockMinute) {
       lastClockMinute = minute;
@@ -1132,7 +1148,7 @@ void loop() {
     if (screenOff) Paint();
   } else {
     struct tm local {};
-    if (getLocalTime(&local, 0)) {
+    if (clocktime::Local(time(nullptr), utcOffset, &local)) {
       const int minute = static_cast<int>(local.tm_hour) * 60 + local.tm_min;
       const bool wantNight = night::Inside(minute, nightStart, nightEnd);
       const bool wakeLit = millis() - lastKeyAt <= board::kNightWakeMs;

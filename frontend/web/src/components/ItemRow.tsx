@@ -69,7 +69,7 @@ export function ItemRow({
         // row instead of taking layout width: reserving a slot for a control
         // that is invisible most of the time is what made the text column look
         // inset by 40 px on both sides.
-        'group relative flex h-10 items-center gap-2.5 border-t border-[var(--line-2)] first:border-t-0',
+        'group relative flex h-12 md:h-11 items-center gap-2.5 border-t border-[var(--line-2)] first:border-t-0',
         dragHandle ? 'pl-[22px] pr-3' : 'px-3',
         'hover:bg-[var(--card-2)]',
         dimmed && 'opacity-55',
@@ -87,13 +87,13 @@ export function ItemRow({
         type="button"
         data-open-item={item.id}
         aria-label={`打开 ${item.title}`}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
         onClick={onOpen}
       >
         <span
           className={cn(
-            'truncate text-[13px]',
-            done ? 'text-[var(--faint)] line-through' : 'text-[var(--fg)]',
+            'truncate text-[14px] md:text-[13px]',
+            done ? 'text-[var(--muted)] line-through' : 'text-[var(--fg)]',
             'select-text',
           )}
         >

@@ -288,7 +288,7 @@ func TestUpcomingCollapsesSeries(t *testing.T) {
 	}
 	series := 0
 	for _, it := range items {
-		if it.SeriesID == master.ID {
+		if it.ID == master.ID || it.SeriesID == master.ID {
 			series++
 		}
 	}
@@ -301,6 +301,25 @@ func TestUpcomingCollapsesSeries(t *testing.T) {
 	}
 	if days[0] != "2026-11-19 站会" {
 		t.Fatalf("order: %v", days)
+	}
+	if len(items) != 2 {
+		t.Fatalf("master and occurrences must share one slot: %v", days)
+	}
+	if err := st.SetStatus(ctx, master.ID, StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	items, err = st.Upcoming(ctx, "2026-11-19", 30, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openSeries := 0
+	for _, it := range items {
+		if it.SeriesID == master.ID && it.Status == StatusOpen {
+			openSeries++
+		}
+	}
+	if openSeries != 1 {
+		t.Fatalf("finishing the master must keep the next occurrence: %v", items)
 	}
 }
 

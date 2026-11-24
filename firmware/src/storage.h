@@ -38,9 +38,9 @@ void SaveSeq(uint32_t seq);
 String LoadETag();
 void SaveETag(const String& etag);
 
-// The cached frame lives in LittleFS (15 KB is too big for the 20 KB NVS
-// partition); the row table stays in NVS.
-bool LoadFrame(uint8_t* out, size_t len);
+// Cache the complete frame in LittleFS, including widget geometry and CRC.
+// The returned byte count also lets the first new boot read a legacy bitmap.
+size_t LoadFrame(uint8_t* out, size_t cap);
 bool SaveFrame(const uint8_t* data, size_t len);
 uint8_t LoadRows(tbf::Row* out, uint8_t max);
 void SaveRows(const tbf::Row* rows, uint8_t count);

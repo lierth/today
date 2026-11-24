@@ -84,7 +84,8 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
   f.rowCount = p[2];
   p += 3;
 
-  if (f.width == 0 || f.height == 0 || (f.width % 8) != 0) {
+  if (f.width != 400 || f.height != 300 || f.rowHeight != 24 ||
+      f.contentX + f.contentWidth > f.width) {
     SetError("bad geometry");
     return false;
   }
@@ -102,6 +103,10 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
     memcpy(row.id, p, 16);
     row.y = ReadBE16(p + 16);
     row.flags = p[18];
+    if (static_cast<uint32_t>(row.y) + f.rowHeight > f.height) {
+      SetError("bad row bounds");
+      return false;
+    }
     p += 20;
   }
   f.footerCount = *p++;

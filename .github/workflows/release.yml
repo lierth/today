@@ -1,24 +1,30 @@
 name: release
 
 # Push a tag v0.4.0 and this builds the app and the board image, signs both
-# with the repository's ed25519 key, signs the bundle with the self-signed
-# code-signing certificate and publishes one GitHub release.
+# with the repository's ed25519 key and publishes one GitHub release.
+# Apple signing and notarization are optional; otherwise the app is ad-hoc signed.
 #
 # Secrets (see docs/developing.md):
 #   TODAY_RELEASE_KEY        ed25519 private key, base64 (from todayd release-keygen)
 #   TODAY_RELEASE_PUBLIC_KEY the matching public key, base64 (also the -ldflags value)
 #   TODAY_CODESIGN_P12       base64 .p12 of the code-signing certificate
 #   TODAY_CODESIGN_PASSWORD  the .p12 password
-#   CODESIGN_IDENTITY        the certificate CN, e.g. "Today Self-Signed"
+#   CODESIGN_IDENTITY        "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD  Apple notarization credentials
 #
-# Without TODAY_CODESIGN_* the build still works and is ad-hoc signed; it just
-# loses its permissions on every update.
+# Without ed25519 update keys, checksums are published for manual downloads
+# and automatic updates stay disabled.
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -35,6 +41,8 @@ jobs:
       TODAY_RELEASE_KEY: ${{ secrets.TODAY_RELEASE_KEY }}
       TODAY_RELEASE_PUBLIC_KEY: ${{ secrets.TODAY_RELEASE_PUBLIC_KEY }}
       CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      ALLOW_UNSIGNED_RELEASE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,7 +73,11 @@ jobs:
 
       - name: Version from the tag
         id: version
-        run: echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VER="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          echo "ver=${VER#v}" >> "$GITHUB_OUTPUT"
 
       # The certificate and the trust setting live in a throwaway keychain: the
       # runner is wiped afterwards, and nothing is written to the login
@@ -89,22 +101,40 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
           # Trust the certificate for code signing inside the runner. A failure
           # here is a real failure: codesign would sign untrusted.
-          printf '%s' "$CERT_PEM" | base64 --decode > "$RUNNER_TEMP/today.cer"
-          security add-trusted-cert -d -r trustRoot -p codeSign -k "$KEYCHAIN" \
-            "$RUNNER_TEMP/today.cer"
+          if [ -n "$CERT_PEM" ]; then
+            printf '%s' "$CERT_PEM" | base64 --decode > "$RUNNER_TEMP/today.cer"
+            security add-trusted-cert -d -r trustRoot -p codeSign -k "$KEYCHAIN" \
+              "$RUNNER_TEMP/today.cer"
+          fi
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+      - name: Configure Apple notarization
+        if: env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials today-release \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+          echo "NOTARY_PROFILE=today-release" >> "$GITHUB_ENV"
 
       - name: Checks
         run: |
           TZ=UTC go test ./...
           TZ=UTC go test -race -count=3 ./...
+          go vet ./...
           python3 -I firmware/test/check_partitions.py firmware/partitions.csv
           firmware/test/host.sh
           pnpm -C frontend install --frozen-lockfile
           pnpm -C frontend check
+          pnpm -C frontend lint
+          pnpm -C frontend test
 
       - name: Build, sign, package
-        run: scripts/release.sh "${{ steps.version.outputs.ver }}"
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.ver }}
+        run: scripts/release.sh "$RELEASE_VERSION"
 
       - name: Delete the temporary keychain
         if: always()
@@ -116,12 +146,18 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.ver }}
         run: |
-          gh release create "v${{ steps.version.outputs.ver }}" \
+          NOTES="docs/releases/${RELEASE_VERSION}.md"
+          if [ -f "$NOTES" ]; then
+            set -- --notes-file "$NOTES"
+          else
+            set -- --generate-notes
+          fi
+          gh release create "v${RELEASE_VERSION}" \
             dist/release/Today-*.zip \
             dist/release/Today-*.dmg \
             dist/release/today-rlcd-*.bin \
-            dist/release/SHA256SUMS \
-            dist/release/SHA256SUMS.sig \
-            --title "Today ${{ steps.version.outputs.ver }}" \
-            --generate-notes
+            dist/release/SHA256SUMS* \
+            --title "Today ${RELEASE_VERSION}" \
+            "$@"

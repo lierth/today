@@ -16,7 +16,7 @@ void Start();
 void Stop();
 void Loop();
 bool Active();
-// ScanCount: networks in the cached scan (boot scan or the last /scan).
+// ScanCount: networks in the cached scan (the last completed /scan).
 int ScanCount();
 
 // StartUserOpened/UserOpened: a hotspot the person asked for (KEY hold) keeps

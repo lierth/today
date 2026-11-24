@@ -75,24 +75,28 @@ void SaveSeq(uint32_t seq) { prefs.putUInt("seq", seq); }
 String LoadETag() { return ReadString("etag"); }
 void SaveETag(const String& etag) { prefs.putString("etag", etag); }
 
-bool LoadFrame(uint8_t* out, size_t len) {
-  if (out == nullptr || !LittleFS.exists(kFramePath)) return false;
+size_t LoadFrame(uint8_t* out, size_t cap) {
+  if (out == nullptr || !LittleFS.exists(kFramePath)) return 0;
   File f = LittleFS.open(kFramePath, "r");
-  if (!f || static_cast<size_t>(f.size()) != len) {
+  const size_t len = f ? f.size() : 0;
+  if (len == 0 || len > cap) {
     if (f) f.close();
-    return false;
+    return 0;
   }
   const size_t got = f.read(out, len);
   f.close();
-  return got == len;
+  return got == len ? len : 0;
 }
 
 bool SaveFrame(const uint8_t* data, size_t len) {
-  File f = LittleFS.open(kFramePath, "w");
+  const char* temp = "/frame.tmp";
+  File f = LittleFS.open(temp, "w");
   if (!f) return false;
   const size_t put = f.write(data, len);
   f.close();
-  return put == len;
+  if (put == len && LittleFS.rename(temp, kFramePath)) return true;
+  LittleFS.remove(temp);
+  return false;
 }
 
 uint8_t LoadRows(tbf::Row* out, uint8_t max) {

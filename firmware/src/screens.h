@@ -68,8 +68,8 @@ int BannerTextX(int panel, int textWidth);
 int BannerTextY(int y, int height, int scale);
 
 // ClockTextX places the five-character clock so it ends at the widget's right
-// edge. "14:05" at scale 3 is 90 px wide; the declared rect is 64, so
-// centring it on the rect runs it off the 400 px panel. Right-aligning to
+// edge. "14:05" at scale 3 is 90 px wide; older frames reserved only 64, so
+// centring it on that rect runs it off the 400 px panel. Right-aligning to
 // clockX+clockW leaves the declared margin on the right and never clips.
 int ClockTextX(int clockX, int clockW, int scale);
 

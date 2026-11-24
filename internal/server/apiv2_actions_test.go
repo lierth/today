@@ -3,7 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"image/png"
 	"io"
 	"net"
@@ -226,17 +229,32 @@ func TestAPIV2DevicePreviewPNG(t *testing.T) {
 func TestFirmwareUploadAndPush(t *testing.T) {
 	e := newTestEnv(t)
 
-	body := append([]byte{0xE9}, bytes.Repeat([]byte{0x00}, 4096)...)
+	body := make([]byte, 4096)
+	body[0] = 0xE9
+	binary.LittleEndian.PutUint16(body[12:14], 9)
+	binary.LittleEndian.PutUint32(body[32:36], 0xABCD5432)
 	if err := e.srv.StageFirmware(bytes.NewReader(body), "1.2.3"); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
-	if _, err := os.Stat(e.srv.firmwarePath()); err != nil {
+	if _, err := os.Stat(e.srv.firmwareSlotPath("a")); err != nil {
 		t.Fatalf("firmware not on disk: %v", err)
 	}
 
 	// A file without the ESP32 header is refused before it replaces anything.
 	if err := e.srv.StageFirmware(strings.NewReader("not a firmware"), ""); err == nil {
 		t.Fatal("garbage upload was accepted")
+	}
+	merged := append([]byte(nil), body...)
+	binary.LittleEndian.PutUint32(merged[32:36], 0x50)
+	if err := e.srv.StageFirmware(bytes.NewReader(merged), "1.2.4"); err == nil {
+		t.Fatal("a USB bootloader image was accepted for OTA")
+	}
+	if err := e.srv.StageFirmware(bytes.NewReader(body), "rlcd-1.2.4"); err == nil {
+		t.Fatal("a version the board cannot compare was accepted")
+	}
+	staged, err := os.ReadFile(e.srv.firmwareSlotPath("a"))
+	if err != nil || !bytes.Equal(staged, body) {
+		t.Fatalf("a rejected upload changed the staged image: %v", err)
 	}
 
 	version, err := e.srv.ApplyPendingFirmware(context.Background())
@@ -252,6 +270,61 @@ func TestFirmwareUploadAndPush(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("firmware over HTTP: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestFirmwareStagingPreservesLiveImage(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	if _, err := e.st.EnsureDevice(ctx, "fwtest", "firmware test"); err != nil {
+		t.Fatal(err)
+	}
+	token := "firmware-test-token"
+	sum := sha256.Sum256([]byte(token))
+	if err := e.st.SetDeviceToken(ctx, "fwtest", hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	image := func(marker byte) []byte {
+		b := make([]byte, 4096)
+		b[0], b[300] = 0xE9, marker
+		binary.LittleEndian.PutUint16(b[12:14], 9)
+		binary.LittleEndian.PutUint32(b[32:36], 0xABCD5432)
+		return b
+	}
+	check := func(want []byte, version string) {
+		t.Helper()
+		req := e.req(http.MethodGet, e.ts.URL+"/v1/devices/fwtest/firmware", nil)
+		req.Header.Set("X-Device-Token", token)
+		resp := e.do(req)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(body, want) || resp.Header.Get("X-Firmware-Version") != version {
+			t.Fatalf("live firmware: status=%d version=%q correct bytes=%v err=%v", resp.StatusCode, resp.Header.Get("X-Firmware-Version"), bytes.Equal(body, want), err)
+		}
+	}
+	// Preserve the original single-file format on an existing installation.
+	live := image(1)
+	if err := os.MkdirAll(e.srv.cfg.Paths.Firmware, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.srv.firmwarePath(), live, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.PutSettings(ctx, map[string]string{"firmware_version": "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	version := "1.0.0"
+	for i, next := range []string{"2.0.0", "3.0.0", "4.0.0"} {
+		staged := image(byte(i + 2))
+		if err := e.srv.StageFirmware(bytes.NewReader(staged), next); err != nil {
+			t.Fatal(err)
+		}
+		check(live, version)
+		if _, err := e.srv.ApplyPendingFirmware(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check(staged, next)
+		live, version = staged, next
 	}
 }
 

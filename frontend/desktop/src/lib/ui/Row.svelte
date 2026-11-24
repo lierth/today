@@ -9,7 +9,7 @@
     children?: Snippet;
     onclick?: () => void;
   }
-  let { label = '', hint = '', stacked = false, children, onclick }: Props = $props();
+  let { label = '', hint = '', stacked = true, children, onclick }: Props = $props();
 </script>
 
 {#if onclick}
@@ -40,7 +40,7 @@
     align-items: center;
     gap: 10px;
     min-height: var(--row, 40px);
-    padding: 0 12px 0 14px;
+    padding: 10px 14px;
     border: 0;
     border-top: 1px solid var(--line-2);
     background: transparent;
@@ -70,6 +70,8 @@
     align-items: baseline;
     gap: 6px;
     min-width: 0;
+    font-size: 12.5px;
+    font-weight: 500;
   }
   .hint {
     color: var(--muted);
