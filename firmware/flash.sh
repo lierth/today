@@ -183,31 +183,30 @@ cmd_merge() {
   pio_cmd project metadata --json-output >"$meta"
   # The app offset is read from the partition table, not hard-coded: it is
   # the ota_0 start (0x10000 with the current partitions.csv).
-  local app_offset
-  app_offset="$(python3 - "$(pwd)/partitions.csv" <<'PY'
-import csv, sys
-for row in csv.reader(open(sys.argv[1])):
-    if not row or row[0].strip().startswith('#') or len(row) < 4:
-        continue
-    if row[1].strip() == 'app':
-        print(row[3].strip())
-        break
-PY
-)"
-  local args=()
-  while IFS=$'\t' read -r offset path; do
-    [[ -n "$offset" ]] && args+=("$offset" "$path")
-  done < <(python3 - "$meta" "$ENV_NAME" "$app_offset" "$BUILD_DIR/firmware.bin" <<'PY'
-import json, sys
-meta, env, app_offset, app_path = sys.argv[1:5]
+  local args_file="${meta}.args"
+  # A foreground heredoc also works with macOS's Bash 3.2 and propagates errors.
+  if ! python3 - "$meta" "$ENV_NAME" "$(pwd)/partitions.csv" "$BUILD_DIR/firmware.bin" >"$args_file" <<'PY'
+import csv, json, sys
+meta, env, partitions, app_path = sys.argv[1:5]
+app_offset = next(
+    row[3].strip() for row in csv.reader(open(partitions))
+    if len(row) >= 4 and not row[0].strip().startswith('#') and row[1].strip() == 'app'
+)
 data = json.load(open(meta))[env]
 images = list(data.get("extra", {}).get("flash_images", []))
 images.append({"offset": app_offset, "path": app_path})
 for image in images:
-    print(image["offset"] + "\t" + image["path"])
+    print(str(image["offset"]) + "\t" + image["path"])
 PY
-)
-  rm -f "$meta"
+  then
+    rm -f "$meta" "$args_file"
+    return 1
+  fi
+  local args=()
+  while IFS=$'\t' read -r offset path; do
+    [[ -n "$offset" ]] && args+=("$offset" "$path")
+  done < "$args_file"
+  rm -f "$meta" "$args_file"
   esptool_cmd --chip esp32s3 merge_bin \
     --flash_mode keep \
     --flash_freq keep \

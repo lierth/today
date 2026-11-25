@@ -163,13 +163,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
             exit 0
           fi
-          NOTES="docs/releases/${RELEASE_VERSION}.md"
-          if [ -f "$NOTES" ]; then
-            set -- --notes-file "$NOTES"
-          else
-            set -- --generate-notes
-          fi
           gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
             --verify-tag \
             --title "Today ${RELEASE_VERSION}" \
-            "$@"
+            --generate-notes

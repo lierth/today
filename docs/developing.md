@@ -117,7 +117,7 @@ git push origin v0.3.0
 
 `.github/workflows/release.yml` 会检查代码、编译前端与固件、生成安装包，再发布到这个 tag 的 Release。当前只接受 `v1.2.3` 这样的正式版本号，与应用的更新版本规则一致。重跑同一 tag 的任务会替换对应附件。
 
-Release 附件包括 Apple Silicon 的 `Today-<版本>.dmg`、App ZIP、OTA 固件 `today-rlcd-<版本>.bin`、USB 镜像 `today-rlcd-<版本>-full.bin` 和 `SHA256SUMS`。配置更新签名后还会附上 `SHA256SUMS.sig`。历史版本说明在 `docs/releases/`，没有对应文件时自动生成 Release 说明。
+Release 附件包括 Apple Silicon 的 `Today-<版本>.dmg`、App ZIP、OTA 固件 `today-rlcd-<版本>.bin`、USB 镜像 `today-rlcd-<版本>-full.bin` 和 `SHA256SUMS`。配置更新签名后还会附上 `SHA256SUMS.sig`。Release 说明由 GitHub 自动生成。
 
 发布使用工作流自带的 `GITHUB_TOKEN`，无需额外 PAT，也不要求 Apple Developer 账号。没有可选签名 Secrets 时使用 ad-hoc 签名并提供手动下载安装包。
 
