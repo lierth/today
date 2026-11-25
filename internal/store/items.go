@@ -23,6 +23,8 @@ const (
 
 // Item is one todo/event row.
 type Item struct {
+	CategoryID  string     `json:"category_id,omitempty"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 	ID          string     `json:"id"`
 	Title       string     `json:"title"`
 	Description string     `json:"description,omitempty"`
@@ -51,10 +53,10 @@ func (it Item) Done() bool { return it.Status == StatusDone }
 const (
 	itemSelect = `id, title, description, all_day, starts_at, due_at, date_local,
 		status, pinned, rrule, COALESCE(series_id, ''), sort_key, carried_from,
-		manual_rank, created_at, updated_at`
+		manual_rank, created_at, updated_at, COALESCE(category_id, ''), deleted_at`
 	itemCols = `id, title, description, all_day, starts_at, due_at, date_local,
 		status, pinned, rrule, series_id, sort_key, carried_from, manual_rank,
-		created_at, updated_at`
+		created_at, updated_at, category_id`
 )
 
 func scanItem(row interface{ Scan(...any) error }) (Item, error) {
@@ -62,15 +64,17 @@ func scanItem(row interface{ Scan(...any) error }) (Item, error) {
 		it                   Item
 		allDay, pinned       int
 		startsAt, dueAt      sql.NullString
+		deletedAt            sql.NullString
 		rrule                sql.NullString
 		createdAt, updatedAt string
 	)
 	err := row.Scan(&it.ID, &it.Title, &it.Description, &allDay, &startsAt, &dueAt,
 		&it.DateLocal, &it.Status, &pinned, &rrule, &it.SeriesID, &it.SortKey,
-		&it.CarriedFrom, &it.ManualRank, &createdAt, &updatedAt)
+		&it.CarriedFrom, &it.ManualRank, &createdAt, &updatedAt, &it.CategoryID, &deletedAt)
 	if err != nil {
 		return Item{}, err
 	}
+	it.DeletedAt = scanTime(deletedAt)
 	it.AllDay = allDay != 0
 	it.Pinned = pinned != 0
 	it.StartsAt = scanTime(startsAt)
@@ -151,6 +155,9 @@ func (s *Store) CreateItem(ctx context.Context, in Item, loc *time.Location) (It
 	if err := in.normalize(); err != nil {
 		return Item{}, err
 	}
+	if err := s.validateCategory(ctx, in.CategoryID); err != nil {
+		return Item{}, err
+	}
 	in.CreatedAt, in.UpdatedAt = now, now
 	// A weekly rule with BYDAY starts on its first listed day, not on whatever
 	// weekday the person typed the rule on. Without this, "每周一三五" entered
@@ -164,11 +171,11 @@ func (s *Store) CreateItem(ctx context.Context, in Item, loc *time.Location) (It
 	in.fillDerived(loc, now)
 
 	_, err := s.db.ExecContext(ctx, `INSERT INTO items (`+itemCols+`, deleted_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`,
 		in.ID, in.Title, in.Description, boolInt(in.AllDay), nullTime(in.StartsAt),
 		nullTime(in.DueAt), in.DateLocal, in.Status, boolInt(in.Pinned), in.RRule,
 		nullable(in.SeriesID), in.SortKey, in.CarriedFrom, in.ManualRank,
-		timeStr(in.CreatedAt), timeStr(in.UpdatedAt))
+		timeStr(in.CreatedAt), timeStr(in.UpdatedAt), nullable(in.CategoryID))
 	if err != nil {
 		return Item{}, fmt.Errorf("store: create item: %w", err)
 	}
@@ -273,6 +280,7 @@ func collectItems(rows *sql.Rows) ([]Item, error) {
 // Patch is a partial item update. Nil fields are left untouched. An empty
 // string on StartsAt/DueAt/RRule clears the value.
 type Patch struct {
+	CategoryID  *string `json:"category_id"`
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	AllDay      *bool   `json:"all_day"`
@@ -289,6 +297,9 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 	it, err := s.Item(ctx, id)
 	if err != nil {
 		return Item{}, err
+	}
+	if p.CategoryID != nil {
+		it.CategoryID = *p.CategoryID
 	}
 	if p.Title != nil {
 		it.Title = *p.Title
@@ -334,15 +345,18 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 	if err := it.normalize(); err != nil {
 		return Item{}, err
 	}
+	if err := s.validateCategory(ctx, it.CategoryID); err != nil {
+		return Item{}, err
+	}
 	it.UpdatedAt = s.Now()
 	it.fillDerived(loc, it.UpdatedAt)
 
 	_, err = s.db.ExecContext(ctx, `UPDATE items SET title=?, description=?, all_day=?,
 		starts_at=?, due_at=?, date_local=?, status=?, pinned=?, rrule=?, series_id=?,
-		sort_key=?, updated_at=? WHERE id = ? AND deleted_at IS NULL`,
+		sort_key=?, updated_at=?, category_id=? WHERE id = ? AND deleted_at IS NULL`,
 		it.Title, it.Description, boolInt(it.AllDay), nullTime(it.StartsAt),
 		nullTime(it.DueAt), it.DateLocal, it.Status, boolInt(it.Pinned), it.RRule,
-		nullable(it.SeriesID), it.SortKey, timeStr(it.UpdatedAt), it.ID)
+		nullable(it.SeriesID), it.SortKey, timeStr(it.UpdatedAt), nullable(it.CategoryID), it.ID)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: update item: %w", err)
 	}
@@ -365,7 +379,7 @@ func (s *Store) UpdateItem(ctx context.Context, id string, p Patch, loc *time.Lo
 					return Item{}, err
 				}
 			}
-		case p.Title != nil || p.Description != nil || p.StartsAt != nil || p.AllDay != nil:
+		case p.Title != nil || p.Description != nil || p.StartsAt != nil || p.AllDay != nil || p.CategoryID != nil:
 			if err := s.syncSeries(ctx, it, today, loc); err != nil {
 				return Item{}, err
 			}
@@ -423,9 +437,9 @@ func (s *Store) syncSeries(ctx context.Context, master Item, today string, loc *
 			sortKey = parsed.Unix()
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE items SET title=?, description=?,
-			all_day=?, starts_at=?, sort_key=?, updated_at=? WHERE id=?`,
+			all_day=?, starts_at=?, sort_key=?, updated_at=?, category_id=? WHERE id=?`,
 			master.Title, master.Description, boolInt(master.AllDay), starts,
-			sortKey, timeStr(master.UpdatedAt), in.id); err != nil {
+			sortKey, timeStr(master.UpdatedAt), nullable(master.CategoryID), in.id); err != nil {
 			return fmt.Errorf("store: sync series instance: %w", err)
 		}
 	}

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useState, useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import {
   CalendarDays,
@@ -10,12 +10,17 @@ import {
   Search,
   Sun,
   SunMoon,
+  Settings2,
+  ChevronUp,
+  Tags,
+  Trash2,
+  KeyRound,
 } from 'lucide-react';
 import { TooltipProvider } from './components/Hint';
 import { Snail } from './components/Snail';
 import { useTheme } from './lib/theme';
 import { api } from './lib/api';
-import { useRefreshLists } from './lib/queries';
+
 import { cn } from './lib/utils';
 import {
   DropdownMenu,
@@ -27,8 +32,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { QuickAdd } from './components/QuickAdd';
+import { CreateItemDialog } from './components/CreateItemDialog';
 
 // The palette is "open something": it is not on screen when the page paints,
 // and it carries cmdk and Radix's dialog. It ships after the first paint.
@@ -41,6 +45,8 @@ const NAV = [
   { to: '/upcoming', label: '即将到来', icon: CalendarDays, end: false },
   { to: '/history', label: '历史', icon: History, end: false },
   { to: '/search', label: '搜索', icon: Search, end: false },
+  { to: '/categories', label: '分类', icon: Tags, end: false },
+  { to: '/trash', label: '回收站', icon: Trash2, end: false },
 ];
 
 /**
@@ -117,7 +123,7 @@ export function App() {
           className="fixed inset-x-0 bottom-0 z-20 flex border-t border-[var(--line)] bg-[color-mix(in_oklab,var(--card)_92%,transparent)] backdrop-blur md:hidden"
           aria-label="主导航"
         >
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {NAV.slice(0, 4).map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -162,32 +168,46 @@ function MobileAccount({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon-sm" aria-label="账号与主题" className="size-8">
-          <span className="grid size-5 place-items-center rounded-full bg-[var(--pill)] text-[10px] font-[560] text-[var(--fg-2)]">
-            我
-          </span>
+          <Settings2 className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[188px]">
+      <DropdownMenuContent align="end" sideOffset={8} className="w-[208px] p-1.5">
         <DropdownMenuRadioGroup
           value={theme}
           onValueChange={(v) => onTheme(v as 'system' | 'light' | 'dark')}
         >
           <DropdownMenuRadioItem value="system">
-            <SunMoon className="mr-2 size-3.5" /> 跟随系统
+            <SunMoon className="size-4" /> 跟随系统
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="light">
-            <Sun className="mr-2 size-3.5" /> 浅色
+            <Sun className="size-4" /> 浅色
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="dark">
-            <Moon className="mr-2 size-3.5" /> 深色
+            <Moon className="size-4" /> 深色
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <NavLink to="/categories">
+            <Tags className="size-4" />
+            管理分类
+          </NavLink>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <NavLink to="/trash">
+            <Trash2 className="size-4" />
+            回收站
+          </NavLink>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <a href="/settings">设置</a>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
-          <a href="/settings#security">修改口令</a>
+          <a href="/settings#security">
+            <KeyRound className="size-4" />
+            修改口令
+          </a>
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => {
@@ -197,7 +217,7 @@ function MobileAccount({
             });
           }}
         >
-          <LogOut className="mr-2 size-3.5" /> 登出所有设备
+          <LogOut className="size-4" /> 登出所有设备
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -211,46 +231,23 @@ function MobileAccount({
  */
 function MobileAdd() {
   const [open, setOpen] = useState(false);
-  const refresh = useRefreshLists();
+  useEffect(() => {
+    const add = () => setOpen(true);
+    window.addEventListener('today:add', add);
+    if (new URLSearchParams(window.location.search).get('focus') === 'add') setOpen(true);
+    return () => window.removeEventListener('today:add', add);
+  }, []);
   return (
     <>
       <Button
+        className="fixed bottom-20 right-4 z-30 size-11 rounded-full shadow-lg md:hidden"
         size="icon"
         aria-label="添加事项"
-        className="fixed right-4 bottom-[68px] z-30 size-12 rounded-full shadow-[0_6px_20px_rgba(20,20,30,0.25)] md:hidden"
         onClick={() => setOpen(true)}
       >
         <Plus className="size-5" />
       </Button>
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent
-          side="bottom"
-          className="rounded-t-[14px] pb-6"
-          // Radix focuses the panel itself when it opens, which lands after
-          // the field has mounted and undoes the field's autoFocus. Focus the
-          // field instead: the sheet exists to type in.
-          onOpenAutoFocus={(event) => {
-            const field = (event.currentTarget as HTMLElement).querySelector('input');
-            if (field) {
-              event.preventDefault();
-              field.focus();
-            }
-          }}
-        >
-          <SheetHeader>
-            <SheetTitle className="text-[14px]">添加事项</SheetTitle>
-          </SheetHeader>
-          <div className="px-1">
-            <QuickAdd
-              autoFocus
-              onSaved={() => {
-                void refresh();
-                setOpen(false);
-              }}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
+      <CreateItemDialog open={open} onOpenChange={setOpen} />
     </>
   );
 }
@@ -267,35 +264,48 @@ function AccountMenu({
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          className="h-8 w-full justify-start gap-2 px-2 text-[12.5px] text-[var(--ctl-fg)]"
+          className="h-9 w-full justify-start gap-2.5 rounded-[7px] px-2 text-[12.5px] text-[var(--ctl-fg)]"
           aria-label="账号与主题"
         >
-          {/* The avatar is chrome, not a status: ink on the pill, not the
-              accent, which is reserved for reminders and state. */}
-          <span className="grid size-5 place-items-center rounded-full bg-[var(--pill)] text-[10px] font-[560] text-[var(--fg-2)]">
-            我
-          </span>
-          <span className="truncate">账号与主题</span>
+          <Settings2 className="size-4" />
+          <span className="flex-1 text-left">设置</span>
+          <ChevronUp className="size-3 text-[var(--muted)]" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[188px]">
+      <DropdownMenuContent align="start" sideOffset={8} className="w-[208px] p-1.5">
         <DropdownMenuRadioGroup
           value={theme}
           onValueChange={(v) => onTheme(v as 'system' | 'light' | 'dark')}
         >
           <DropdownMenuRadioItem value="system">
-            <SunMoon className="mr-2 size-3.5" /> 跟随系统
+            <SunMoon className="size-4" /> 跟随系统
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="light">
-            <Sun className="mr-2 size-3.5" /> 浅色
+            <Sun className="size-4" /> 浅色
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="dark">
-            <Moon className="mr-2 size-3.5" /> 深色
+            <Moon className="size-4" /> 深色
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
-          <a href="/settings#security">修改口令</a>
+          <NavLink to="/categories">
+            <Tags className="size-4" />
+            管理分类
+          </NavLink>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <NavLink to="/trash">
+            <Trash2 className="size-4" />
+            回收站
+          </NavLink>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <a href="/settings#security">
+            <KeyRound className="size-4" />
+            修改口令
+          </a>
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => {
@@ -305,7 +315,7 @@ function AccountMenu({
             });
           }}
         >
-          <LogOut className="mr-2 size-3.5" /> 登出所有设备
+          <LogOut className="size-4" /> 登出所有设备
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

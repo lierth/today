@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
-   * The tray panel: the day, the rows, one quick-add field, and a footer with
-   * the boards and the weather. It is the panel mygo anchors under the tray
+   * The tray panel: the date, quick add, rows, and compact footer actions.
+   * It is the panel mygo anchors under the tray
    * icon (see host.togglePanel), so it sizes itself and never scrolls as a
    * whole — only the list does.
    */
   import { Panel, type TodayView } from './mygo';
-  import Snail from './Snail.svelte';
+  import { onMount } from 'svelte';
   import Card from './lib/ui/Card.svelte';
   import Check from './lib/ui/Check.svelte';
   import Dot from './lib/ui/Dot.svelte';
@@ -19,6 +19,7 @@
   let busy = $state(false);
   let loading = $state(true);
   let refreshing = $state(false);
+  let keyboardNavigation = $state(false);
   let pending = $state<string[]>([]);
 
   const blind = colorBlind;
@@ -93,69 +94,97 @@
     }
   }
 
-  $effect(() => {
-    void (async () => {
-      watchAccessibility();
-      startTheme('system');
-      await loadPrefs();
-      await load();
-    })();
+  async function reload() {
+    await loadPrefs();
+    await load();
+  }
+
+  function onPanelFocus() {
+    keyboardNavigation = false;
+    if (!loading) void reload();
+  }
+
+  onMount(() => {
+    const stopAccessibility = watchAccessibility();
+    const stopTheme = startTheme('system');
+    void reload();
+    return () => {
+      stopAccessibility?.();
+      stopTheme();
+    };
   });
 
   const progress = $derived(view ? `${view.done}/${view.total}` : '');
 </script>
 
-<main>
-  <header>
-    <div class="brand"><Snail size={20} /><span>today</span></div>
-    <div class="actions">
-      <button
-        type="button"
-        class="icon"
-        aria-label="刷新"
-        title="刷新"
-        disabled={refreshing}
-        onclick={refresh}
-      >
-        <svg class:spinning={refreshing} viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5.2h-2.6" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        class="icon"
-        aria-label="设置"
-        title="设置"
-        onclick={() => openSettings()}
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.5 1.5h3l.5 2 1.5.9 2-.5 1.5 2.6-1.5 1.4v1.7l1.5 1.4-1.5 2.6-2-.5-1.5.9-.5 2h-3l-.5-2-1.5-.9-2 .5L1 11l1.5-1.4V7.9L1 6.5l1.5-2.6 2 .5L6 3.5Z"
-          /><circle cx="8" cy="8" r="2.3" />
-        </svg>
-      </button>
-    </div>
-  </header>
+<svelte:window
+  onfocus={onPanelFocus}
+  onblur={() => (keyboardNavigation = false)}
+  onpointerdown={() => (keyboardNavigation = false)}
+  onkeydown={(event) => {
+    if (event.key === 'Tab') keyboardNavigation = true;
+  }}
+/>
 
+<main class:keyboard={keyboardNavigation}>
   <section class="overview" aria-label="今日概览">
-    <div class="day">
+    <header>
       <h1>{view?.date ?? '今天'} <span>{view?.weekday ?? ''}</span></h1>
-      <span class="progress">{progress ? `已完成 ${progress}` : ''}</span>
-    </div>
+      <div class="actions">
+        <button
+          type="button"
+          class="icon"
+          aria-label="刷新"
+          title="刷新"
+          disabled={refreshing}
+          onclick={refresh}
+        >
+          <svg class:spinning={refreshing} viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5.2h-2.6" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="icon"
+          aria-label="设置"
+          title="设置"
+          onclick={() => openSettings()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="m9.5 3-.6 2.3-1.6.9L5 5.6 2.5 10l1.7 1.7v1.8L2.5 15 5 19.4l2.3-.6 1.6.9.6 2.3h5l.6-2.3 1.6-.9 2.3.6 2.5-4.4-1.7-1.5v-1.8l1.7-1.7L19 5.6l-2.3.6-1.6-.9L14.5 3Z"
+            /><circle cx="12" cy="12.5" r="3.2" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
     <p class="subtitle">
-      {view?.lunar ?? '把今天，慢慢做好。'}{#if view?.weather}<span> · {view.weather}</span>{/if}
+      <span>{view?.lunar ?? ''}</span>{#if view?.weather}<span class="weather">
+          {view.weather}
+        </span>{/if}
+      {#if view?.total}<span
+          class="progress"
+          aria-label={`已完成 ${view.done} 项，共 ${view.total} 项`}
+        >
+          {progress}
+        </span>{/if}
     </p>
-    <div
-      class="track"
-      role="progressbar"
-      aria-label="今天的进度"
-      aria-valuemin="0"
-      aria-valuemax={Math.max(1, view?.total ?? 0)}
-      aria-valuenow={view?.done ?? 0}
-    >
-      <span style:width={`${view?.total ? (view.done / view.total) * 100 : 0}%`}></span>
-    </div>
+    {#if view?.total}
+      <div
+        class="track"
+        role="progressbar"
+        aria-label="今天的进度"
+        aria-valuemin="0"
+        aria-valuemax={view.total}
+        aria-valuenow={view.done}
+      >
+        <span style:width={`${(view.done / view.total) * 100}%`}></span>
+      </div>
+    {/if}
   </section>
+
+  <QuickAdd {busy} placeholder="添加事项…" onsubmit={add} />
 
   {#if !live}<p class="hint">请从 Mac 菜单栏打开 Today。</p>{/if}
   {#if view && view.carried.length > 0}
@@ -166,19 +195,15 @@
     </div>
   {/if}
 
-  <div class="scroll">
+  {#if loading}
     <Card>
-      {#if loading}
-        <div class="skeleton" aria-label="正在读取事项">
-          <span></span><span></span><span></span>
-        </div>
-      {:else if view && view.items.length === 0}
-        <div class="empty">
-          <Snail size={28} />
-          <p>今天，从一件小事开始。</p>
-          <span>在下面写一行，回车添加。</span>
-        </div>
-      {:else}
+      <div class="skeleton" aria-label="正在读取事项">
+        <span></span><span></span><span></span>
+      </div>
+    </Card>
+  {:else if view?.items.length}
+    <div class="scroll">
+      <Card>
         {#each view?.items ?? [] as item (item.id)}
           <div class="item" class:done={item.done}>
             <Check
@@ -202,22 +227,29 @@
             {#if item.time}<span class="time">{item.time}</span>{/if}
           </div>
         {/each}
-      {/if}
-    </Card>
-  </div>
+      </Card>
+    </div>
+  {/if}
 
-  <QuickAdd {busy} placeholder="写一行，回车添加…" onsubmit={add} />
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
   <footer>
-    {#if (view?.devices ?? []).length > 0}
-      <div class="devices">
+    <div class="devices">
+      {#if (view?.devices ?? []).length > 0}
         {#each view?.devices ?? [] as device (device.id)}
           <button
             type="button"
             class="device"
             onclick={() => openSettings('devices')}
-            title="查看设备设置"
+            title={[
+              device.name,
+              device.online ? '在线' : '离线',
+              device.battery,
+              device.climate,
+              device.since,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           >
             <Dot
               tone={device.online ? 'ok' : 'bad'}
@@ -230,48 +262,49 @@
             </span>
           </button>
         {/each}
-      </div>
-    {:else}<button type="button" class="link" onclick={() => openSettings('devices')}>
-        连接桌上的显示屏
-      </button>{/if}
+      {:else}<button type="button" class="link" onclick={() => openSettings('devices')}>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="2.5" width="13" height="9" rx="1.5" /><path d="M5.5 14h5M8 11.5V14" />
+          </svg>
+          连接显示屏
+        </button>{/if}
+    </div>
     <button type="button" class="open-web" onclick={() => live && Panel.openPage('/')}>
-      <span>打开完整日程</span><span aria-hidden="true">↗</span>
+      <span>完整日程</span><svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4 12 12 4M5 4h7v7" />
+      </svg>
     </button>
   </footer>
 </main>
 
 <style>
+  /* WebKit can restore keyboard focus when a mouse-opened flyout activates. */
+  main:not(.keyboard) :global(button:focus-visible) {
+    outline: none;
+  }
   main {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     width: 360px;
-    padding: 16px;
+    max-width: 100vw;
+    padding: 12px;
   }
   header,
-  .brand,
-  .actions,
-  .day {
+  .actions {
     display: flex;
     align-items: center;
   }
-  header,
-  .day {
+  header {
     justify-content: space-between;
     gap: 8px;
-  }
-  .brand {
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.01em;
   }
   .actions {
     gap: 3px;
   }
   .icon {
-    width: 27px;
-    height: 27px;
+    width: 26px;
+    height: 26px;
     display: grid;
     place-items: center;
     padding: 0;
@@ -291,18 +324,25 @@
   .icon svg {
     width: 15px;
     height: 15px;
+    flex: none;
     fill: none;
     stroke: currentcolor;
     stroke-width: 1.3;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
+  .icon[aria-label='设置'] svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1.7;
+  }
   .overview {
-    padding: 2px 0 3px;
+    padding: 0 2px;
   }
   h1 {
     margin: 0;
-    font-size: 21px;
+    font-size: 18px;
+    line-height: 24px;
     font-weight: 600;
     letter-spacing: -0.035em;
   }
@@ -314,22 +354,33 @@
     color: var(--muted);
   }
   .progress {
+    margin-left: auto;
     font-size: 11px;
     color: var(--ctl-fg);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .subtitle {
-    margin: 3px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 3px 0 0;
     font-size: 11px;
-    line-height: 1.5;
+    line-height: 16px;
     color: var(--muted);
   }
+  .weather {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .track {
-    height: 3px;
+    height: 1px;
+    margin-top: 8px;
     overflow: hidden;
     border-radius: 3px;
-    background: var(--line);
+    background: var(--line-2);
   }
   .track span {
     display: block;
@@ -339,7 +390,7 @@
     transition: width 0.2s var(--ease);
   }
   .scroll {
-    max-height: 320px;
+    max-height: 280px;
     overflow-y: auto;
     border-radius: 12px;
   }
@@ -356,7 +407,7 @@
     border: 0;
     background: transparent;
     padding: 0;
-    color: var(--fg);
+    color: var(--ctl-fg);
     font: inherit;
     cursor: default;
   }
@@ -369,8 +420,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 42px;
-    padding: 0 12px;
+    min-height: 40px;
+    padding: 0 10px;
     border-top: 1px solid var(--line-2);
   }
   .item:first-child {
@@ -379,7 +430,7 @@
   .label {
     flex: 1;
     min-width: 0;
-    padding: 10px 0;
+    padding: 9px 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -403,24 +454,6 @@
     font-size: 11px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
-  }
-  .empty {
-    padding: 24px 12px;
-    text-align: center;
-    color: var(--muted);
-  }
-  .empty :global(svg) {
-    display: block;
-    margin: 0 auto 10px;
-    color: var(--fg-2);
-  }
-  .empty p {
-    margin: 0 0 4px;
-    color: var(--fg-2);
-    font-size: 12px;
-  }
-  .empty span {
-    font-size: 11px;
   }
   .skeleton {
     display: flex;
@@ -449,22 +482,27 @@
   }
   footer {
     display: flex;
-    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
     gap: 10px;
-    font-size: 11px;
+    border-top: 1px solid var(--line-2);
+    padding-top: 6px;
+    font-size: 12px;
     color: var(--muted);
   }
   .devices {
-    border-top: 1px solid var(--line);
-    padding-top: 6px;
+    flex: 1;
+    min-width: 0;
   }
   .device {
     display: flex;
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 6px 0;
+    min-height: 28px;
+    padding: 4px 8px;
     border: 0;
+    border-radius: var(--radius);
     background: transparent;
     color: var(--ctl-fg);
     font: inherit;
@@ -481,22 +519,39 @@
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
+  .link,
   .open-web {
     display: flex;
-    justify-content: space-between;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    background: var(--card);
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
     color: var(--ctl-fg);
     font: inherit;
     cursor: default;
-    box-shadow: 0 1px 1px rgb(20 20 30 / 4%);
+    white-space: nowrap;
   }
+  .link svg,
+  .open-web svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .link:hover,
+  .device:hover,
   .open-web:hover {
     color: var(--fg);
-    border-color: var(--muted);
+    background: var(--pill);
   }
   .hint {
     margin: 0;

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -182,6 +183,10 @@ func TestAPIV2DeviceTokenAndRevoke(t *testing.T) {
 	if upper.ID != "dev2" {
 		t.Fatalf("uppercase id became %q", upper.ID)
 	}
+	secondToken, err := e.srv.GenerateDeviceToken(context.Background(), upper.ID)
+	if err != nil || !strings.Contains(strings.Join(secondToken.Commands, "\n"), "device dev2\n") {
+		t.Fatal("setup commands must address the selected device")
+	}
 	// An id with a space is still refused, because no URL can carry it.
 	if _, err := e.srv.AddDevice(context.Background(), "dev 3", ""); err == nil {
 		t.Fatal("an id with a space was accepted")
@@ -195,6 +200,61 @@ func TestAPIV2DeviceTokenAndRevoke(t *testing.T) {
 		if d.ID == "dev1" && d.RevokedAt == nil {
 			t.Fatal("revoke left the device live")
 		}
+	}
+}
+
+func TestAddDeviceReusesRevokedID(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	original, err := e.srv.AddDevice(ctx, "dev1", "桌上")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := e.srv.GenerateDeviceToken(ctx, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.TouchDevice(ctx, "dev1", 4100); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.RevokeDevice(ctx, "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	if devices, err := e.srv.Service().Devices(ctx); err != nil || len(devices) != 0 {
+		t.Fatalf("revoked board should be hidden: %v, %v", devices, err)
+	}
+	restored, err := e.srv.AddDevice(ctx, " Dev1 ", "书房")
+	if err != nil {
+		t.Fatalf("re-add hidden device: %v", err)
+	}
+	if restored.ID != "dev1" || restored.Name != "书房" || restored.RevokedAt != nil ||
+		restored.TokenHash != "" || restored.LastSeenAt != nil || !restored.CreatedAt.Equal(original.CreatedAt) {
+		t.Fatalf("re-added device must wait for fresh pairing and keep its history: %+v", restored)
+	}
+	if devices, err := e.srv.Service().Devices(ctx); err != nil || len(devices) != 1 || devices[0].Name != "书房" {
+		t.Fatalf("re-added board should appear in settings: %v, %v", devices, err)
+	}
+	request := httptest.NewRequest("GET", "/v1/devices/dev1/frame", nil)
+	request.Header.Set("X-Device-Token", oldToken.Token)
+	if _, ok := e.srv.authorizeDevice(request, "dev1"); ok {
+		t.Fatal("re-adding a device restored its old token")
+	}
+	if _, err := e.srv.AddDevice(ctx, "dev1", "不能覆盖"); err == nil {
+		t.Fatal("an active device ID must still be refused")
+	}
+	if _, err := e.st.RestoreDevice(ctx, "dev1", "不能覆盖"); err == nil {
+		t.Fatal("restore must not overwrite an active device")
+	}
+	freshToken, err := e.srv.GenerateDeviceToken(ctx, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.srv.authorizeDevice(request, "dev1"); ok {
+		t.Fatal("old token accepted after fresh pairing")
+	}
+	request.Header.Set("X-Device-Token", freshToken.Token)
+	if device, ok := e.srv.authorizeDevice(request, "dev1"); !ok || device.Name != "书房" {
+		t.Fatal("fresh token should authorize the re-added board with its new name")
 	}
 }
 

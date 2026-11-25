@@ -23,7 +23,7 @@ const (
 	sessionUser   = "owner"
 	sessionTTL    = 30 * 24 * time.Hour
 
-	// Argon2id parameters from docs/PLAN.md §5.1.
+	// Argon2id parameters for password hashing.
 	argonMemory  = 64 * 1024
 	argonTime    = 3
 	argonThreads = 2

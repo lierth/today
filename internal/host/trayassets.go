@@ -8,14 +8,8 @@ import (
 	_ "embed"
 )
 
-//go:embed assets/tray.png
-var trayPNG []byte
-
 //go:embed assets/tray@2x.png
 var tray2xPNG []byte
-
-//go:embed assets/tray-alert.png
-var trayAlertPNG []byte
 
 //go:embed assets/tray-alert@2x.png
 var trayAlert2xPNG []byte

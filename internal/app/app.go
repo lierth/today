@@ -108,10 +108,6 @@ func Boot(ctx context.Context, cfg Config) (*App, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := st.EnsureDevice(ctx, "dev1", "桌面显示屏"); err != nil {
-		_ = st.Close()
-		return nil, "", err
-	}
 	srv, err := server.New(st, server.Config{
 		Addr: cfg.Addr, DataDir: filepath.Dir(cfg.DBPath), Dev: cfg.Dev,
 		Logger: cfg.Logger, FallbackPort: cfg.FallbackPort,

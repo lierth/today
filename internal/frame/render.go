@@ -9,7 +9,7 @@ import (
 )
 
 // supersample is the rendering scale: text is drawn at 2x and box-filtered
-// down to the 1-bit panel bitmap (docs/PLAN.md §6).
+// down to the 1-bit panel bitmap.
 const supersample = 2
 
 const blackLevel = 140

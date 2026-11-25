@@ -21,13 +21,17 @@
      window is opaque and keeps the ordinary 1px border. */
   .card {
     background: var(--card);
-    border-radius: 12px;
+    border-radius: var(--radius-surface);
     overflow: hidden;
     box-shadow: inset 0 0 0 1px var(--line-2);
   }
   :global(:root[data-window='settings']) .card {
     box-shadow: none;
     border: 1px solid var(--line);
+  }
+  :global(:root[data-window='settings']) h2 {
+    padding-left: 12px;
+    padding-right: 12px;
   }
   h2 {
     margin: 0;

@@ -133,6 +133,13 @@ int ClockTextX(int clockX, int clockW, int scale) {
   return x;
 }
 
+int ClockScale(int width, int height) {
+  int scale = width / 30;
+  if (scale > height / font::kGlyphHeight) scale = height / font::kGlyphHeight;
+  if (scale > 7) scale = 7;
+  return scale < 1 ? 1 : scale;
+}
+
 int BannerTextY(int y, int height, int scale) {
   const int top = y + (height - font::kGlyphHeight * scale) / 2;
   return top < y ? y : top;
@@ -155,6 +162,23 @@ void DrawPortal(uint8_t* out, const char* ssid, const char* password, const char
 
   DrawString(out, 16, kHeight - 72, url != nullptr ? url : "", 2);
   DrawString(out, 16, kHeight - 24, "THE SCREEN CLOSES ON ITS OWN", 1);
+}
+
+void DrawPairing(uint8_t* out, const char* id, const char* code) {
+  if (out == nullptr) return;
+  memset(out, 0xFF, kBytes);
+  Fill(out, 0, kHeaderHeight - 1, kWidth, 1, true);
+  DrawString(out, 16, 12, "PAIR WITH TODAY", 3);
+  const char* instruction = "ENTER THIS CODE IN THE MAC APP";
+  DrawString(out, (static_cast<int>(kWidth) - TextWidth(instruction, 1)) / 2, 78, instruction, 1);
+  char grouped[8] = {};
+  if (code != nullptr && strlen(code) == 6) snprintf(grouped, sizeof(grouped), "%.3s %.3s", code, code + 3);
+  DrawString(out, (static_cast<int>(kWidth) - TextWidth(grouped, 6)) / 2, 116, grouped, 6);
+  char label[24];
+  const size_t length = id != nullptr ? strlen(id) : 0;
+  snprintf(label, sizeof(label), "TODAY - %s", length >= 6 ? id + length - 6 : "");
+  DrawString(out, (static_cast<int>(kWidth) - TextWidth(label, 2)) / 2, 202, label, 2);
+  DrawString(out, 16, kHeight - 24, "BOOT 3S: NEW CODE    KEY 3S: WI-FI", 1);
 }
 
 void DrawBoot(uint8_t* out, const char* version) {

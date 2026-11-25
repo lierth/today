@@ -130,7 +130,7 @@ func TestSoundPolicy(t *testing.T) {
 }
 
 // A preview is per device and one-shot, and it must not touch the settings
-// table (PLAN §9: GET never writes).
+// table: GET never writes.
 func TestPreviewIsPerDeviceAndOneShot(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()

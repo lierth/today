@@ -86,6 +86,20 @@ func TestPanelTodayShape(t *testing.T) {
 	}
 }
 
+func TestTrayProgressUsesDoneOverTotalWithEvenSpacing(t *testing.T) {
+	h, _, st := newPanelEnv(t)
+	ctx := context.Background()
+	h.settings = map[string]string{"tray_mode": "progress"}
+	for _, status := range []string{store.StatusDone, store.StatusOpen} {
+		if _, err := st.CreateItem(ctx, store.Item{Title: "事项", AllDay: true, Status: status}, time.UTC); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.title(); got != "1 / 2" {
+		t.Fatalf("tray progress = %q, want 1 / 2", got)
+	}
+}
+
 func TestPanelSetDoneAndAdd(t *testing.T) {
 	_, p, _ := newPanelEnv(t)
 	ctx := context.Background()

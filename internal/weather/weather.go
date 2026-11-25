@@ -1,10 +1,4 @@
 // Package weather fetches a one-day forecast from WeatherAPI.com.
-//
-// There is deliberately one provider: the free tier covers 100,000 calls a
-// month (five years of 30-minute refreshes) and its `q` parameter already
-// accepts a city name, an IP address or `auto:ip`, so no separate geocoding or
-// IP-location service is needed. See docs/PLAN.md §7 and
-// .tmp/omp-report-hw7.md for the verified docs links.
 package weather
 
 import "time"

@@ -8,8 +8,8 @@
 }
 
 :root[data-window='settings'] {
-  --row: 48px;
-  --ctl: 28px;
+  --row: 44px;
+  --ctl: 26px;
 }
 
 * {
@@ -52,7 +52,26 @@ label,
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  border-radius: 4px;
+}
+
+button,
+select,
+summary {
+  cursor: default;
+}
+
+a[href] {
+  cursor: pointer;
+}
+
+input:not([type='range']):not([type='checkbox']):not([type='radio']),
+textarea,
+[contenteditable='true'] {
+  cursor: text;
+}
+
+:disabled {
+  cursor: default;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -78,10 +97,9 @@ body {
   background: var(--bg);
 }
 
-/* A settings window has a solid background from its own WindowOptions; the
-   tint would double up on it. */
+/* The settings surface follows the selected theme before the window appears. */
 :root[data-window='settings'] body {
-  background: transparent;
+  background: var(--bg);
 }
 
 /* Values and messages may be selected; controls may not (they are buttons). */

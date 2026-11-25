@@ -1,3 +1,4 @@
+import { useConfirm, ActionCancelled } from '@/components/Confirm';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api, type UndoPath } from './api';
@@ -89,6 +90,7 @@ export function useRefreshLists() {
       // old in the two places that are nothing but a view of the same row.
       client.invalidateQueries({ queryKey: ['search'] }),
       client.invalidateQueries({ queryKey: ['item'] }),
+      client.invalidateQueries({ queryKey: ['trash'] }),
     ]);
   };
 }
@@ -153,18 +155,26 @@ export function useToggleDone() {
 }
 
 export function useDeleteItem() {
+  const confirm = useConfirm();
   const refresh = useRefreshLists();
   const undo = useUndo();
   return useMutation({
-    mutationFn: (id: string) => api.remove(id),
+    mutationFn: async (id: string) => {
+      if (!(await confirm('删除事项？', '将移入回收站，3 天内可以恢复。')))
+        throw new ActionCancelled();
+      return api.remove(id);
+    },
     onSuccess: async (out) => {
       await refresh();
       toast('已删除', {
-        description: '还可以撤销。',
+        description: '已移入回收站，保留 3 天。',
         action: { label: '撤销', onClick: () => void undo(out.undo, '已恢复') },
       });
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : String(err)),
+    onError: (err) => {
+      if (!(err instanceof ActionCancelled))
+        toast.error(err instanceof Error ? err.message : String(err));
+    },
   });
 }
 

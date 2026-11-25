@@ -60,8 +60,8 @@ var KnownSettings = []string{
 func DefaultSettings() map[string]string {
 	return map[string]string{
 		"open_at_login":            "false",
-		"tray_title":               "true",
-		"tray_mode":                "progress",
+		"tray_title":               "false",
+		"tray_mode":                "icon",
 		"timezone":                 time.Local.String(),
 		"funnel":                   "false",
 		"funnel_host":              "",

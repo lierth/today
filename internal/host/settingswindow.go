@@ -35,6 +35,7 @@ func (h *Host) openSettings(tab string) {
 		BackgroundColor: "light-dark(#f4f4f6, #1a1a1e)",
 		AutoHideMenuBar: true,
 		StateKey:        "settings",
+		Hidden:          true,
 	})
 	// The callback fires after a slow close; only clear the field when it
 	// still points at this window, or a fast reopen would be forgotten.

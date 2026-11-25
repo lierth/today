@@ -28,7 +28,7 @@ import (
 )
 
 // Keep is how many snapshots each destination retains.
-const Keep = 14
+const Keep = 7
 
 // ScrubbedKeys are blanked in every snapshot. Keep this list explicit: a
 // wildcard would silently start stripping future keys that need to survive.
@@ -171,6 +171,41 @@ func Prune(dir string, keep int, prefix string) error {
 			continue
 		}
 		_ = os.Remove(filepath.Join(dir, name))
+	}
+	return nil
+}
+
+// PruneExpired applies the seven-day window even when backups were not daily.
+func PruneExpired(dir string, now time.Time) error {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cutoff := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -6)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		expired := false
+		if DailySnapshotRe.MatchString(name) {
+			day, err := time.ParseInLocation("20060102", name[6:14], now.Location())
+			expired = err == nil && day.Before(cutoff)
+		} else if strings.HasPrefix(name, "today-before-restore-") && (strings.HasSuffix(name, ".db") || strings.HasSuffix(name, ".db.gz")) {
+			info, err := entry.Info()
+			expired = err == nil && info.ModTime().Before(now.AddDate(0, 0, -7))
+		}
+		if expired {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

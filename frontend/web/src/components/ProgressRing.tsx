@@ -27,7 +27,7 @@ export function ProgressRing({
       role="img"
       aria-label={`今天完成 ${done} / ${total}`}
     >
-      <svg width={size} height={size} className="-rotate-90">
+      <svg width={size} height={size} className="-rotate-90" aria-hidden="true">
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -50,7 +50,7 @@ export function ProgressRing({
         />
       </svg>
       <span
-        className="absolute tabular-nums text-[var(--fg)]"
+        className="absolute inset-0 flex items-center justify-center leading-none tabular-nums text-[var(--fg)]"
         style={{ fontSize: size >= 40 ? 12 : 9.5, fontWeight: 560 }}
       >
         {done}/{total}

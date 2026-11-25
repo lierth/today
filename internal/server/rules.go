@@ -115,14 +115,14 @@ func previewDevice(devices []store.Device) string {
 	return ""
 }
 
-func setupCommands(base, token string) []string {
+func setupCommands(base, id, token string) []string {
 	if token == "" {
 		return nil
 	}
 	return []string{
 		"wifi <SSID> <password>",
 		"server " + base,
-		"device dev1",
+		"device " + id,
 		"token " + token,
 	}
 }

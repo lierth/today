@@ -249,7 +249,7 @@ cmd_provision() {
   local port
   port="$(pick_port)"
   printf 'Using %s\n' "$port"
-  printf 'Tap RESET (or replug USB) now; the firmware opens a 10-minute serial window on a cold boot.\n'
+  printf 'Long-press PWR to power off, then click PWR to power on without holding BOOT; an unconfigured board opens a 10-minute serial window.\n'
   read -r -p 'Press Enter once the banner "Today firmware" appears…' _ || true
 
   # termios only: 115200 8N1, raw, no echo. No new dependency.

@@ -22,6 +22,7 @@
 #include "net.h"
 #include "night.h"
 #include "portal.h"
+#include "pairing.h"
 #include "audio.h"
 #include "portal_plan.h"
 #include "sound_policy.h"
@@ -52,6 +53,7 @@
 namespace {
 
 storage::Config cfg;
+bool ServicePairing();
 tbf::Frame frame;
 uint8_t base[(board::kWidth / 8) * board::kHeight];   // server bitmap
 uint8_t work[(board::kWidth / 8) * board::kHeight];   // base + local overlays
@@ -178,6 +180,8 @@ void CaptureFrame() {
   for (uint8_t i = 0; i < rowCount; i++) rows[i] = frame.rows[i];
   memcpy(base, frame.bitmap, sizeof(base));
   haveFrame = true;
+  Serial.printf("display: layout=%s rows=%u\n",
+                (frame.flags & tbf::kFlagFocus) ? "focus" : "list", rowCount);
 
   // Follow the item by id; fall back to clamping when it disappeared (done
   // items stay listed, but a deleted item or a +N summary row may not).
@@ -194,6 +198,7 @@ void CaptureFrame() {
   } else if (cursorRow >= rowCount) {
     cursorRow = rowCount - 1;
   }
+  if (rowCount > 0 && (rows[cursorRow].flags & tbf::kRowSummary)) cursorRow = 0;
   storage::SaveCursor(cursorRow);
   // Pending operations belong to IDs, so a server reorder cannot move a check.
   RebuildDoneMask();
@@ -207,13 +212,15 @@ void ComposeLocal() {
   if (!haveFrame) return;
   memcpy(work, base, sizeof(work));
   rowstate::Apply(work, rows, rowCount, doneMask, cursorRow,
-                  frame.width ? frame.contentX : 16, board::kRowHeight);
+                  frame.width ? frame.contentX : 16, board::kRowHeight,
+                  (frame.flags & tbf::kFlagFocus) != 0);
 }
 
 // PushPanel sends the composed bitmap and the widgets. In night mode the
 // contents still go to the controller RAM, but the panel stays dark: no
 // DISPON and `screenOff` is left untouched.
 void PushPanel() {
+  if (pairing::Active()) return;
   if (!haveFrame) return;
   display::ShowFrame(work);
   DrawWidgets();
@@ -251,6 +258,7 @@ void DrawWidgets() {
 // Paint repaints from cache (no fetch) and lights the panel. Only the key
 // wake-up and the end of the night window call it.
 void Paint() {
+  if (pairing::Active()) return;
   if (!haveFrame) return;
   nightDark = false;
   screenOff = false;
@@ -449,7 +457,10 @@ void ApplyFrame(const net::FetchResult& res) {
     storage::SaveSound(res.sound);
     sound::ParsePolicy(res.sound.c_str(), &soundPolicy);
   }
-  if (res.soundPreview) PlayCue(sound::Cue::kCheck);
+  if (res.soundPreview) {
+    Serial.println("audio: preview received");
+    PlayCue(sound::Cue::kAlarm);
+  }
 }
 
 // Fetch refreshes from the server. During night mode the fresh bitmap is
@@ -477,6 +488,7 @@ void Fetch(bool repaintAlways) {
 
 // PlayCue renders and queues one cue. Volume 0 or a busy output drops it.
 void PlayCue(sound::Cue cue) {
+  if (audio::Busy()) return;
   size_t cap = 0;
   int16_t* buf = audio::Scratch(&cap);
   if (buf == nullptr || cap == 0) return;
@@ -499,15 +511,18 @@ void RingAlarm() {
 // PaintAlarmBanner draws the inverted band under the header line, the same
 // style the WIFI LOST banner uses, so a reminder never disturbs the row list.
 void PaintAlarmBanner() {
+  if (pairing::Active()) return;
   if (!haveFrame) return;
   display::ShowFrame(work);
   DrawWidgets();
-  const int y = 44;  // frame.HeaderHeight: the band sits right under the date
+  const bool focus = (frame.flags & tbf::kFlagFocus) != 0;
+  const int y = focus ? board::kHeight - frame.footerHeight : frame.headerHeight;
   // The text is ASCII on purpose: the device font has no CJK, so the reminder
   // reads as a time band rather than the item's Chinese title. Same strip as
   // the lost-Wi-Fi banner, inverted.
-  widgets::DrawBanner(y, board::kRowHeight, "ALARM - PRESS ANY KEY", 1, true);
-  if (lostBannerShown) PaintWifiLostOverlay();
+  widgets::DrawBanner(y, focus ? frame.footerHeight : board::kRowHeight,
+                      "ALARM - PRESS ANY KEY", focus ? 2 : 1, true);
+  if (lostBannerShown && !focus) PaintWifiLostOverlay();
   display::Flush();
   if (!nightDark) display::On();
 }
@@ -537,6 +552,11 @@ void HandleKeys() {
     return;
   }
 
+  if (key == board::kPinBoot && held >= board::kProvisionHoldMs) {
+    pairing::Open();
+    return;
+  }
+
   // A ringing alarm: this press only silences it, exactly like the night
   // window's first press only lights the panel.
   if (alarmUntilMs != 0) {
@@ -547,6 +567,7 @@ void HandleKeys() {
     lastKeyAt = millis();
     return;
   }
+  if (pairing::Active()) return;
 
   // Night: the first press only lights the board. In the dark the same press
   // must not also move the cursor or toggle a row.
@@ -596,7 +617,7 @@ void HandleKeys() {
   }
 
   if (rowCount == 0) return;
-  cursorRow = static_cast<uint8_t>((cursorRow + 1) % rowCount);
+  cursorRow = rowstate::Next(rows, rowCount, cursorRow);
   storage::SaveCursor(cursorRow);
   // Local only: moving the cursor must not need a request or touch the ETag.
   ComposeLocal();
@@ -670,6 +691,8 @@ WindowExit SerialWindow(uint32_t windowMs) {
   bool keyWasDown = false;
   bool bootWasDown = false;
   uint32_t keyDownAt = 0;
+  uint32_t bootDownAt = 0;
+  bool bootHoldConsumed = false;
   // The station runs here too. A board with Wi-Fi but no server/token spends
   // this window waiting for a person, and an earlier version simply blocked:
   // the radio never got a begin(), so the serial log showed no connection
@@ -683,6 +706,8 @@ WindowExit SerialWindow(uint32_t windowMs) {
       lastStaAt = millis();
       net::EnsureSta(cfg);
     }
+    ServicePairing();
+    if (!cfg.server.isEmpty() && !cfg.token.isEmpty()) return WindowExit::Ready;
     if (!cfg.wifiSsid.isEmpty()) {
       const int status = WiFi.status();
       if (status != lastStaStatus) {
@@ -706,6 +731,12 @@ WindowExit SerialWindow(uint32_t windowMs) {
     // Edge log: the one way to tell "not pressed" from "pressed but not read".
     if (keyDown != keyWasDown) DEBUG_LOG("keys: KEY %s\n", keyDown ? "down" : "up");
     if (bootDown != bootWasDown) DEBUG_LOG("keys: BOOT %s\n", bootDown ? "down" : "up");
+    if (bootDown && !bootWasDown) bootDownAt = millis();
+    if (bootDown && !bootHoldConsumed && millis() - bootDownAt >= board::kProvisionHoldMs) {
+      pairing::Open();
+      bootHoldConsumed = true;
+    }
+    if (!bootDown) bootHoldConsumed = false;
     bootWasDown = bootDown;
     if (keyDown && !keyWasDown) keyDownAt = millis();
     if (keyDown && millis() - keyDownAt >= board::kProvisionHoldMs) {
@@ -727,6 +758,36 @@ WindowExit SerialWindow(uint32_t windowMs) {
     delay(10);
   }
   return WindowExit::Timeout;
+}
+
+bool ServicePairing() {
+  static String painted;
+  pairing::Loop(!cfg.server.isEmpty() && !cfg.token.isEmpty(), portal::Active());
+  if (pairing::TakeConfigured()) {
+    cfg = storage::LoadConfig();
+    etag = "";
+    storage::SaveETag("");
+    storage::SetForceFull(true);
+    lastFrameAt = 0;
+    painted = "";
+    PaintMessage("CONNECTED", "OPEN TODAY ON YOUR MAC", "LOADING YOUR SCHEDULE");
+  }
+  if (pairing::Active() && net::Connected() && !portal::Active()) {
+    const String code = pairing::Code();
+    if (painted != code) {
+      screens::DrawPairing(work, pairing::ID().c_str(), code.c_str());
+      ShowScreensBitmap(work);
+      display::Flush();
+      display::On();
+      nightDark = false;
+      screenOff = false;
+      painted = code;
+    }
+    return true;
+  }
+  if (!painted.isEmpty() && !portal::Active()) { painted = ""; Paint(); }
+  if (portal::Active()) painted = "";
+  return false;
 }
 
 // The hotspot runs inside loop(); nothing here waits. A submitted form still
@@ -801,7 +862,9 @@ void PaintWifiLostOverlay() {
   } else {
     wifista::Banner(detail, line, sizeof(line));
   }
-  widgets::DrawBanner(284, 16, line, 1, true);
+  const bool focus = (frame.flags & tbf::kFlagFocus) != 0;
+  widgets::DrawBanner(focus ? board::kHeight-frame.footerHeight : 284,
+                      focus ? frame.footerHeight : 16, line, focus ? 2 : 1, true);
 }
 
 void PaintWifiLost() {
@@ -942,6 +1005,8 @@ void setup() {
     memcpy(base, frame.bitmap, sizeof(base));
     rowCount = frame.rowCount;
     for (uint8_t i = 0; i < rowCount; i++) rows[i] = frame.rows[i];
+    Serial.printf("display: cached layout=%s rows=%u\n",
+                  (frame.flags & tbf::kFlagFocus) ? "focus" : "list", rowCount);
   } else if (cached == sizeof(base) && memcmp(wire, "TBF1", 4) != 0) {
     // The first upgrade can still show the old raw bitmap until it reconnects.
     memcpy(base, wire, sizeof(base));
@@ -963,14 +1028,14 @@ void setup() {
     PaintMessage("WAITING", "1. THE BOARD POLLS EVERY MINUTE", "2. KEY 3S TO SET UP WI-FI");
   }
 
+  pairing::Begin();
   if (!storage::Configured() && !cfg.wifiSsid.isEmpty()) {
     // The network is set up; the account is not. The board cannot fetch a
     // frame until the Mac hands it a server address and token, so say that
     // instead of the "polls every minute" line, which would be a lie.
     Serial.printf("setup: wifi saved (%s), no server/token yet - add the device in the Mac app\n",
                   cfg.wifiSsid.c_str());
-    const String step = String("2. ADD DEVICE ") + cfg.device;
-    PaintMessage("ADD THIS DEVICE", "1. OPEN TODAY ON YOUR MAC", step.c_str());
+    PaintMessage("CONNECTING WI-FI", "OPEN TODAY ON YOUR MAC", "PAIR WITH THE CODE ON THIS SCREEN");
   }
 
   if (!storage::Configured()) {
@@ -984,7 +1049,7 @@ void setup() {
         StartPortal(true);
         break;
       case WindowExit::Timeout:
-        PaintMessage("NO WI-FI", "1. HOLD KEY FOR 3 SECONDS", "2. OR TYPE setup OVER SERIAL");
+        if (!net::Connected()) PaintMessage("NO WI-FI", "1. HOLD KEY FOR 3 SECONDS", "2. OR TYPE setup OVER SERIAL");
         break;
     }
   }
@@ -1082,6 +1147,8 @@ void loop() {
     }
   }
 
+  const bool pairingScreen = ServicePairing();
+
   // Reminders: local clock, cached list, no network needed. The check is
   // cheap and runs every tick so an alarm fires within ~20 ms of its second.
   audio::Loop();
@@ -1115,6 +1182,8 @@ void loop() {
       }
     }
   }
+
+  if (pairingScreen) { HandleKeys(); delay(20); return; }
 
   // The hotspot is serviced on every tick, never in its own blocking loop.
   if (ServicePortal()) return;

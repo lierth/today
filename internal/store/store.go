@@ -220,6 +220,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE); CREATE TABLE IF NOT EXISTS series_exclusions (series_id TEXT NOT NULL, date_local TEXT NOT NULL, PRIMARY KEY(series_id,date_local))`); err != nil {
+		return err
+	}
+	if version < 5 {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE items ADD COLUMN category_id TEXT REFERENCES categories(id) ON DELETE SET NULL`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("store: migrate category: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

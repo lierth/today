@@ -35,8 +35,11 @@ func TestBootAndRestart(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
 		t.Fatalf("healthz: %d %q", resp.StatusCode, body)
 	}
-	if _, err := a.Store.Device(ctx, "dev1"); err != nil {
-		t.Fatalf("default device missing: %v", err)
+	if devices, err := a.Store.Devices(ctx); err != nil || len(devices) != 0 {
+		t.Fatalf("first boot must not invent a device: %v, %v", devices, err)
+	}
+	if _, err := a.Store.CreateDevice(ctx, "today-aabbccddeeff", "书房", "paired-token-hash"); err != nil {
+		t.Fatal(err)
 	}
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
@@ -50,8 +53,11 @@ func TestBootAndRestart(t *testing.T) {
 	if pw2 != "" {
 		t.Fatalf("password regenerated on restart: %q", pw2)
 	}
-	if v, _ := a2.Server.Settings(ctx); v["tray_title"] != "true" {
-		t.Fatalf("default settings missing: %v", v)
+	if devices, err := a2.Store.Devices(ctx); err != nil || len(devices) != 1 || devices[0].ID != "today-aabbccddeeff" {
+		t.Fatalf("paired device did not survive restart: %v, %v", devices, err)
+	}
+	if v, _ := a2.Server.Settings(ctx); v["tray_mode"] != "icon" || v["tray_title"] != "false" {
+		t.Fatal("icon-only menu bar default did not survive restart")
 	}
 }
 

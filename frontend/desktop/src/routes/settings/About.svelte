@@ -28,17 +28,6 @@
     }
   }
 
-  async function openSource() {
-    // A source build has no repository stamped in, so the card shows the
-    // sentence without a button and this cannot run for one.
-    if (!data.source_url) return;
-    try {
-      await Panel.openURL(data.source_url);
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-  }
-
   async function download() {
     try {
       await Panel.downloadUpdate();
@@ -120,13 +109,10 @@
   </Card>
 
   <Card title="关于">
-    <Row
-      label="开源"
-      hint={data.source_url || '源码、更新源与文档都在 GitHub 上（这个构建没有写入仓库地址）'}
-    >
-      {#if data.source_url}
-        <button type="button" class="btn" onclick={openSource}>打开</button>
-      {/if}
+    <Row label="开源">
+      <span class="source-url">
+        {data.source_url || 'https://github.com/lierth/today'}
+      </span>
     </Row>
     <Row label={data.data_root} hint={data.data_note || '数据库与备份都放在这里'} stacked />
   </Card>
@@ -137,6 +123,13 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+  }
+  .source-url {
+    color: var(--fg-2);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    user-select: text;
+    cursor: text;
   }
   .hero {
     display: flex;
@@ -170,7 +163,11 @@
     font-variant-numeric: tabular-nums;
   }
   .btn {
-    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--ctl);
     padding: 0 10px;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -178,9 +175,9 @@
     color: var(--fg);
     font: inherit;
     font-size: 11.5px;
-    cursor: pointer;
+    cursor: default;
   }
-  .btn:hover {
+  .btn:hover:not(:disabled) {
     background: var(--pill);
   }
   .btn.primary {
@@ -197,7 +194,7 @@
     cursor: default;
   }
   input {
-    height: 25px;
+    height: var(--ctl);
     max-width: 220px;
     padding: 0 6px;
     border: 1px solid var(--line);

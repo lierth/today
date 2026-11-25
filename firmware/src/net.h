@@ -16,6 +16,9 @@ namespace net {
 // provisioning hotspot is up.
 void EnsureSta(const storage::Config& cfg);
 
+// Pause station retries for scanning and form entry without stopping the AP.
+void PauseStation(bool paused);
+
 // LastDisconnectReason is the ESP-IDF reason of the most recent drop (0 when
 // the link is up or nothing has failed yet). It lives in RAM: a reboot has no
 // story to tell, and the panel reads it within the same power cycle.

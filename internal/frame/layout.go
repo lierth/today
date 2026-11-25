@@ -3,36 +3,32 @@ package frame
 import (
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/image/font"
 )
 
-// Typography (logical pixels; docs/PLAN.md §6).
+// Typography (logical pixels).
 const (
 	bodyFontSize   = 18
 	dateFontSize   = 20
 	headerFontSize = 13 // second header line: lunar + progress
 	timeFontSize   = 14
-	emptyHintFont  = 14
 
-	timeColumnWidth = 56
+	timeColumnWidth = 44
 	gutterWidth     = 10
-	gutterGap       = 8
+	gutterGap       = 11
 	timeGap         = 8
 
-	maxRows = 10
+	maxRows = 8
 
-	// headerWidth is the room the second header line has before the widgets
-	// (which start at x=224). The widgets are the real
-	// limit, so the line may use up to their left edge minus a small gap.
-	headerWidth = 196
+	// Keep the date and lunar line clear of the right-aligned clock.
+	headerWidth = 252
 )
 
-// BoardRowLimit is how many of a day's rows can appear on the panel. Past it
-// the last visible row becomes "+N 项", so a list of exactly this many still
-// fits without a summary row.
+// BoardRowLimit includes the overflow summary when the day has more rows.
 const BoardRowLimit = maxRows
 
 // Item is one row of the board.
@@ -70,17 +66,18 @@ type Input struct {
 	Weather     Weather // zero value = no weather on the header line
 }
 
-// Build lays out and renders in deterministically. Items are expected in
-// display order; more than ten are folded into a "+N 项" row.
+// Build renders equally sized rows in chronological order.
 func Build(in Input) (*Frame, error) {
-	// One render at a time: the faces are shared and their Metrics/Glyph
-	// calls use an internal buffer that is not safe for concurrent use.
 	defer lockRender()()
 	body, err := faceAt(px(bodyFontSize))
 	if err != nil {
 		return nil, err
 	}
-	header, err := faceAt(px(headerFontSize))
+	date, err := faceAt(px(dateFontSize))
+	if err != nil {
+		return nil, err
+	}
+	small, err := faceAt(px(headerFontSize))
 	if err != nil {
 		return nil, err
 	}
@@ -88,82 +85,55 @@ func Build(in Input) (*Frame, error) {
 	if err != nil {
 		return nil, err
 	}
-	hint, err := faceAt(px(emptyHintFont))
-	if err != nil {
-		return nil, err
-	}
-
 	c := newCanvas(Width, Height)
 	f := NewFrame()
 	if in.ForceFull {
 		f.Flags |= FlagForceFull
 	}
-
-	date, err := faceAt(px(dateFontSize))
-	if err != nil {
-		return nil, err
-	}
-	drawHeader(c, date, header, in)
-	c.hlineLogical(0, Width, HeaderHeight, 1, 0)
-
-	items := in.Items
-	summary := 0
-	if len(items) > maxRows {
-		summary = len(items) - (maxRows - 1)
-		items = items[:maxRows-1]
-	}
-	hasTime := false
-	for _, it := range items {
-		if it.Carried || (it.StartsAt != nil && !it.AllDay) {
-			hasTime = true
-			break
+	f.CursorStyle = CursorStyleFocus
+	drawHeader(c, date, small, in)
+	c.hlineLogical(16, Width-16, HeaderHeight, 1, 0)
+	c.hlineLogical(16, Width-16, Height-FooterHeight, 1, 0)
+	items := append([]Item(nil), in.Items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		aTimed, bTimed := a.StartsAt != nil && !a.AllDay, b.StartsAt != nil && !b.AllDay
+		if aTimed != bTimed {
+			return !aTimed
+		}
+		return aTimed && a.StartsAt.Before(*b.StartsAt)
+	})
+	if len(items) == 0 {
+		f.Widgets[0] = Widget{Kind: WidgetClock, X: 98, Y: 100, W: 210, H: 56}
+		drawEmpty(c, body, "今天没有事项")
+	} else {
+		visible := min(len(items), maxRows)
+		if len(items) > maxRows {
+			visible--
+		}
+		for i := 0; i < visible; i++ {
+			item := items[i]
+			item.Pinned = false
+			y := 72 + i*RowHeight
+			var flags uint8
+			if item.Done {
+				flags = RowFlagDone
+			}
+			f.Rows = append(f.Rows, Row{UUID: parseUUID(item.ID), Y: uint16(y), Flags: flags, Height: RowHeight})
+			drawItemRow(c, body, timeFace, item, true, in.CursorRow == i, CursorStyleFocus, y)
+		}
+		if hidden := len(items) - visible; hidden > 0 {
+			y := 72 + visible*RowHeight
+			f.Rows = append(f.Rows, Row{Y: uint16(y), Flags: RowFlagSummary, Height: RowHeight})
+			drawSummaryRow(c, body, hidden, y, true, false, CursorStyleFocus)
 		}
 	}
-
-	rows := make([]Row, 0, maxRows)
-	rowCount := len(items)
-	if summary > 0 {
-		rowCount++
-	}
-	for i, it := range items {
-		y := HeaderHeight + i*RowHeight
-		flags := uint8(0)
-		if it.Done {
-			flags |= RowFlagDone
-		}
-		rows = append(rows, Row{UUID: parseUUID(it.ID), Y: uint16(y), Flags: flags})
-		cursor := in.CursorRow == i
-		drawItemRow(c, body, timeFace, it, hasTime, cursor, in.CursorStyle, y)
-	}
-	if summary > 0 {
-		i := rowCount - 1
-		y := HeaderHeight + i*RowHeight
-		rows = append(rows, Row{Y: uint16(y), Flags: RowFlagSummary})
-		cursor := in.CursorRow == i
-		drawSummaryRow(c, body, summary, y, hasTime, cursor, in.CursorStyle)
-	}
-	if rowCount == 0 {
-		drawEmpty(c, body, hint)
-	} else {
-		legend := sanitize("KEY 下一项 · 长按勾选 · BOOT 刷新")
-		c.text(hint, legend, px(ContentX), baseline(hint, 284, 16), 0)
-	}
-
-	if in.CursorRow < 0 || in.CursorRow >= rowCount {
-		f.CursorRow = CursorNone
-	} else {
+	if in.CursorRow >= 0 && in.CursorRow < len(f.Rows) && f.Rows[in.CursorRow].Flags&RowFlagSummary == 0 {
 		f.CursorRow = uint8(in.CursorRow)
 	}
-	f.CursorStyle = in.CursorStyle
-	f.Rows = rows
-	// The v2 board has two keys: KEY (GPIO18) short = next row, KEY long =
-	// toggle, BOOT (GPIO0) short = forced refresh. The footer strip is not
-	// drawn, but the bindings stay in the frame so the firmware is
-	// layout-agnostic.
-	f.Footer = []Footer{
-		{GPIO: 18, Action: ActionDown},
-		{GPIO: 18, Action: ActionLongOK},
-		{GPIO: 0, Action: ActionRefresh},
+	f.Footer = []Footer{{GPIO: 18, Action: ActionDown}, {GPIO: 18, Action: ActionLongOK}, {GPIO: 0, Action: ActionRefresh}}
+	for _, w := range f.Widgets {
+		c.fillLogical(int(w.X), int(w.Y), int(w.X+w.W), int(w.Y+w.H), 0xFF)
 	}
 	f.Bitmap = c.bitmap(Width, Height)
 	encoded, err := f.Encode()
@@ -178,8 +148,8 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 	// Line 1: 11月18日 周三, 20 px bold.
 	// Use the weekday that belongs to "today", not the locale's week start.
 	line1 := fmt.Sprintf("%d月%d日 %s", int(in.Now.Month()), in.Now.Day(), weekdayZH(in.Now.Weekday()))
-	line1 = truncate(date, sanitize(line1), px(200))
-	c.textBold(date, line1, px(ContentX), baseline(date, 0, 24), 0)
+	line1 = truncate(date, sanitize(line1), px(headerWidth))
+	c.textBold(date, line1, px(16), baseline(date, 8, 24), 0)
 
 	// Line 2: 农历十月廿八 · 小雪 · 2/6, 13 px.
 	lunar := LunarFor(in.Now)
@@ -225,16 +195,7 @@ func drawHeader(c *canvas, date, small font.Face, in Input) {
 		}
 	}
 	line2 = truncate(small, line2, px(headerWidth))
-	c.text(small, line2, px(ContentX), baseline(small, 22, 18), 0)
-	if len(in.Items) > 0 {
-		c.fillLogical(ContentX, 41, ContentX+headerWidth*done/len(in.Items), 43, 0)
-	}
-
-	// Widget rectangles are left blank in the real frame; the preview fills
-	// them with sample values (drawWidgetSamples).
-	for _, w := range WidgetRects {
-		c.fillLogical(int(w.X), int(w.Y), int(w.X+w.W), int(w.Y+w.H), 0xFF)
-	}
+	c.text(small, line2, px(16), baseline(small, 34, 18), 0)
 }
 
 // fits reports whether s can be drawn in width logical pixels by face.
@@ -262,6 +223,10 @@ func drawItemRow(c *canvas, body, timeFace font.Face, it Item, hasTime, cursor b
 		c.fillLogical(0, y, Width, y+RowHeight, 0)
 		fg = 0xFF
 	}
+	if cursor && style == CursorStyleFocus {
+		c.fillLogical(ContentX-8, y+3, ContentX-5, y+RowHeight-3, 0)
+	}
+
 	drawCheck(c, ContentX, y+(RowHeight-10)/2, it.Done, fg)
 
 	base := baseline(body, y, RowHeight)
@@ -332,7 +297,7 @@ func drawSummaryRow(c *canvas, face font.Face, n, y int, hasTime, cursor bool, s
 	if cursor {
 		c.fillLogical(ContentX, y+3, ContentX+gutterWidth, y+RowHeight-3, fg)
 	}
-	label := fmt.Sprintf("+%d 项", n)
+	label := fmt.Sprintf("还有 %d 项", n)
 	// The summary stands in for the rows that did not fit, so its text starts
 	// where an item title would: one time-column further right than the
 	// gutter. That keeps the left edge straight down the whole list.
@@ -344,19 +309,9 @@ func drawSummaryRow(c *canvas, face font.Face, n, y int, hasTime, cursor bool, s
 		baseline(face, y, RowHeight), fg)
 }
 
-func drawEmpty(c *canvas, body, hint font.Face) {
-	label := "今天没有事项"
+func drawEmpty(c *canvas, body font.Face, label string) {
 	w := font.MeasureString(body, label).Ceil()
-	c.text(body, label, px(Width)/2-w/2, baseline(body, 110, RowHeight), 0)
-
-	// The footer strip is gone; the empty board carries the key legend once.
-	keys, err := faceAt(px(emptyHintFont))
-	if err != nil {
-		keys = hint
-	}
-	line := sanitize("KEY 下一项 · 长按勾选 · BOOT 刷新")
-	kw := font.MeasureString(keys, line).Ceil()
-	c.text(keys, line, px(Width)/2-kw/2, baseline(keys, 160, 20), 0)
+	c.text(body, label, px(Width)/2-w/2, baseline(body, 184, RowHeight), 0)
 }
 
 func baseline(face font.Face, top, height int) int {

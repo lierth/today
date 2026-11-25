@@ -545,14 +545,13 @@ func currentAppPath() string {
 	}
 }
 
-// updateMenuItem is the tray entry: the state machine's current sentence and
-// the action the click performs.
+// updateMenuItem keeps actions compact; detailed state is in the tooltip and settings.
 func (h *Host) updateMenuItem() *mygo.MenuItem {
 	h.mu.Lock()
 	up := h.updater
 	h.mu.Unlock()
-	label := fmt.Sprintf("关于 Today %s · 检查更新…", Version)
-	sub := "Today " + Version
+	label := "检查更新…"
+	tip, badge := "", ""
 	disabled := false
 	var click func(*mygo.MenuItem, *mygo.Window)
 	switch up.State {
@@ -560,17 +559,20 @@ func (h *Host) updateMenuItem() *mygo.MenuItem {
 		label = "正在检查更新…"
 		disabled = true
 	case release.StateAvailable:
-		label = "⬆ 更新到 " + up.Version + "…"
-		sub = clipNotes(up.Notes)
+		label = "下载更新…"
+		tip = strings.TrimSpace(up.Version + "\n" + clipNotes(up.Notes))
 		click = func(*mygo.MenuItem, *mygo.Window) { go h.downloadUpdate() }
 	case release.StateDownloading:
-		label = fmt.Sprintf("正在下载 %s… %d%%", up.Version, up.Progress)
+		label = "正在下载更新…"
+		badge = fmt.Sprintf("%d%%", up.Progress)
+		tip = up.Version
 		disabled = true
 	case release.StateVerifying:
 		label = "正在校验更新…"
 		disabled = true
 	case release.StateReady:
-		label = "重启以更新到 " + up.Version
+		label = "重启并更新"
+		tip = up.Version
 		click = func(*mygo.MenuItem, *mygo.Window) {
 			if err := h.installUpdate(); err != nil {
 				h.notify("无法自动更新", err.Error())
@@ -580,22 +582,19 @@ func (h *Host) updateMenuItem() *mygo.MenuItem {
 		label = "正在安装更新…"
 		disabled = true
 	case release.StateFailed:
-		label = "更新失败，点此重试"
-		sub = up.Err
+		label = "重试更新…"
+		tip = up.Err
 		click = func(*mygo.MenuItem, *mygo.Window) {
 			h.applyUpdateEvent(release.Event{Kind: release.EventReset})
 			go h.beginUpdate()
 		}
 	default:
-		if up.Version != "" {
-			label = "有新版本 " + up.Version
-		}
 		click = func(*mygo.MenuItem, *mygo.Window) { go h.beginUpdate() }
 	}
 	if click == nil && !disabled {
 		click = func(*mygo.MenuItem, *mygo.Window) { go h.beginUpdate() }
 	}
-	item := &mygo.MenuItem{Label: label, Subtitle: sub, Disabled: disabled}
+	item := &mygo.MenuItem{Label: label, ToolTip: tip, Badge: badge, Disabled: disabled}
 	item.Click = click
 	return item
 }

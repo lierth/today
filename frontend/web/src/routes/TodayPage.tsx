@@ -1,12 +1,12 @@
 import { Suspense, lazy, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { CloudSun, MonitorOff, RefreshCw } from 'lucide-react';
+import { CloudSun, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ItemList } from '@/components/ItemList';
 import { Hint } from '@/components/Hint';
 import { ProgressRing } from '@/components/ProgressRing';
-import { QuickAdd } from '@/components/QuickAdd';
+
 import { Snail } from '@/components/Snail';
 import {
   useCarry,
@@ -27,8 +27,8 @@ const ItemDrawer = lazy(() =>
 
 /**
  * Today: the date, the weather, the ring, one list. Everything the board
- * shows is here; the row count that fits the board is marked with a rule so
- * "why is my fourth thing not on the display" answers itself.
+ * shows is here. The focus display collapses completed items and its capacity
+ * varies with the current title, while this page keeps the full editable list.
  */
 export function TodayPage() {
   const [params, setParams] = useSearchParams();
@@ -43,14 +43,8 @@ export function TodayPage() {
   const data = today.data;
   const items = data?.items ?? [];
   const carried = data?.carried ?? [];
-  const boardLimit = data?.board_limit ?? 10;
 
   const movable = useMemo(() => items.filter((item) => item.status !== 'cancelled'), [items]);
-  // The board shows the first `board_limit` rows; the rest live on the page
-  // only, under a labelled rule, so "why is my fourth thing missing" answers
-  // itself without a trip to the settings page.
-  const onBoard = useMemo(() => movable.slice(0, boardLimit), [movable, boardLimit]);
-  const overflow = useMemo(() => movable.slice(boardLimit), [movable, boardLimit]);
 
   const setOpen = (id: string | null) => {
     const next = new URLSearchParams(params);
@@ -85,11 +79,7 @@ export function TodayPage() {
 
   /** The quick-add field is the app's front door; an empty state points at it
       rather than leaving the person to find it. */
-  const focusAdd = () => {
-    const field = document.querySelector<HTMLInputElement>('input[aria-label="添加事项"]');
-    field?.focus();
-  };
-
+  const focusAdd = () => window.dispatchEvent(new Event('today:add'));
   return (
     <div className="flex flex-col gap-5">
       {/* No snail beside the date on a phone: the top bar already carries the
@@ -130,14 +120,9 @@ export function TodayPage() {
         </Hint>
       </header>
 
-      <QuickAdd
-        autoFocus={params.get('focus') === 'add'}
-        onSaved={() => {
-          void today.refetch();
-          if (params.get('focus') === 'add') setOpen(null);
-        }}
-      />
-
+      <Button variant="outline" className="justify-start text-[var(--ctl-fg)]" onClick={focusAdd}>
+        ＋ 添加事项
+      </Button>
       {carried.length > 0 ? (
         <details className="rounded-[12px] border border-[var(--line)] bg-[var(--card-2)] px-3 py-2">
           <summary className="flex cursor-pointer list-none items-center gap-2 text-[12px] text-[var(--muted)]">
@@ -191,17 +176,9 @@ export function TodayPage() {
           <>
             <ItemList
               items={movable}
-              boardCount={onBoard.length}
+              boardCount={movable.length}
               onReorder={(ids) => reorder.mutate(ids)}
               render={(item: Item) => rowProps(item)}
-              divider={
-                overflow.length > 0 ? (
-                  <p className="flex items-center gap-1.5 border-t border-dashed border-[var(--line)] bg-[var(--card-2)] px-3 py-1.5 text-[11px] text-[var(--muted)]">
-                    <MonitorOff className="size-3.5" aria-hidden />
-                    以下 {overflow.length} 项不会显示在板子上
-                  </p>
-                ) : null
-              }
             />
           </>
         )}

@@ -8,6 +8,8 @@
 export type ItemStatus = 'open' | 'done' | 'cancelled';
 
 export interface Item {
+  category_id?: string;
+  deleted_at?: string;
   id: string;
   title: string;
   description?: string;

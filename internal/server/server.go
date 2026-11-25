@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"today/internal/boardlink"
 	"today/internal/config"
 	"today/internal/server/webapp"
 	"today/internal/store"
@@ -119,6 +120,12 @@ type Server struct {
 	tickMu     sync.Mutex
 	tickCancel context.CancelFunc
 	tickDone   chan struct{}
+
+	boardMu   sync.Mutex
+	boards    map[string]boardlink.Board
+	boardScan func(context.Context) ([]boardlink.Board, error)
+	boardHTTP *http.Client
+	pairMu    sync.Mutex
 }
 
 // New wires the router. Call Start to listen.
@@ -544,6 +551,9 @@ func (s *Server) maintain(ctx context.Context) {
 		return
 	}
 	now := s.clock().In(loc)
+	if err := s.st.PurgeTrash(ctx); err != nil {
+		s.log.Printf("server: trash: %v", err)
+	}
 	n, err := s.st.Materialize(ctx, loc, now, 31)
 	if err != nil {
 		s.log.Printf("server: materialize: %v", err)

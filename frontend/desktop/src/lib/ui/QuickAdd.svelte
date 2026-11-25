@@ -4,6 +4,7 @@
    * the × that removes a chip by cutting its exact text out of the draft.
    */
   import { Panel, type Tag } from '../../mygo';
+  import { tick } from 'svelte';
   import { cutFragment } from '../panel';
   import { isMyGo } from 'mygo-runtime';
 
@@ -17,6 +18,7 @@
   let draft = $state('');
   let tags = $state<Tag[]>([]);
   let composing = $state(false);
+  let field: HTMLInputElement;
   // Two Enter presses in one frame both read `busy === false`, because the
   // prop has not been re-rendered yet; that is how one line became two rows.
   // A plain variable is decided the moment it is set.
@@ -59,6 +61,8 @@
     draft = '';
     tags = [];
     wanted = '';
+    await tick();
+    field?.focus();
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -72,22 +76,35 @@
 </script>
 
 <div class="quick">
-  <input
-    type="text"
-    bind:value={draft}
-    {placeholder}
-    aria-label="快速添加"
-    autocomplete="off"
-    spellcheck="false"
-    oninput={() => void refresh(draft)}
-    {onkeydown}
-    oncompositionstart={() => (composing = true)}
-    oncompositionend={() => {
-      composing = false;
-      void refresh(draft);
-    }}
-    disabled={busy}
-  />
+  <div class="entry">
+    <input
+      bind:this={field}
+      type="text"
+      bind:value={draft}
+      {placeholder}
+      aria-label="快速添加"
+      autocomplete="off"
+      spellcheck="false"
+      oninput={() => void refresh(draft)}
+      {onkeydown}
+      oncompositionstart={() => (composing = true)}
+      oncompositionend={() => {
+        composing = false;
+        void refresh(draft);
+      }}
+      disabled={busy}
+    />
+    <button
+      type="button"
+      class="submit"
+      aria-label="添加事项"
+      title="添加事项"
+      disabled={busy || !draft.trim()}
+      onclick={() => void submit()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+    </button>
+  </div>
   {#if tags.length > 0}
     <div class="tags" aria-label="识别到的时间">
       {#each tags as tag (tag.kind + tag.text)}
@@ -111,10 +128,13 @@
        left edge lands on the checkbox column instead of the card's border. */
     padding: 0;
   }
+  .entry {
+    position: relative;
+  }
   input {
     width: 100%;
     height: 34px;
-    padding: 0 10px;
+    padding: 0 36px 0 10px;
     border-radius: 8px;
     border: 1px solid var(--line);
     background: var(--card);
@@ -129,6 +149,35 @@
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .submit {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--fg);
+    cursor: default;
+  }
+  .submit:hover:not(:disabled) {
+    background: var(--pill);
+  }
+  .submit:disabled {
+    color: var(--faint);
+  }
+  .submit svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
   }
   .tags {
     display: flex;
@@ -164,7 +213,7 @@
     border-radius: 999px;
     background: transparent;
     color: inherit;
-    cursor: pointer;
+    cursor: default;
     opacity: 0.7;
   }
   .chip button:hover {

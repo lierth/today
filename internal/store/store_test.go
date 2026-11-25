@@ -194,6 +194,9 @@ func TestSettingsDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if all["tray_mode"] != "icon" || all["tray_title"] != "false" {
+		t.Fatal("the menu bar should show only the icon by default")
+	}
 	for k, want := range DefaultSettings() {
 		if all[k] != want {
 			t.Fatalf("default %s: got %q want %q", k, all[k], want)

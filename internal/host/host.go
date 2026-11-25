@@ -175,6 +175,8 @@ type Host struct {
 	tray           *mygo.Tray
 	menu           *mygo.Menu
 	panel          *mygo.Window
+	panelReady     bool
+	panelWanted    bool
 	settingsWindow *mygo.Window
 
 	iconNormal []byte
@@ -261,9 +263,9 @@ func (h *Host) Run() error {
 }
 
 func (h *Host) ready() {
-	// Both states come from the generated artwork; trayIcon only transcodes.
-	h.iconNormal = trayIcon(trayPNG, false)
-	h.iconError = trayIcon(trayAlertPNG, true)
+	// MyGo displays these at 18 points; the 36px artwork stays sharp on Retina.
+	h.iconNormal = trayIcon(tray2xPNG, false)
+	h.iconError = trayIcon(trayAlert2xPNG, true)
 
 	// The shell is up now, so the bundle can be read: a build that was not
 	// stamped with -X takes its version from Info.plist here instead of
@@ -358,14 +360,12 @@ func (h *Host) ready() {
 		return
 	}
 	h.tray = tray
+	h.createPanel()
 	tray.OnClick(func() { h.togglePanel() })
 	tray.OnRightClick(func() {
 		// Close the panel first: a native menu over a popover steals the
 		// keyboard from it, and the flyout would close under the menu.
-		if h.panel != nil {
-			h.panel.Close()
-			h.panel = nil
-		}
+		h.hidePanel()
 		tray.SetMenu(h.buildMenu())
 		defer tray.SetMenu(nil)
 		tray.PopUpMenu()
@@ -621,6 +621,7 @@ func (h *Host) refresh() {
 	}
 }
 
+// refresh paints the tray after this cache update releases h.mu.
 func (h *Host) setSettings(next map[string]string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -631,9 +632,6 @@ func (h *Host) setSettings(next map[string]string) bool {
 		}
 	}
 	h.settings = next
-	if changed && h.tray != nil {
-		h.refreshMenu()
-	}
 	return changed
 }
 
@@ -726,15 +724,6 @@ func (h *Host) passwordUsable() bool {
 	return err == nil
 }
 
-// loginLabel spells out why the copy item is grey: a stale keychain copy is
-// repaired from the settings page, and the label says which page.
-func loginLabel(usable bool) string {
-	if usable {
-		return "复制登录口令"
-	}
-	return "复制登录口令（不可用：口令已在别处修改，到设置页重设一次即可）"
-}
-
 func (h *Host) applyLoginItem(on bool) {
 	if mygo.App.OpenAtLogin() == on {
 		return
@@ -744,8 +733,6 @@ func (h *Host) applyLoginItem(on bool) {
 	}
 }
 
-// title is "done/total" padded with figure spaces so the menu bar does not
-// jitter between one- and two-digit counts.
 // trayMode resolves the menu-bar title style. tray_mode is the current key;
 // the old boolean tray_title is still read so an existing database keeps its
 // choice after the upgrade.
@@ -753,10 +740,10 @@ func (h *Host) trayMode() string {
 	if v := h.setting("tray_mode"); v != "" {
 		return v
 	}
-	if h.setting("tray_title") == "false" {
-		return "icon"
+	if h.setting("tray_title") == "true" {
+		return "progress"
 	}
-	return "progress"
+	return "icon"
 }
 
 // nextItem is the first item that is neither done nor overdue: "10:00 站会".
@@ -814,14 +801,13 @@ func (h *Host) title() string {
 		if total > 0 && done == total {
 			return "✓"
 		}
-		return strings.ReplaceAll(fmt.Sprintf("%2d/%2d", done, total), " ", "\u2007")
+		return fmt.Sprintf("%d / %d", done, total)
 	}
-	done, total, err := h.srv.TodaySummary(ctx)
+	total, done, err := h.srv.TodaySummary(ctx)
 	if err != nil {
 		return "!"
 	}
-	text := fmt.Sprintf("%2d/%2d", done, total)
-	return strings.ReplaceAll(text, " ", "\u2007")
+	return fmt.Sprintf("%d / %d", done, total)
 }
 
 // iconForState chooses the menu-bar glyph. The alert dot appears for the
@@ -920,14 +906,44 @@ func (h *Host) strangerOn() string {
 	return ""
 }
 
-// togglePanel shows a small read-only flyout under the tray icon. The URL
-// carries a short-lived panel token; the flyout has no session cookie and
-// cannot mutate anything. It is rebuilt on each open because the token expires
-// and a popover closes itself on the first click outside it.
+// Keep the WebView loaded between opens so its theme, content and size never
+// flash through their initial states. All panel state lives on the UI thread.
 func (h *Host) togglePanel() {
+	if h.panelWanted {
+		h.hidePanel()
+		return
+	}
+	h.createPanel()
+	if h.panel == nil {
+		return
+	}
+	h.panelWanted = true
+	if h.panelReady {
+		// Re-anchor the cached flyout to the menu-bar copy just clicked.
+		h.panel.SetAnchor(mygo.Rectangle{})
+		h.panel.Show()
+	}
+}
+
+func (h *Host) hidePanel() {
+	h.panelWanted = false
 	if h.panel != nil {
-		h.panel.Close()
-		h.panel = nil
+		h.panel.Hide()
+	}
+}
+
+func (h *Host) onPanelClose(e *mygo.CloseEvent) {
+	select {
+	case <-h.done:
+		return // The app is quitting; allow the cached window to close.
+	default:
+		e.PreventDefault()
+		h.hidePanel()
+	}
+}
+
+func (h *Host) createPanel() {
+	if h.panel != nil {
 		return
 	}
 	if h.tray == nil {
@@ -937,6 +953,7 @@ func (h *Host) togglePanel() {
 	// the panel is a card, and an arrow pointing at the icon would read as a
 	// tooltip. Focusable closes it on the first click outside, as a menu does.
 	panel := mygo.NewFlyout(mygo.FlyoutOptions{
+		Hidden:       true,
 		Tray:         h.tray,
 		Placement:    mygo.PlacementBottom,
 		Gap:          6,
@@ -950,14 +967,22 @@ func (h *Host) togglePanel() {
 		CornerRadius: 12,
 		URL:          "/panel",
 	})
-	// The callback fires after a slow close animation; only clear the field
-	// when it still points at this flyout, or a fast reopen would be lost.
+	h.panel = panel
+	panel.OnReadyToShow(func() {
+		h.panelReady = true
+		if h.panelWanted {
+			panel.SetAnchor(mygo.Rectangle{})
+			panel.Show()
+		}
+	})
+	panel.OnClose(h.onPanelClose)
 	panel.OnClosed(func() {
 		if h.panel == panel {
 			h.panel = nil
+			h.panelReady = false
+			h.panelWanted = false
 		}
 	})
-	h.panel = panel
 }
 
 func (h *Host) open(path string) {
@@ -1076,6 +1101,7 @@ func (h *Host) notify(title, body string) {
 // the work has to be idempotent; it also has to be synchronous, because the
 // process may go away as soon as the hook returns.
 func (h *Host) close(reason string) {
+	h.stopOnce.Do(func() { close(h.done) })
 	h.mu.Lock()
 	release, shutdown := h.release, h.shutdown
 	h.release, h.shutdown = nil, nil
@@ -1083,7 +1109,6 @@ func (h *Host) close(reason string) {
 	if release == nil && shutdown == nil {
 		return
 	}
-	h.stopOnce.Do(func() { close(h.done) })
 	// Speaking to Tailscale would outlive the process: the funnel is a
 	// system service that keeps running, and resetting it on quit would
 	// take the public entry point down with the menu bar.
@@ -1115,7 +1140,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 	funnelOn := h.funnelEnabled()
 	login := settings["open_at_login"] == "true"
 	trayMode := h.trayMode()
-	done, total, _ := h.srv.TodaySummary(ctx)
+	total, done, _ := h.srv.TodaySummary(ctx)
 
 	statusLabel := "服务：运行中"
 	if note := h.srv.BindNote(); note != "" {
@@ -1133,7 +1158,7 @@ func (h *Host) buildMenu() *mygo.Menu {
 	passwordOK := h.passwordUsable()
 	verdict := h.funnelVerdict()
 
-	// Header: date, then lunar + weather as the subtitle.
+	// Keep visible header text short; weather and development details are on hover.
 	now := time.Now()
 	lunar := lunarLabel(now)
 	subtitle := lunar
@@ -1144,9 +1169,21 @@ func (h *Host) buildMenu() *mygo.Menu {
 		subtitle += " · " + w
 	}
 	header := &mygo.MenuItem{
-		Label:    "今天 " + now.Format("1月2日") + " " + weekdayZH[now.Weekday()],
-		Subtitle: subtitle,
+		Label:    now.Format("1月2日") + " " + weekdayZH[now.Weekday()],
+		Subtitle: lunar,
+		ToolTip:  subtitle,
 		Disabled: true,
+	}
+	passwordItem := &mygo.MenuItem{
+		ID: "copy-password", Label: "复制登录口令", Disabled: !passwordOK,
+		Click: func(*mygo.MenuItem, *mygo.Window) {
+			if passwordOK {
+				h.CopyPassword()
+			}
+		},
+	}
+	if !passwordOK {
+		passwordItem.ToolTip = "无法读取可用的登录口令"
 	}
 
 	// Item checkboxes: at most eight, plus a link to the full page.
@@ -1215,13 +1252,13 @@ func (h *Host) buildMenu() *mygo.Menu {
 	funnelSub := "关闭"
 	switch {
 	case h.dev:
-		funnelSub = "开发模式不接管"
+		funnelSub = "开发模式"
 	case verdict.State == FunnelMissing:
-		funnelSub = "未安装/不支持的 Tailscale（点击安装）"
+		funnelSub = "Tailscale 不可用"
 	case verdict.State == FunnelLoggedOut:
-		funnelSub = "Tailscale 未登录（点击授权）"
+		funnelSub = "Tailscale 未登录"
 	case verdict.State == FunnelNeedsSetup:
-		funnelSub = "需要开启 HTTPS/Funnel（点击继续）"
+		funnelSub = "需要设置 HTTPS/Funnel"
 	case funnelOn && verdict.State == FunnelOn:
 		funnelSub = "已开启"
 	case funnelOn:
@@ -1233,11 +1270,11 @@ func (h *Host) buildMenu() *mygo.Menu {
 		mygo.Separator(),
 	}
 	menu = append(menu,
-		&mygo.MenuItem{Label: "今天的事项", Badge: fmt.Sprintf("%d/%d", done, total), Submenu: itemMenu},
+		&mygo.MenuItem{Label: "今日事项", Badge: fmt.Sprintf("%d/%d", done, total), Submenu: itemMenu, Hidden: len(items) == 0},
 		&mygo.MenuItem{Label: "添加事项…", Accelerator: "CmdOrCtrl+N",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/?focus=add") }},
 		mygo.Separator(),
-		&mygo.MenuItem{Label: "打开今日页面", Accelerator: "CmdOrCtrl+O",
+		&mygo.MenuItem{Label: "完整日程", Accelerator: "CmdOrCtrl+O",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/") }},
 		&mygo.MenuItem{Label: "即将到来",
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/upcoming") }},
@@ -1245,8 +1282,12 @@ func (h *Host) buildMenu() *mygo.Menu {
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.openLocal("/search") }},
 		mygo.Separator(),
 		&mygo.MenuItem{Label: "设备", Submenu: deviceItems},
-		&mygo.MenuItem{Label: "远程访问", Submenu: []*mygo.MenuItem{
-			&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub,
+		&mygo.MenuItem{Label: "访问与连接", Submenu: []*mygo.MenuItem{
+			passwordItem,
+			{Label: "复制局域网地址",
+				Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr()) }},
+			mygo.Separator(),
+			&mygo.MenuItem{ID: "funnel", Label: funnelLabel, Subtitle: funnelSub, ToolTip: verdict.Detail,
 				Type: mygo.MenuItemCheckbox, Checked: funnelOn, KeepOpen: true, Disabled: h.dev,
 				Click: func(item *mygo.MenuItem, _ *mygo.Window) {
 					if _, err := h.srv.UpdateSettings(context.Background(),
@@ -1256,28 +1297,20 @@ func (h *Host) buildMenu() *mygo.Menu {
 					}
 					h.kick()
 				}},
-			&mygo.MenuItem{Label: "外网：继续设置", Disabled: h.dev || verdict.ActionURL == "",
+			&mygo.MenuItem{Label: "继续设置…", Disabled: h.dev || verdict.ActionURL == "",
 				Click: func(*mygo.MenuItem, *mygo.Window) { go h.continueFunnel() }},
 			&mygo.MenuItem{Label: "外网地址", Disabled: funnelHost == "",
 				Submenu: []*mygo.MenuItem{
-					{Label: "复制地址", Badge: funnelHost, Disabled: funnelHost == "",
+					{ID: "copy-remote-address", Label: "复制地址", ToolTip: funnelHost, Disabled: funnelHost == "",
 						Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(funnelHost) }},
 					{Label: "在浏览器打开", Disabled: funnelHost == "",
 						Click: func(*mygo.MenuItem, *mygo.Window) { _ = mygo.Shell.OpenExternal(funnelHost) }},
 				}},
 		}},
-		&mygo.MenuItem{Label: "⚠ 设备无法连入：允许本地网络…",
+		&mygo.MenuItem{Label: "允许本地网络…", ToolTip: "显示屏需要本地网络权限才能连接",
 			Disabled: !localNetWarn, Hidden: localNetHide,
 			Click: func(*mygo.MenuItem, *mygo.Window) { go h.RequestLocalNetwork() }},
 		mygo.Separator(),
-		&mygo.MenuItem{Label: loginLabel(passwordOK), Disabled: !passwordOK,
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				if passwordOK {
-					h.CopyPassword()
-				}
-			}},
-		&mygo.MenuItem{Label: "复制局域网地址",
-			Click: func(*mygo.MenuItem, *mygo.Window) { mygo.Clipboard.WriteText(h.lanAddr()) }},
 		&mygo.MenuItem{Label: "设置…", Accelerator: "CmdOrCtrl+,",
 			Click: func(*mygo.MenuItem, *mygo.Window) { h.openSettings("") }},
 		&mygo.MenuItem{Label: "偏好", Submenu: []*mygo.MenuItem{
@@ -1312,9 +1345,9 @@ func (h *Host) buildMenu() *mygo.Menu {
 // tray_mode, so the choice survives and the old boolean is no longer consulted.
 func trayModeItems(h *Host, current string) []*mygo.MenuItem {
 	modes := []struct{ value, label string }{
+		{"icon", "仅图标"},
 		{"progress", "进度 2/6"},
 		{"next", "下一项"},
-		{"icon", "仅图标"},
 	}
 	out := make([]*mygo.MenuItem, 0, len(modes))
 	for _, m := range modes {

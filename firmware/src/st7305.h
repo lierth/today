@@ -9,7 +9,7 @@
 //   bit          = 7 - (((inv_y & 3) << 1) | (x & 1))
 //
 // A set bit is white: the init sequence enables display inversion (0x21), so
-// a cleared bit shows as black ink. See docs in firmware/README.md.
+// a cleared bit shows as black ink. See docs/flashing.md for firmware details.
 #pragma once
 
 #include <stddef.h>

@@ -17,8 +17,8 @@ namespace audio {
 bool Begin();
 
 // Play queues one buffer of 16-bit mono samples and returns immediately: a
-// low-priority task feeds I2S DMA, so the main loop (keys, Wi-Fi, display)
-// keeps running. The amplifier is raised for the duration and dropped again
+// main loop feeds I2S DMA in short blocks. The amplifier is raised for the
+// duration and dropped again
 // afterwards; overlapping calls are dropped, not queued, because a second
 // "ding" on top of the first is noise.
 bool Play(const int16_t* samples, size_t count);
@@ -37,7 +37,7 @@ int16_t* Scratch(size_t* capacity);
 
 // Loop feeds I2S from the queued buffer and drops the amplifier when it is
 // done. Call it from the Arduino loop; it never blocks longer than one DMA
-// block (256 samples, 16 ms).
+// block (512 samples, 32 ms).
 void Loop();
 
 }  // namespace audio

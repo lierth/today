@@ -16,6 +16,11 @@
   let note = $state('');
   let firmwarePath = $state('');
   let firmwareVersion = $state('');
+  $effect(() => {
+    if (!data.backups.some((backup) => backup.name === picked)) {
+      picked = data.backups[0]?.name ?? '';
+    }
+  });
 
   async function backupNow() {
     busy = true;
@@ -32,6 +37,23 @@
     }
   }
 
+  async function removeBackup() {
+    const name = picked || data.backups[0]?.name;
+    if (!name || busy) return;
+    busy = true;
+    error = '';
+    try {
+      if (await Panel.deleteBackup(name)) {
+        picked = '';
+        note = '已删除备份';
+        await reload();
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy = false;
+    }
+  }
   async function restore() {
     const name = picked || data.backups[0]?.name;
     if (!name) return;
@@ -104,6 +126,7 @@
     <Row label="现在备份一次" hint="写到本机；开了 iCloud 再抄一份">
       <button type="button" class="btn" onclick={backupNow} disabled={busy}>备份</button>
     </Row>
+    <Row label="保留时间" hint="自动保留最近 7 天，旧备份会自动删除" stacked />
     <Row label="上次备份" hint={data.last_local || '还没有备份'} stacked />
     {#if data.cloud_on}
       <Row label="iCloud" hint={data.last_cloud || '还没有同步到 iCloud'} stacked />
@@ -134,6 +157,14 @@
         disabled={busy || data.backups.length === 0}
       >
         恢复
+      </button>
+      <button
+        type="button"
+        class="btn danger"
+        onclick={removeBackup}
+        disabled={busy || data.backups.length === 0}
+      >
+        删除备份
       </button>
     </Row>
   </Card>
@@ -186,7 +217,7 @@
   }
   input,
   select {
-    height: 25px;
+    height: var(--ctl);
     max-width: 260px;
     padding: 0 6px;
     border: 1px solid var(--line);
@@ -197,7 +228,11 @@
     font-size: 12px;
   }
   .btn {
-    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--ctl);
     padding: 0 10px;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -205,9 +240,9 @@
     color: var(--fg);
     font: inherit;
     font-size: 11.5px;
-    cursor: pointer;
+    cursor: default;
   }
-  .btn:hover {
+  .btn:hover:not(:disabled) {
     background: var(--pill);
   }
   .btn.danger {

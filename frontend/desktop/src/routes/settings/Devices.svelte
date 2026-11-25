@@ -1,10 +1,10 @@
 <script lang="ts">
   /**
    * Devices: one row per board with its state, and the small set of actions
-   * that only make sense with the board in hand — mint a token, preview the
-   * frame, ring it, revoke it.
+   * that only make sense with the board in hand.
    */
-  import { Panel, type DeviceRow, type SetupLines } from '../../mygo';
+  import { onMount, tick } from 'svelte';
+  import { Panel, type Board, type DeviceRow } from '../../mygo';
   import Card from '../../lib/ui/Card.svelte';
   import Dot from '../../lib/ui/Dot.svelte';
   import type { SettingsView } from '../../mygo';
@@ -16,15 +16,51 @@
   }
   let { data, reload }: Props = $props();
 
-  let adding = $state(false);
   let busy = $state(false);
-  let newID = $state('');
-  let newName = $state('');
   let error = $state('');
-  let setup = $state<SetupLines | null>(null);
   let preview = $state('');
+  let soundSent = $state('');
   let previewOf = $state('');
-  let setupFor = $state('');
+  let nearby = $state<Board[]>([]);
+  let scanning = $state(false);
+  let scanError = $state('');
+  let selected = $state<Board | null>(null);
+  let pairCode = $state('');
+  let pairName = $state('');
+  let codeInput = $state<HTMLInputElement | undefined>();
+  const available = $derived(
+    nearby.filter((board) => board.pairable || !data.devices.some((d) => d.id === board.id)),
+  );
+
+  async function discover() {
+    if (scanning || busy) return;
+    scanning = true;
+    try {
+      nearby = await Panel.discoverBoards();
+      scanError = '';
+    } catch (err) {
+      scanError = err instanceof Error ? err.message : String(err);
+    } finally {
+      scanning = false;
+    }
+  }
+
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (busy) return;
+      void reload();
+    }, 3000);
+    return () => clearInterval(timer);
+  });
+
+  async function choose(board: Board) {
+    selected = board;
+    pairCode = '';
+    pairName = data.devices.find((device) => device.id === board.id)?.name ?? '';
+    error = '';
+    await tick();
+    codeInput?.focus();
+  }
 
   /** Every one-shot call goes through here so a failure is shown, not lost. */
   async function run(job: () => Promise<unknown>) {
@@ -40,32 +76,28 @@
     }
   }
 
-  async function add() {
-    if (!newID.trim()) return;
+  async function pair(event: SubmitEvent) {
+    event.preventDefault();
+    const board = selected;
+    if (!board || !/^[0-9]{6}$/.test(pairCode)) return;
     await run(async () => {
-      await Panel.addDevice(
-        newID.trim().toLowerCase(),
-        newName.trim() || newID.trim().toLowerCase(),
-      );
-      adding = false;
-      newID = '';
-      newName = '';
+      await Panel.pairBoard(board.id, pairCode, pairName.trim());
+      nearby = nearby.filter((item) => item.id !== board.id);
+      selected = null;
+      pairCode = '';
       await reload();
     });
   }
 
-  async function token(device: DeviceRow) {
-    if (
-      (device.online || device.firmware || setupFor === device.id) &&
-      !window.confirm(`重新生成口令后，${device.name} 需要重新配对。继续？`)
-    )
-      return;
+  async function audition(id: string) {
     await run(async () => {
-      setup = await Panel.deviceToken(device.id);
-      setupFor = device.id;
+      await Panel.previewSound(id);
+      soundSent = id;
+      setTimeout(() => {
+        if (soundSent === id) soundSent = '';
+      }, 4000);
     });
   }
-
   async function frame(id: string) {
     if (previewOf === id) {
       preview = '';
@@ -83,96 +115,98 @@
       return;
     await run(async () => {
       await Panel.revokeDevice(device.id);
-      if (setupFor === device.id) {
-        setup = null;
-        setupFor = '';
-      }
       await reload();
     });
   }
 </script>
 
 <fieldset class="stack" disabled={busy} aria-busy={busy}>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error || scanError}<p class="error" role="alert">{error || scanError}</p>{/if}
 
-  <Card title="设备">
-    {#each data.devices as device (device.id)}
-      <div class="device">
-        <div class="head">
-          <Dot
-            tone={device.online ? 'ok' : 'bad'}
-            colorBlind={$colorBlind}
-            label={`${device.name}${device.online ? '在线' : '离线'} · ${device.since}`}
-          />
-          <span class="name">{device.name}</span>
-          <span class="id">{device.id}</span>
-          <span class="state">{device.since}</span>
-        </div>
-        <div class="meta">
-          {#if device.battery}<span>电量 {device.battery}</span>{/if}
-          {#if device.climate}<span>{device.climate}</span>{/if}
-          {#if device.firmware}<span>固件 {device.firmware}</span>{/if}
-          {#if device.city}<span>天气 {device.city}</span>{/if}
-        </div>
-        <div class="actions">
-          <button type="button" onclick={() => run(() => Panel.refreshDevice(device.id))}>
-            立即刷新
-          </button>
-          <button type="button" onclick={() => run(() => Panel.previewSound(device.id))}>
-            试听提示音
-          </button>
-          <button type="button" onclick={() => frame(device.id)}>
-            {previewOf === device.id ? '收起预览' : '预览画面'}
-          </button>
-          <button type="button" onclick={() => token(device)}>生成配对口令</button>
-          <button type="button" class="danger" onclick={() => revoke(device)}>取消配对</button>
-        </div>
-        {#if previewOf === device.id && preview}
-          <img class="frame" src={preview} alt="{device.name} 的画面预览" />
-        {/if}
-        {#if setupFor === device.id && setup}
-          {@const pairing = setup}
-          <div class="setup">
-            <p>
-              长按 KEY 3 秒打开配网热点，在配网页填写服务器地址、设备 ID
-              和配对口令。口令只显示这一次。下面的命令用于 USB 串口配置（{pairing.hint}）。
-            </p>
-            <button type="button" onclick={() => run(() => Panel.copyText(pairing.token))}>
-              复制配对口令
-            </button>
-            {#each pairing.lines as line (line)}
-              <button
-                type="button"
-                class="cmd"
-                onclick={() => run(() => Panel.copyText(line))}
-                title="点击复制"
-              >
-                <code>{line}</code>
-              </button>
-            {/each}
-          </div>
-        {/if}
+  <Card>
+    <div class="discovery-head">
+      <h2>附近的显示屏</h2>
+      <button type="button" class="plain" disabled={scanning} onclick={discover}>
+        {scanning ? '搜索中…' : '刷新'}
+      </button>
+    </div>
+    {#each available as board (board.id)}
+      <div class="nearby">
+        <span class="name">{board.name}</span>
+        {#if board.pairable}<button type="button" onclick={() => choose(board)}>连接</button>
+        {:else}<span class="state">已配对 · BOOT 3 秒重新配对</span>{/if}
       </div>
+      {#if selected?.id === board.id}
+        <form class="form pairing-form" onsubmit={pair}>
+          <label>
+            配对码 <input
+              bind:this={codeInput}
+              aria-label="屏幕配对码"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="7"
+              pattern={'[0-9]{6}'}
+              required
+              placeholder="屏幕上的 6 位数字"
+              value={pairCode}
+              oninput={(event) =>
+                (pairCode = event.currentTarget.value.replace(/\D/g, '').slice(0, 6))}
+            />
+          </label>
+          <label>
+            名称 <input bind:value={pairName} maxlength="40" placeholder={board.name} />
+          </label>
+          <div class="form-actions">
+            <button type="submit" disabled={!/^[0-9]{6}$/.test(pairCode)}>
+              {busy ? '正在配对…' : '配对'}
+            </button>
+            <button type="button" class="plain" onclick={() => (selected = null)}>取消</button>
+          </div>
+        </form>
+      {/if}
     {/each}
-    {#if data.devices.length === 0}
-      <p class="empty">还没有设备。先加一台，再按生成的步骤在板子上配网。</p>
-    {/if}
+    {#if !available.length}<p class="empty">
+        {scanning ? '正在搜索局域网中的显示屏…' : '点击刷新，查找局域网中的显示屏。'}
+      </p>{/if}
   </Card>
 
-  {#if adding}
-    <Card title="新建设备">
-      <div class="form">
-        <label>ID <input type="text" bind:value={newID} placeholder="dev1" /></label>
-        <label>名称 <input type="text" bind:value={newName} placeholder="书桌" /></label>
-        <div class="form-actions">
-          <button type="button" onclick={add}>添加</button>
-          <button type="button" class="plain" onclick={() => (adding = false)}>取消</button>
+  {#if data.devices.length > 0}<Card title="已配对">
+      {#each data.devices as device (device.id)}
+        <div class="device">
+          <div class="head">
+            <Dot
+              tone={device.online ? 'ok' : 'bad'}
+              colorBlind={$colorBlind}
+              label={`${device.name}${device.online ? '在线' : '离线'} · ${device.since}`}
+            />
+            <span class="name">{device.name}</span>
+            {#if !device.id.startsWith('today-')}<span class="id">{device.id}</span>{/if}
+            <span class="state">{device.since}</span>
+          </div>
+          <div class="meta">
+            {#if device.battery}<span>电量 {device.battery}</span>{/if}
+            {#if device.climate}<span>{device.climate}</span>{/if}
+            {#if device.firmware}<span>固件 {device.firmware}</span>{/if}
+            {#if device.city}<span>天气 {device.city}</span>{/if}
+          </div>
+          <div class="actions">
+            <button type="button" onclick={() => run(() => Panel.refreshDevice(device.id))}>
+              立即刷新
+            </button>
+            <button type="button" onclick={() => audition(device.id)}>
+              {soundSent === device.id ? '已发送' : '试听提示音'}
+            </button>
+            <button type="button" onclick={() => frame(device.id)}>
+              {previewOf === device.id ? '收起预览' : '预览画面'}
+            </button>
+            <button type="button" class="danger" onclick={() => revoke(device)}>取消配对</button>
+          </div>
+          {#if previewOf === device.id && preview}
+            <img class="frame" src={preview} alt="{device.name} 的画面预览" />
+          {/if}
         </div>
-      </div>
-    </Card>
-  {:else}
-    <button type="button" class="add" onclick={() => (adding = true)}>添加一台设备</button>
-  {/if}
+      {/each}
+    </Card>{/if}
 </fieldset>
 
 <style>
@@ -185,11 +219,33 @@
     flex-direction: column;
     gap: 14px;
   }
+  .discovery-head,
+  .nearby {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+  }
+  .discovery-head h2 {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 560;
+  }
+  .nearby {
+    border-top: 1px solid var(--line-2);
+    min-height: 48px;
+  }
+  .pairing-form {
+    border-top: 1px solid var(--line-2);
+    background: var(--card-2);
+  }
   .device {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 14px;
+    padding: 12px;
     border-top: 1px solid var(--line-2);
   }
   .device:first-child {
@@ -227,7 +283,11 @@
     gap: 6px;
   }
   button {
-    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--ctl);
     padding: 0 9px;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -235,10 +295,10 @@
     color: var(--fg);
     font: inherit;
     font-size: 11.5px;
-    cursor: pointer;
+    cursor: default;
     box-shadow: 0 1px 1px rgb(20 20 30 / 4%);
   }
-  button:hover {
+  button:hover:not(:disabled) {
     background: var(--pill);
   }
   button.danger:hover {
@@ -256,41 +316,17 @@
     border: 1px solid var(--line);
     image-rendering: pixelated;
   }
-  .setup {
-    background: var(--card-2);
-    border-radius: 8px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .setup p {
-    margin: 0 0 2px;
-    font-size: 11.5px;
-    color: var(--muted);
-  }
-  .cmd {
-    text-align: left;
-    height: auto;
-    padding: 3px 7px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px;
-  }
   .empty {
     margin: 0;
-    padding: 12px 14px 14px;
+    padding: 12px 12px 14px;
     color: var(--muted);
     font-size: 12px;
-  }
-  .add {
-    align-self: flex-start;
-    height: 26px;
   }
   .form {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 14px;
+    padding: 12px;
   }
   .form label {
     display: flex;
@@ -301,7 +337,7 @@
   }
   .form input {
     flex: 1;
-    height: 25px;
+    height: var(--ctl);
     padding: 0 7px;
     border: 1px solid var(--line);
     border-radius: 7px;

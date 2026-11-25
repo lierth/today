@@ -93,20 +93,30 @@ bool Parse(const uint8_t* data, size_t len, Frame* out) {
     SetError("too many rows");
     return false;
   }
+  if ((f.flags & kFlagFocus) && uint32_t(f.headerHeight) + f.footerHeight > f.height) {
+    SetError("bad content bounds");
+    return false;
+  }
   const size_t rowsBytes = static_cast<size_t>(f.rowCount) * 20;
   if (static_cast<size_t>(p - data) + rowsBytes + 1 + 4 > len) {
     SetError("truncated rows");
     return false;
   }
+  uint32_t previous = f.headerHeight;
   for (size_t i = 0; i < f.rowCount; i++) {
     Row& row = f.rows[i];
     memcpy(row.id, p, 16);
     row.y = ReadBE16(p + 16);
     row.flags = p[18];
-    if (static_cast<uint32_t>(row.y) + f.rowHeight > f.height) {
+    row.height = p[19];
+    const uint32_t height = (f.flags & kFlagFocus) ? row.height : f.rowHeight;
+    if (static_cast<uint32_t>(row.y) + height > f.height ||
+        ((f.flags & kFlagFocus) && (height < f.rowHeight || row.y < previous ||
+          uint32_t(row.y) + height > uint32_t(f.height) - f.footerHeight))) {
       SetError("bad row bounds");
       return false;
     }
+    previous = uint32_t(row.y) + height;
     p += 20;
   }
   f.footerCount = *p++;

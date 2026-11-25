@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+#include <atomic>
+#include <esp_wifi.h>
 
 #include "wifista.h"
 
@@ -18,6 +20,7 @@ namespace {
 // reboot has no story to tell, and every reader is in the same power cycle.
 uint8_t g_reason = 0;
 bool g_listening = false;
+std::atomic<bool> g_stationPaused{false};
 wifista::Station g_station;
 
 // HTTPClient decodes both chunked and fixed-length responses into this bounded sink.
@@ -44,6 +47,7 @@ class FrameSink final : public Stream {
 
 void OnStationEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+  if (g_stationPaused.load()) return;
   g_reason = info.wifi_sta_disconnected.reason;
   g_station.Touch(millis());
   Serial.printf("wifi: disconnected, reason %u\n", static_cast<unsigned>(g_reason));
@@ -98,7 +102,7 @@ void PrepareTLS(WiFiClientSecure& tls) {
 }  // namespace
 
 void EnsureSta(const storage::Config& cfg) {
-  if (cfg.wifiSsid.isEmpty()) return;
+  if (cfg.wifiSsid.isEmpty() || g_stationPaused.load()) return;
   ListenOnce();
   const uint32_t now = millis();
   const int status = WiFi.status();
@@ -118,6 +122,22 @@ void EnsureSta(const storage::Config& cfg) {
   g_reason = 0;
   g_station.Began(now);
   WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
+}
+
+void PauseStation(bool paused) {
+  if (g_stationPaused.exchange(paused) == paused) return;
+  WiFi.setAutoReconnect(!paused);
+  if (paused) {
+    // Arduino's disconnect() returns early while association is in progress.
+    // The driver call cancels that attempt, which otherwise blocks every scan.
+    const esp_err_t err = esp_wifi_disconnect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) {
+      Serial.printf("wifi: setup pause failed (%s)\n", esp_err_to_name(err));
+    }
+  } else {
+    g_station.Touch(millis());
+    WiFi.reconnect();
+  }
 }
 
 uint8_t LastDisconnectReason() { return g_reason; }

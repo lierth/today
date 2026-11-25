@@ -86,8 +86,8 @@ func TestBuildIsDeterministic(t *testing.T) {
 
 func TestWidgetInkFitsWithoutOverlappingNeighbours(t *testing.T) {
 	for i, a := range WidgetRects {
-		if a.X+a.W > Width || a.Y+a.H > HeaderHeight {
-			t.Fatalf("widget %d leaves the header: %+v", a.Kind, a)
+		if a.X+a.W > Width || a.Y+a.H > Height || (a.Y < Height-FooterHeight && a.Y+a.H > HeaderHeight) {
+			t.Fatalf("widget %d leaves its header/footer: %+v", a.Kind, a)
 		}
 		if a.Kind == WidgetClock && a.W < 5*6*3 {
 			t.Fatal("the clock's five glyphs need 90 pixels, including the clear region")
@@ -132,8 +132,8 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	if got.CursorRow != f.CursorRow || got.CursorStyle != f.CursorStyle {
 		t.Fatalf("cursor: got %d/%d want %d/%d", got.CursorRow, got.CursorStyle, f.CursorRow, f.CursorStyle)
 	}
-	if f.FooterH != 0 || f.HeaderH != 44 {
-		t.Fatalf("v2 geometry: header %d footer %d", f.HeaderH, f.FooterH)
+	if f.FooterH != 28 || f.HeaderH != 60 || f.Flags&FlagFocus == 0 {
+		t.Fatalf("focus geometry: header %d footer %d", f.HeaderH, f.FooterH)
 	}
 	if len(f.Widgets) != 4 || len(got.Widgets) != len(f.Widgets) {
 		t.Fatalf("widgets: got %d want %d", len(got.Widgets), len(f.Widgets))
@@ -186,16 +186,21 @@ func TestWidgetRectsAreBlank(t *testing.T) {
 
 // The header height dropped to 44 and the footer is gone in v2; ten rows must
 // still fit above the bottom edge.
-func TestLayoutV2FitsTenRows(t *testing.T) {
-	if HeaderHeight+maxRows*RowHeight > Height {
-		t.Fatalf("header %d + %d rows x %d exceeds panel height %d", HeaderHeight, maxRows, RowHeight, Height)
+func TestFocusRowsFitAboveStatus(t *testing.T) {
+	f, err := Build(testInput(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if FooterHeight != 0 {
-		t.Fatalf("footer height: got %d want 0", FooterHeight)
+	previous := HeaderHeight
+	for _, row := range f.Rows {
+		if int(row.Y) < previous || int(row.Y)+int(row.Height) > Height-FooterHeight {
+			t.Fatalf("row overlaps: %+v", row)
+		}
+		previous = int(row.Y) + int(row.Height)
 	}
 }
 
-func TestSummaryRowCapsAtTen(t *testing.T) {
+func TestSummaryRowCapsAtSix(t *testing.T) {
 	in := testInput(t)
 	in.Items = nil
 	now := testNow(t)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"today/internal/release"
 )
@@ -183,5 +184,34 @@ func TestDefaultUpdateFeed(t *testing.T) {
 	want := "https://api.github.com/repos/o/r/releases/latest"
 	if got := defaultUpdateFeed(); got != want {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUpdateMenuKeepsDetailsOutOfItsWidth(t *testing.T) {
+	for _, state := range []release.State{
+		release.StateIdle, release.StateChecking, release.StateAvailable,
+		release.StateDownloading, release.StateVerifying, release.StateReady,
+		release.StateInstalling, release.StateFailed,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			h := New(nil, true, nil)
+			h.updater.State = state
+			h.updater.Version = "0.3.0-" + strings.Repeat("beta", 50)
+			h.updater.Notes = strings.Repeat("发布说明", 100)
+			h.updater.Err = "更新源返回 HTTP 404：" + strings.Repeat("地址详情", 100)
+			h.updater.Progress = 87
+			item := h.updateMenuItem()
+			if utf8.RuneCountInString(item.Label) > 16 || item.Subtitle != "" {
+				t.Fatalf("update details widened the menu: %q / %q", item.Label, item.Subtitle)
+			}
+			if state == release.StateFailed {
+				if item.ToolTip != h.updater.Err || !strings.Contains(h.updateStatus(), h.updater.Err) {
+					t.Fatal("the complete failure reason must remain in the tooltip and settings")
+				}
+			}
+			if state == release.StateDownloading && item.Badge != "87%" {
+				t.Fatalf("download progress missing: %q", item.Badge)
+			}
+		})
 	}
 }

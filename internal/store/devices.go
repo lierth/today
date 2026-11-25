@@ -114,6 +114,32 @@ func (s *Store) CreateDevice(ctx context.Context, id, name, tokenHash string) (D
 	return d, nil
 }
 
+// RestoreDevice re-adds a revoked board without restoring its old credentials.
+func (s *Store) RestoreDevice(ctx context.Context, id, name string) (Device, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE devices SET name=?, token_hash='',
+		last_seen_at=NULL, revoked_at=NULL WHERE id=? AND revoked_at IS NOT NULL`, name, id)
+	if err != nil {
+		return Device{}, fmt.Errorf("store: restore device: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Device{}, ErrNotFound
+	}
+	return s.Device(ctx, id)
+}
+
+// PairDevice commits credentials after the physical display accepted its code.
+// A hardware ID keeps its history when it is paired again.
+func (s *Store) PairDevice(ctx context.Context, id, name, tokenHash string) (Device, error) {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO devices (`+deviceColumns+`)
+		VALUES (?,?,?,0,0,0,0,'','',0,0,0,NULL,NULL,?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash,
+		last_seen_at=NULL, revoked_at=NULL`, id, name, tokenHash, timeStr(s.Now()))
+	if err != nil {
+		return Device{}, fmt.Errorf("store: pair device: %w", err)
+	}
+	return s.Device(ctx, id)
+}
+
 // EnsureDevice creates the row only when it is missing.
 func (s *Store) EnsureDevice(ctx context.Context, id, name string) (Device, error) {
 	d, err := s.Device(ctx, id)

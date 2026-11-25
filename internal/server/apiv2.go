@@ -27,7 +27,7 @@ type apiError struct {
 
 // explain turns an internal error into a sentence the page may show.
 //
-// PLAN §5.1 says the API never returns an internal error string: those carry
+// The API never returns an internal error string: those carry
 // paths, SQL and driver messages, and this API answers a Funnel visitor with
 // the password as readily as it answers the Mac. Anything the person can act
 // on is already phrased as Chinese text and passes through; the rest is
@@ -86,6 +86,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 func (s *Server) routesV2() {
 	m := s.mux
+	s.registerOrganizeAPI(m)
 	m.HandleFunc("GET /api/v2/day", s.requireSession(s.apiDay))
 	m.HandleFunc("GET /api/v2/today", s.requireSession(s.apiToday))
 	m.HandleFunc("GET /api/v2/items", s.requireSession(s.apiItems))
@@ -251,6 +252,7 @@ func (s *Server) apiItems(w http.ResponseWriter, r *http.Request) {
 // apiItemBody is the JSON a create or a patch carries. Pointers on the patch
 // keep "absent" and "clear" different.
 type apiItemBody struct {
+	CategoryID  *string `json:"category_id"`
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	Date        *string `json:"date"`
@@ -277,6 +279,7 @@ func (s *Server) apiItemCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := ItemInput{
+		CategoryID:  deref(body.CategoryID),
 		Title:       deref(body.Title),
 		Description: deref(body.Description),
 		Date:        deref(body.Date),
@@ -312,7 +315,8 @@ func (s *Server) apiItemPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := store.Patch{
-		Title: body.Title, Description: body.Description,
+		CategoryID: body.CategoryID,
+		Title:      body.Title, Description: body.Description,
 		Status: body.Status, Pinned: body.Pinned, AllDay: body.AllDay,
 		RRule: body.RRule,
 	}

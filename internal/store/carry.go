@@ -206,7 +206,7 @@ func (s *Store) Reorder(ctx context.Context, ids []string, loc *time.Location) e
 // RestoreItem undoes a soft delete.
 func (s *Store) RestoreItem(ctx context.Context, id string) (Item, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE items SET deleted_at=NULL, updated_at=?
-		WHERE id=? AND deleted_at IS NOT NULL`, timeStr(s.Now()), id)
+		WHERE id=? AND deleted_at IS NOT NULL AND julianday(deleted_at) > julianday(?)`, timeStr(s.Now()), id, timeStr(s.Now().Add(-TrashRetention)))
 	if err != nil {
 		return Item{}, fmt.Errorf("store: restore item: %w", err)
 	}

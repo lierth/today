@@ -5,6 +5,9 @@
 
 # Local design doc — not tracked.
 docs/PLAN.md
+# Design drafts; final app assets live directly in resources/.
+/resources/logo-concepts/
+/resources/board-layout-concepts/
 
 # Runtime data
 *.db
@@ -21,6 +24,7 @@ docs/PLAN.md
 Today.app/
 dist/
 .tmp/
+.mygo/
 *.dmg
 *.zip
 

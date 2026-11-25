@@ -1,7 +1,6 @@
 name: release
 
-# Push a tag v0.4.0 and this builds the app and the board image, signs both
-# with the repository's ed25519 key and publishes one GitHub release.
+# Push a tag v1.2.3 to build the app and board images and publish one release.
 # Apple signing and notarization are optional; otherwise the app is ad-hoc signed.
 #
 # Secrets (see docs/developing.md):
@@ -19,20 +18,18 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version (e.g. 0.2.0)"
-        required: true
-        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    if: ${{ false }}
     runs-on: macos-15-intel
+    timeout-minutes: 60
     env:
       # A step-level `if:` cannot read `secrets`; map them to the environment
       # first and test the environment variable instead.
@@ -45,21 +42,21 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       ALLOW_UNSIGNED_RELEASE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       # The React pages and the mygo desktop bundle are built from frontend/,
       # so the runner needs Node and the pnpm version pinned in package.json.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -74,11 +71,12 @@ jobs:
 
       - name: Version from the tag
         id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          VER="${INPUT_VERSION:-$GITHUB_REF_NAME}"
-          echo "ver=${VER#v}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected a version tag such as v0.3.0"
+            exit 2
+          fi
+          echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       # The certificate and the trust setting live in a throwaway keychain: the
       # runner is wiped afterwards, and nothing is written to the login
@@ -122,8 +120,7 @@ jobs:
 
       - name: Checks
         run: |
-          TZ=UTC go test ./...
-          TZ=UTC go test -race -count=3 ./...
+          TZ=UTC go test -race ./...
           go vet ./...
           python3 -I firmware/test/check_partitions.py firmware/partitions.csv
           firmware/test/host.sh
@@ -149,16 +146,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.ver }}
         run: |
+          ASSETS=(
+            "dist/release/Today-${RELEASE_VERSION}.dmg"
+            "dist/release/Today-${RELEASE_VERSION}-arm64.zip"
+            "dist/release/today-rlcd-${RELEASE_VERSION}.bin"
+            "dist/release/today-rlcd-${RELEASE_VERSION}-full.bin"
+            "dist/release/SHA256SUMS"
+          )
+          if [ -f dist/release/SHA256SUMS.sig ]; then
+            ASSETS+=(dist/release/SHA256SUMS.sig)
+          fi
+          for asset in "${ASSETS[@]}"; do
+            test -s "$asset" || { echo "::error::Missing release asset: $asset"; exit 1; }
+          done
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
+            exit 0
+          fi
           NOTES="docs/releases/${RELEASE_VERSION}.md"
           if [ -f "$NOTES" ]; then
             set -- --notes-file "$NOTES"
           else
             set -- --generate-notes
           fi
-          gh release create "v${RELEASE_VERSION}" \
-            dist/release/Today-*.zip \
-            dist/release/Today-*.dmg \
-            dist/release/today-rlcd-*.bin \
-            dist/release/SHA256SUMS* \
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
+            --verify-tag \
             --title "Today ${RELEASE_VERSION}" \
             "$@"

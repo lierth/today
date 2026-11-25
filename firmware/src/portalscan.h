@@ -15,9 +15,15 @@ enum class Kick { Started, Busy, Refused };
 
 struct State {
   bool scanning = false;
+  bool requested = false;
+  bool complete = false;
+  uint8_t attempts = 0;
   int error = 0;        // last refusal, 0 when the last scan was accepted
   uint32_t retryAt = 0; // millis() before which another kick is pointless
 };
+
+// Reserve the radio briefly before the first attempt, so disconnect can settle.
+bool Request(State& s, uint32_t now, uint32_t settleMs = 250);
 
 // NoteKick folds one start attempt into the state. `raw` is the library's
 // return value, kept so the page can print the real code.

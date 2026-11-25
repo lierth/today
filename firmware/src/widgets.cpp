@@ -110,7 +110,7 @@ void DrawClock(const tbf::Widget& rect, int hh, int mm) {
   Clear(rect);
   char line[8];
   snprintf(line, sizeof(line), "%02d:%02d", hh, mm);
-  const int scale = 3;
+  const int scale = screens::ClockScale(rect.w, rect.h);
   // The ink may start left of the rect (it is wider); that is fine, the
   // neighbours are to its left with a gap.
   Text(screens::ClockTextX(rect.x, rect.w, scale), rect.y + (rect.h - font::kGlyphHeight * scale) / 2, line, scale);
@@ -118,26 +118,27 @@ void DrawClock(const tbf::Widget& rect, int hh, int mm) {
 
 void DrawClockUnknown(const tbf::Widget& rect) {
   Clear(rect);
-  const int scale = 3;
+  const int scale = screens::ClockScale(rect.w, rect.h);
   Text(screens::ClockTextX(rect.x, rect.w, scale), rect.y + (rect.h - font::kGlyphHeight * scale) / 2, "--:--", scale);
 }
 
 void DrawWifi(const tbf::Widget& rect, int rssi, bool connecting, bool portal,
               bool connected) {
   Clear(rect);
+  const int textY = rect.y + (rect.h - font::kGlyphHeight) / 2;
   if (portal) {
-    Text(rect.x + 2, rect.y + 3, "AP", 1);
+    Text(rect.x + 2, textY, "AP", 1);
     return;
   }
   if (!connected) {
-    Text(rect.x + 2, rect.y + 3, connecting ? "--" : "x", 1);
+    Text(rect.x + 2, textY, connecting ? "--" : "x", 1);
     return;
   }
   // Three bars: weak < -80, ok < -65, strong otherwise.
   int bars = 1;
   if (rssi > -80) bars = 2;
   if (rssi > -65) bars = 3;
-  const int baseY = rect.y + rect.h - 2;
+  const int baseY = rect.y + (rect.h - 9) / 2 + 9;
   for (int i = 0; i < 3; i++) {
     const int h = 3 + i * 3;
     const int x = rect.x + 3 + i * 5;
@@ -152,16 +153,17 @@ void DrawWifi(const tbf::Widget& rect, int rssi, bool connecting, bool portal,
 void DrawClimate(const tbf::Widget& rect, float temperatureC, float humidity,
                  bool ok) {
   Clear(rect);
+  const int textY = rect.y + (rect.h - font::kGlyphHeight) / 2;
   char line[16];
   if (!ok) {
-    Text(rect.x + 1, rect.y + 2, "-- --%", 1);
+    Text(rect.x + 1, textY, "-- --%", 1);
     return;
   }
   snprintf(line, sizeof(line), "%d", static_cast<int>(lroundf(temperatureC)));
-  const int used = Text(rect.x + 1, rect.y + 2, line, 1);
+  const int used = Text(rect.x + 1, textY, line, 1);
   // Degree mark: a 3x3 ring at the cap height of the digits.
   const int dx = rect.x + 1 + used + 1;
-  const int dy = rect.y + 2;
+  const int dy = textY;
   for (int i = 0; i < 3; i++) {
     Pixel(dx + i, dy, true);
     Pixel(dx + i, dy + 2, true);
@@ -169,15 +171,16 @@ void DrawClimate(const tbf::Widget& rect, float temperatureC, float humidity,
     Pixel(dx + 2, dy + i, true);
   }
   snprintf(line, sizeof(line), " %d%%", static_cast<int>(lroundf(humidity)));
-  Text(dx + 4, rect.y + 2, line, 1);
+  Text(dx + 4, textY, line, 1);
 }
 
 void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb) {
   Clear(rect);
+  const int textY = rect.y + (rect.h - font::kGlyphHeight) / 2;
   if (millivolts < 2500) {
     // No battery (or the divider floats): a plug, never "0%" or "100%".
     const int px0 = rect.x + 2;
-    const int py0 = rect.y + 3;
+    const int py0 = textY;
     for (int i = 0; i < 8; i++) Pixel(px0 + i, py0 + 4, true);
     for (int i = 0; i < 3; i++) {
       Pixel(px0 + 2, py0 + 1 + i, true);
@@ -186,13 +189,13 @@ void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb)
     Pixel(px0 + 8, py0 + 3, true);
     Pixel(px0 + 8, py0 + 4, true);
     Pixel(px0 + 8, py0 + 5, true);
-    Text(rect.x + 14, rect.y + 2, "USB", 1);
+    Text(rect.x + 14, textY, "USB", 1);
     return;
   }
   const int pct = BatteryPercentRaw(millivolts);
   // Battery outline with a 76%-style fill scaled to pct.
   const int bx = rect.x + 1;
-  const int by = rect.y + 3;
+  const int by = textY;
   Box(bx, by, 14, 8, false);
   Box(bx + 14, by + 2, 2, 3, true);
   if (millivolts > 0) {
@@ -209,7 +212,7 @@ void DrawPower(const tbf::Widget& rect, int millivolts, bool usbKnown, bool usb)
   }
   char label[8];
   snprintf(label, sizeof(label), "%d%%", pct);
-  Text(rect.x + 18, rect.y + 2, label, 1);
+  Text(rect.x + 21, textY, label, 1);
 }
 
 int DrawString(int x, int y, const char* text, int scale) {

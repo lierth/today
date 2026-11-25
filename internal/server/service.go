@@ -343,6 +343,7 @@ func (svc *Service) Item(ctx context.Context, id string) (store.Item, error) {
 // ItemInput is a new to-do as the UI describes it: a line of text plus the
 // tags the strip displays. An empty field means "not mentioned".
 type ItemInput struct {
+	CategoryID  string
 	Title       string
 	Description string
 	Date        string // yyyy-mm-dd
@@ -363,6 +364,7 @@ func (svc *Service) CreateItem(ctx context.Context, in ItemInput) (store.Item, e
 	today := now.Format(store.DateLayout)
 
 	item := store.Item{
+		CategoryID:  in.CategoryID,
 		Title:       strings.TrimSpace(in.Title),
 		Description: strings.TrimSpace(in.Description),
 		RRule:       strings.TrimSpace(in.RRule),

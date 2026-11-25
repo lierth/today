@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"today/internal/boardlink"
 )
 
 // errNoHost is what every binding answers when the panel was built without a
@@ -184,6 +185,27 @@ func (p *Panel) SetSetting(ctx context.Context, key, value string) error {
 	return nil
 }
 
+// DiscoverBoards finds displays on the Mac's directly attached LAN.
+func (p *Panel) DiscoverBoards(ctx context.Context) ([]boardlink.Board, error) {
+	if p == nil || p.h == nil || p.h.srv == nil {
+		return nil, errNoHost
+	}
+	return p.h.srv.DiscoverBoards(ctx)
+}
+
+// PairBoard binds the selected display using its on-screen code.
+func (p *Panel) PairBoard(ctx context.Context, id, code, name string) (DeviceRow, error) {
+	if p == nil || p.h == nil || p.h.srv == nil {
+		return DeviceRow{}, errNoHost
+	}
+	device, err := p.h.srv.PairBoard(ctx, id, code, name)
+	if err != nil {
+		return DeviceRow{}, err
+	}
+	p.h.kick()
+	return DeviceRow{ID: device.ID, Name: device.Name, Since: "等待连接"}, nil
+}
+
 // AddDevice creates a board with the id and name typed in the window.
 func (p *Panel) AddDevice(ctx context.Context, id, name string) (DeviceRow, error) {
 	if p == nil || p.h == nil {
@@ -350,7 +372,21 @@ func (p *Panel) ConfirmRestore(ctx context.Context, name string) (bool, error) {
 
 // LocalNetworkHelp opens the system pane where "Local Network" lives, the same
 // place the menu's warning item goes.
-func (p *Panel) LocalNetworkHelp() { p.h.RequestLocalNetwork() }
+func (p *Panel) LocalNetworkHelp() error { return mygo.Shell.OpenExternal(localNetworkURL) }
+
+func (p *Panel) DeleteBackup(ctx context.Context, name string) (bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return false, fmt.Errorf("先选择一个备份")
+	}
+	result, err := mygo.Dialog.Message(mygo.MessageOptions{Type: mygo.MessageWarning, Title: "删除备份", Message: "删除 " + name + "？", Detail: "这份备份文件将永久删除，当前事项不受影响。", Buttons: []string{"取消", "删除"}, DefaultButton: 0, CancelButton: 0, DestructiveButtons: []int{1}})
+	if err != nil || result.Button != 1 {
+		return false, err
+	}
+	if err := p.h.srv.DeleteSnapshot(name); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // OpenURL opens an address in the default browser (release notes, Tailscale's
 // own setup pages).

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build, sign and package one release locally. CI calls this same script, so a
 # local dry run and a tagged release cannot drift.
 #
@@ -13,18 +13,23 @@
 #                      signed, and the script stops.
 #   TODAY_RELEASE_KEY_FILE  read the key from a file (0600) instead.
 #   ALLOW_UNSIGNED_RELEASE=1  allow manual-download releases without update keys.
-#   SKIP_APP=1         only rebuild the firmware image (used by the board job).
+#   SKIP_APP=1         only rebuild the firmware images.
 #   PUBLIC_RELEASE=1   require Developer ID signing and Apple notarization.
 #   NOTARY_PROFILE    notarytool keychain profile stored with store-credentials.
 #
 # Output goes to dist/release/: Today-<ver>-arm64.zip, Today-<ver>.dmg,
-# today-rlcd-<ver>.bin, SHA256SUMS and SHA256SUMS.sig.
+# today-rlcd-<ver>.bin (OTA), today-rlcd-<ver>-full.bin (USB), SHA256SUMS
+# and, when update signing is configured, SHA256SUMS.sig.
 set -eu
 cd "$(dirname "$0")/.."
 
 VER="${1:-}"
 if [ -z "$VER" ]; then
   echo "usage: scripts/release.sh <version>   (e.g. 0.4.0)" >&2
+  exit 2
+fi
+if [[ ! "$VER" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid release version: expected 1.2.3 or v1.2.3" >&2
   exit 2
 fi
 VER="${VER#v}"

@@ -291,7 +291,7 @@ func bandPts(line []pt, half float64) []pt {
 	end, en := line[n-1], normals[n-1]
 	base := math.Atan2(en.y, en.x)
 	for i := 1; i < capSteps; i++ {
-		a := base + math.Pi*float64(i)/capSteps
+		a := base - math.Pi*float64(i)/capSteps
 		out = append(out, pt{end.x + half*math.Cos(a), end.y + half*math.Sin(a)})
 	}
 	for i := n - 1; i >= 0; i-- {
@@ -300,7 +300,7 @@ func bandPts(line []pt, half float64) []pt {
 	start, sn := line[0], normals[0]
 	base = math.Atan2(-sn.y, -sn.x)
 	for i := 1; i < capSteps; i++ {
-		a := base + math.Pi*float64(i)/capSteps
+		a := base - math.Pi*float64(i)/capSteps
 		out = append(out, pt{start.x + half*math.Cos(a), start.y + half*math.Sin(a)})
 	}
 	return out
@@ -333,90 +333,51 @@ type snail struct {
 	spiralK    float64 // radius lost per radian
 	groove     float64 // half width of the groove
 
-	antA, antB pt
-	antHalf    float64
-	bulbC      pt
-	bulbR      float64
-	eyeR       float64
-
-	slits    [][2]pt
-	slitHalf []float64
+	antennae [2]antenna
 }
 
-// bodyPath is the side profile. Clockwise from the tail tip: down into the
-// foot, forward along the flat sole, up the chin and the face, out to the
-// snout, back over the head, down the neck, then a horizontal edge back under
-// the shell to the tail. That last edge sits at the height where the shell
-// still covers it, so the shell reads as sitting in front of the foot.
+type antenna struct {
+	root, tip pt
+	half      float64
+	bulbR     float64
+}
+
+// B: a round head, two antennae and a thinner foot under the shell.
 func bodyPath() path {
-	p := path{start: pt{2.8, 30.4}}
-	// Tail tip, down into the foot.
-	p.curve(pt{2.4, 33.8}, pt{4.4, 37.0}, pt{9.0, 37.0})
-	// The sole. Straight, because a snail's foot is flat on the ground.
-	p.line(pt{31.4, 37.0})
-	// The sole lifts into the chin.
-	p.curve(pt{34.4, 37.0}, pt{36.4, 35.2}, pt{37.4, 32.6})
-	// The face, bulging forward and a little over the foot.
-	p.curve(pt{38.4, 30.8}, pt{39.6, 28.8}, pt{40.6, 26.2})
-	// The snout: short, sharp, aiming up and to the right.
-	p.line(pt{41.6, 21.4})
-	// Back over the top of the head.
-	p.line(pt{37.4, 19.6})
-	// Down the back of the head into the neck, and on to the shell. The
-	// point at 26.2,24.2 sits on the shell circle itself, so head and shell
-	// touch and leave a notch rather than a canyon between them.
-	p.curve(pt{35.2, 21.2}, pt{31.0, 22.2}, pt{26.2, 24.2})
-	// The hidden edge runs back under the shell to the tail.
-	p.curve(pt{22.0, 26.4}, pt{18.4, 27.6}, pt{15.0, 27.8})
-	p.curve(pt{10.4, 28.0}, pt{6.6, 28.6}, pt{5.0, 29.2})
-	p.curve(pt{3.8, 29.7}, pt{3.1, 30.0}, pt{2.8, 30.4})
+	p := path{start: pt{4.2, 30.7}}
+	p.curve(pt{8.4, 28.3}, pt{13.5, 28.8}, pt{18, 28.8})
+	p.line(pt{26.3, 28.8})
+	p.curve(pt{28.7, 28.8}, pt{29.3, 26.1}, pt{30.8, 24.2})
+	p.curve(pt{32.6, 21.9}, pt{35.8, 21.4}, pt{38, 23.1})
+	p.curve(pt{40.5, 25}, pt{40.4, 28.4}, pt{38.5, 30.9})
+	p.curve(pt{36.3, 34.1}, pt{33.6, 35.5}, pt{29.5, 35.5})
+	p.line(pt{10.8, 35.5})
+	p.curve(pt{7.2, 35.5}, pt{4.8, 33.9}, pt{4.2, 30.7})
 	return p
 }
 
 func fullSnail() snail {
 	return snail{
 		body:       bodyPath().flatten(16),
-		shellC:     pt{16.4, 18.4},
-		shellR:     12.0,
-		spiralRMax: 10.8,
-		spiralRMin: 1.6,
-		spiralK:    0.62,
-		// A thin groove: at 1.0 the coil ate half the shell and the icon read
-		// as a set of rings with holes between them rather than a solid shell
-		// with a spiral cut into it.
-		groove:  0.62,
-		antA:    pt{33.6, 21.0},
-		antB:    pt{31.4, 12.2},
-		antHalf: 1.15,
-		bulbC:   pt{31.2, 11.0},
-		bulbR:   2.35,
-		eyeR:    0.80,
-		slits: [][2]pt{
-			{{5.4, 31.8}, {9.8, 32.4}},
-			{{6.2, 34.4}, {10.0, 34.6}},
+		shellC:     pt{16.4, 20},
+		shellR:     11.8,
+		spiralRMax: 8.2,
+		spiralRMin: 1.9,
+		spiralK:    (8.2 - 1.9) / (1.27 * 2 * math.Pi),
+		groove:     1.4,
+		antennae: [2]antenna{
+			{root: pt{32.2, 25}, tip: pt{30.8, 12}, half: 1.3, bulbR: 2.5},
+			{root: pt{35.3, 24.5}, tip: pt{38, 12.3}, half: 1.3, bulbR: 2.5},
 		},
-		slitHalf: []float64{0.34, 0.30},
 	}
 }
 
-// smallSnail keeps the silhouette, a single turn of the shell groove and a
-// thicker antenna, and drops the eye hole and the tail slits. At 16px the shell
-// is nine pixels across; anything finer turns to mud.
+// The menu-bar drawing keeps the silhouette and opens the spiral to one turn.
 func smallSnail() snail {
-	return snail{
-		body:       bodyPath().flatten(10),
-		shellC:     pt{16.0, 18.6},
-		shellR:     12.1,
-		spiralRMax: 10.2,
-		spiralRMin: 4.6,
-		spiralK:    1.10,
-		groove:     2.3,
-		antA:       pt{33.2, 23.2},
-		antB:       pt{34.0, 13.6},
-		antHalf:    2.4,
-		bulbC:      pt{34.3, 12.4},
-		bulbR:      3.2,
-	}
+	s := fullSnail()
+	s.spiralK = (s.spiralRMax - s.spiralRMin) / (1.02 * 2 * math.Pi)
+	s.groove = 1.75
+	return s
 }
 
 // spiral is the groove centreline: an Archimedean spiral from the rim inwards.
@@ -428,7 +389,7 @@ func (s snail) spiral() []pt {
 		th := float64(i) / float64(n-1) * arc
 		r := s.spiralRMax - s.spiralK*th
 		// Start at the upper left of the rim so the coil reads as a spiral.
-		a := th + math.Pi
+		a := th + math.Pi*1.05
 		out = append(out, pt{s.shellC.x + r*math.Cos(a), s.shellC.y + r*math.Sin(a)})
 	}
 	return out
@@ -485,23 +446,15 @@ func (f *grooveField) at(x, y float64) float64 {
 // inside answers whether (x,y) is ink.
 func (s snail) inside(g *grooveField, x, y float64) bool {
 	p := pt{x, y}
-	solid := inPoly(s.body, p) ||
-		dist(p, s.shellC) <= s.shellR ||
-		segDist(p, s.antA, s.antB) <= s.antHalf ||
-		dist(p, s.bulbC) <= s.bulbR
+	solid := inPoly(s.body, p) || dist(p, s.shellC) <= s.shellR
+	for _, a := range s.antennae {
+		solid = solid || segDist(p, a.root, a.tip) <= a.half || dist(p, a.tip) <= a.bulbR
+	}
 	if !solid {
 		return false
 	}
 	if g.at(x, y) <= s.groove {
 		return false
-	}
-	if dist(p, s.bulbC) <= s.eyeR {
-		return false
-	}
-	for i, slit := range s.slits {
-		if segDist(p, slit[0], slit[1]) <= s.slitHalf[i] {
-			return false
-		}
 	}
 	return true
 }
@@ -511,15 +464,17 @@ func (s snail) pieces() (solids, holes [][]pt) {
 	solids = append(solids,
 		s.body,
 		circlePts(s.shellC, s.shellR, 240),
-		capsulePts(s.antA, s.antB, s.antHalf),
-		circlePts(s.bulbC, s.bulbR, 96),
 	)
+	solids = append(solids, s.antennaPieces()...)
 	holes = append(holes, bandPts(s.spiral(), s.groove))
-	holes = append(holes, circlePts(s.bulbC, s.eyeR, 56))
-	for i, slit := range s.slits {
-		holes = append(holes, capsulePts(slit[0], slit[1], s.slitHalf[i]))
-	}
 	return solids, holes
+}
+
+func (s snail) antennaPieces() (solids [][]pt) {
+	for _, a := range s.antennae {
+		solids = append(solids, capsulePts(a.root, a.tip, a.half), circlePts(a.tip, a.bulbR, 96))
+	}
+	return solids
 }
 
 // ---------------------------------------------------------------- raster
@@ -819,11 +774,9 @@ func writeSharedLogo(p string, s snail) error {
 	b.WriteString("  size: 44,\n")
 	fmt.Fprintf(&b, "  body: %q,\n", mk([][]pt{outer, circlePts(s.shellC, s.shellR, 240)},
 		[][]pt{bandPts(s.spiral(), s.groove)}))
-	fmt.Fprintf(&b, "  antenna: %q,\n", mk(
-		[][]pt{capsulePts(s.antA, s.antB, s.antHalf), circlePts(s.bulbC, s.bulbR, 96)},
-		[][]pt{circlePts(s.bulbC, s.eyeR, 56)}))
+	fmt.Fprintf(&b, "  antenna: %q,\n", mk(s.antennaPieces(), nil))
 	fmt.Fprintf(&b, "  tail: %q,\n", mk([][]pt{tail}, nil))
-	fmt.Fprintf(&b, "  antennaPivot: [%.1f, %.1f],\n", s.antA.x, s.antA.y)
+	fmt.Fprintf(&b, "  antennaPivot: [%.1f, %.1f],\n", (s.antennae[0].root.x+s.antennae[1].root.x)/2, (s.antennae[0].root.y+s.antennae[1].root.y)/2)
 	fmt.Fprintf(&b, "  tailPivot: [9.2, 33.0],\n")
 	b.WriteString("} as const;\n")
 	return os.WriteFile(p, []byte(b.String()), 0o644)
@@ -1001,6 +954,7 @@ func run() error {
 	full, small := fullSnail(), smallSnail()
 
 	files := map[string]string{
+		"firmware/src/portal_logo_inc.h": "// Code generated by resources/gen. DO NOT EDIT.\n#pragma once\nnamespace portalpage {\nconstexpr char kLogo[] = R\"SVG(" + logoSVG(small, "Today") + ")SVG\";\n}\n",
 		"resources/logo.svg":       logoSVG(full, "Today"),
 		"resources/logo-small.svg": logoSVG(small, "Today"),
 		"resources/icon.svg":       iconSVG(full),

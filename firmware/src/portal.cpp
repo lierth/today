@@ -8,6 +8,7 @@
 #include "net.h"
 #include "netescape.h"
 #include "portal_config.h"
+#include "portal_page.h"
 #include "portal_plan.h"
 #include "portalscan.h"
 #include "storage.h"
@@ -25,7 +26,7 @@ String s_password;
 String s_submittedSsid;
 
 // Scan cache. The first kick happens right after the hotspot comes up, and
-// /scan refreshes it.
+// /scan?refresh=1 requests another scan; plain /scan reads the state.
 constexpr int kMaxNetworks = 24;
 // How long to wait before kicking another scan after the driver refused one.
 constexpr uint32_t kScanRetryMs = 3000;
@@ -46,7 +47,6 @@ portalscan::State s_scan;
 uint32_t s_scannedAt = 0;
 uint32_t s_startedAt = 0;
 bool s_userOpened = false;
-bool s_scanFresh = false;  // results landed, not served yet
 bool s_savedSeen = false;
 
 // Escapes into a String; nil-safe.
@@ -119,14 +119,12 @@ void CacheScanResults(int found) {
     s_networks[j + 1] = key;
   }
   s_scannedAt = millis();
+  Serial.printf("portal: scan found %d access points, %d networks\n", found, s_networkCount);
 }
 
-// Scanning with the AP up makes the radio hop channels; phones can drop the
-// association for a second or two, which is why the page warns about it.
-// A rescan while the hotspot is up is asynchronous: a synchronous scan would
-// block the HTTP server (and the keys) for seconds. /scan starts it, the page
-// polls until the results land.
-void StartRescan() {
+// Scan in the loop while HTTP/DNS keep running. Reading /scan never restarts
+// the radio; only an explicit refresh requests another scan.
+void KickRescan() {
   if (s_scan.scanning) return;
   if (!portalscan::Ready(s_scan, millis())) return;
   if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
@@ -137,7 +135,7 @@ void StartRescan() {
   // means esp_wifi_scan_start() refused (WIFI_SCAN_FAILED, usually because the
   // station is still associating). Recording it turns a silent empty list into
   // a visible "scan failed, tap rescan" and lets the retry back off.
-  const int16_t started = WiFi.scanNetworks(true, false);  // async, no hidden networks
+  const int16_t started = WiFi.scanNetworks(true, false, false, 180);  // async, no hidden networks
   const portalscan::Kick kick =
       started == WIFI_SCAN_RUNNING ? portalscan::Kick::Started : portalscan::Kick::Refused;
   portalscan::NoteKick(s_scan, kick, started, millis(), kScanRetryMs);
@@ -145,6 +143,11 @@ void StartRescan() {
     Serial.printf("portal: scan refused (%d), retry in %lu ms\n", s_scan.error,
                   static_cast<unsigned long>(kScanRetryMs));
   }
+}
+
+void RequestRescan() {
+  if (!portalscan::Request(s_scan, millis())) return;
+  net::PauseStation(true);
 }
 
 // Polls the asynchronous scan; returns true while one is in flight.
@@ -160,52 +163,11 @@ bool PollRescan() {
     for (int i = 0; i < s_networkCount; i++) {
       if (saved.length() > 0 && String(s_networks[i].ssid) == saved) s_savedSeen = true;
     }
-    s_scanFresh = true;
   } else {
     Serial.printf("portal: scan failed (%d), retry in %lu ms\n", s_scan.error,
                   static_cast<unsigned long>(kScanRetryMs));
   }
   return false;
-}
-
-// "3 bars" for the list, RSSI thresholds match the device widget.
-String Bars(int8_t rssi) {
-  int level = 1;
-  if (rssi > -80) level = 2;
-  if (rssi > -65) level = 3;
-  String out;
-  for (int i = 0; i < 3; i++) out += (i < level) ? "●" : "○";
-  return out;
-}
-
-String ScanListHtml() {
-  if (s_networkCount == 0) {
-    if (s_scan.error != 0) {
-      String out = "<p class=empty>扫描失败（";
-      out += String(s_scan.error);
-      out += "），请点「重新扫描」。</p>";
-      return out;
-    }
-    return "<p class=empty>没有扫描到网络。可手动输入隐藏网络的名称。</p>";
-  }
-  String out;
-  out.reserve(s_networkCount * 120);
-  for (int i = 0; i < s_networkCount; i++) {
-    const Network& n = s_networks[i];
-    const String escaped = Html(String(n.ssid));
-    out += "<button type=button class=net data-ssid=\"";
-    out += escaped;
-    out += "\" data-secure=\"";
-    out += n.secure ? "1" : "0";
-    out += "\"><span class=name>";
-    out += escaped;
-    out += "</span><span class=meta>";
-    out += Bars(n.rssi);
-    if (n.secure) out += " 🔒";
-    if (s_savedSeen && String(n.ssid) == SavedSsid()) out += " ★";
-    out += "</span></button>";
-  }
-  return out;
 }
 
 String ScanJson(bool scanning) {
@@ -215,6 +177,8 @@ String ScanJson(bool scanning) {
   out += (s_scan.error != 0 && !scanning) ? "true" : "false";
   out += ",\"error\":";
   out += String(s_scan.error);
+  out += ",\"complete\":";
+  out += s_scan.complete ? "true" : "false";
   out += ",\"scanned_ms\":";
   out += String(millis() - s_scannedAt);
   out += ",\"networks\":[";
@@ -235,120 +199,38 @@ String ScanJson(bool scanning) {
   return out;
 }
 
-const char* kPageStyle =
-    "<style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:26rem;"
-    "margin:2rem auto;padding:0 1rem;color:#111;background:#fff}"
-    "h1{font-size:20px;margin:0 0 .2rem}p{color:#666;margin:.2rem 0 1rem}"
-    "label{display:block;margin:.8rem 0 .2rem;color:#666;font-size:14px}"
-    "input{width:100%;padding:.75rem;font:inherit;box-sizing:border-box;"
-    "border:1px solid #ccc;border-radius:8px}"
-    ".nets{margin:.4rem 0 0;border:1px solid #ddd;border-radius:8px;overflow:hidden}"
-    ".net{display:flex;justify-content:space-between;align-items:center;width:100%;"
-    "min-height:48px;padding:.5rem .75rem;font:inherit;text-align:left;background:#fff;"
-    "color:#111;border:0;border-top:1px solid #eee;cursor:pointer}"
-    ".net:first-child{border-top:0}.net:active{background:#f2f2f2}"
-    ".net .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:.5rem}"
-    ".net .meta{color:#666;font-size:13px;flex:none}"
-    "button.primary{width:100%;min-height:48px;margin-top:1rem;font:inherit;"
-    "background:#111;color:#fff;border:0;border-radius:8px}"
-    "button.ghost{min-height:44px;padding:.5rem .9rem;font:inherit;background:#fff;"
-    "color:#111;border:1px solid #ccc;border-radius:8px}"
-    ".row{display:flex;gap:.5rem;align-items:center;margin-top:.6rem}"
-    ".empty{color:#666;padding:.8rem .75rem;margin:0}"
-    ".note{font-size:13px;color:#8a5a00;background:#fff7e6;border-radius:6px;"
-    "padding:.5rem .75rem;margin:.5rem 0}"
-    "@media (prefers-color-scheme:dark){body{background:#121211;color:#ecece7}"
-    "input,.net{background:#1b1b19;color:#ecece7;border-color:#2b2b28}"
-    ".net{border-top-color:#2b2b28}.net:active{background:#242422}"
-    "button.ghost{background:#1b1b19;color:#ecece7;border-color:#2b2b28}"
-    "button.primary{background:#ecece7;color:#111}}"
-    "</style>";
-
-String Page(const String& savedNote, const String& body) {
-  String html;
-  html.reserve(4096);
-  html += "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>";
-  html += "<meta name=color-scheme content='light dark'><title>Today</title>";
-  html += kPageStyle;
-  html += "<h1>Today</h1><p>连接 2.4 GHz Wi-Fi，保存后设备重启。</p>";
-  html += savedNote;
-  html += body;
-  html += "<script>";
-  html +=
-      "var si=document.getElementById('ssid'),pi=document.getElementById('pass'),"
-      "pl=document.getElementById('passrow');"
-      "function pick(b){si.value=b.dataset.ssid;"
-      "var open=b.dataset.secure==='0';"
-      "if(pl)pl.style.display=open?'none':'';"
-      "if(!open&&pi)pi.focus();else si.blur();}";
-  html += "document.querySelectorAll('.net').forEach(function(b){b.onclick=function(){pick(b)}});";
-  html +=
-      "function render(d){var box=document.getElementById('nets');box.innerHTML='';"
-      "if(!d.networks.length){var p=document.createElement('p');p.className='empty';"
-      "p.textContent=d.failed?'扫描失败（'+d.error+'），请点「重新扫描」。':"
-      "'没有扫描到网络。可手动输入隐藏网络的名称。';box.appendChild(p);}"
-      "d.networks.forEach(function(n){"
-      "var b=document.createElement('button');b.type='button';b.className='net';"
-      "b.dataset.ssid=n.ssid;b.dataset.secure=n.secure?'1':'0';"
-      "var nm=document.createElement('span');nm.className='name';nm.textContent=n.ssid;"
-      "var mt=document.createElement('span');mt.className='meta';"
-      "var lvl=n.rssi>-80?(n.rssi>-65?3:2):1;"
-      "mt.textContent=['●○○','●●○','●●●'][lvl-1]+(n.secure?' 🔒':'')+(n.saved?' ★':'');"
-      "b.appendChild(nm);b.appendChild(mt);b.onclick=function(){pick(b)};box.appendChild(b);});}";
-  html +=
-      "var rb=document.getElementById('rescan');"
-      "function poll(tries){fetch('/scan').then(function(r){return r.json()}).then(function(d){"
-      // Keep trying through the driver's backoff: a refusal is usually the
-      // radio still associating, and the next kick a few seconds later lands.
-      "if((d.scanning||d.failed)&&tries>0){setTimeout(function(){poll(tries-1)},900);return;}"
-      "render(d);if(rb){rb.disabled=false;rb.textContent='重新扫描';}"
-      "}).catch(function(){if(rb){rb.disabled=false;rb.textContent='重新扫描';}});}"
-      "function start(){if(rb){rb.disabled=true;rb.textContent='扫描中…';}"
-      "var h=document.getElementById('hint');if(h)h.style.display='';poll(20);}";
-  // An empty list is the normal first paint (nothing cached yet), so kick a
-  // scan without making the person find the rescan button first.
-  html += "if(!document.querySelectorAll('#nets .net').length)start();"
-          "if(rb)rb.onclick=start;";
-  html += "</script>";
-  return html;
-}
-
 String SavedNote() {
   storage::Config cfg = storage::LoadConfig();
   if (cfg.wifiSsid.isEmpty()) return "";
-  String note = "<p class=note>当前保存：";
+  String note = "<p class=saved>已保存：<strong>";
   note += Html(cfg.wifiSsid);
+  note += "</strong>";
   // The reason is the whole difference between "it is broken" and "the
   // password is wrong": say which one the driver reported.
   char advice[wifista::kAdviceCap];
   const uint8_t reason = net::LastDisconnectReason();
   if (reason != 0) {
     wifista::ReasonAdvice(reason, advice, sizeof(advice));
-    note += "（连不上：";
+    note += "<span>";
     note += Html(String(advice));
-    note += "）</p>";
+    note += "</span></p>";
   } else {
-    note += "（还没连上过，可重新选择）</p>";
+    note += "</p>";
   }
   return note;
 }
 
 void HandleRoot() {
-  String body;
-  body += "<form method=post action=/save>";
-  body += "<label for=ssid>网络名称（SSID）</label>";
-  body += "<input id=ssid name=ssid required maxlength=32 autocapitalize=off autocorrect=off "
-          "autocomplete=off>";
-  body += "<div class=nets id=nets>";
-  body += ScanListHtml();
-  body += "</div>";
-  body += "<div class=row><button class=ghost id=rescan type=button>重新扫描</button>";
-  body += "<span id=hint style='font-size:13px;color:#8a5a00;display:none'>"
-          "扫描时手机可能短暂断开，完成后自动刷新</span></div>";
-  body += "<div id=passrow><label for=pass>密码</label>";
-  body += "<input id=pass name=pass type=password autocomplete=off></div>";
-  body += "<button class=primary type=submit>保存并重启</button></form>";
-  s_http.send(200, "text/html; charset=utf-8", Page(SavedNote(), body));
+  // Opening the page is an explicit setup request: do not reconnect the old
+  // station or close the hotspot while the person is entering a password.
+  s_userOpened = true;
+  net::PauseStation(true);
+  if (!s_scan.complete && !s_scan.scanning && !s_scan.requested) RequestRescan();
+  String html(portalpage::kPage);
+  html.replace("{{LOGO}}", portalpage::kLogo);
+  html.replace("{{SAVED_NOTE}}", SavedNote());
+  s_http.sendHeader("Cache-Control", "no-store");
+  s_http.send(200, "text/html; charset=utf-8", html);
 }
 
 void HandleSave() {
@@ -371,24 +253,13 @@ void HandleSave() {
   s_submitted = true;
   s_http.send(200, "text/html; charset=utf-8",
               "<!doctype html><meta name=viewport content='width=device-width'>"
-              "<p>已保存，设备正在重启。</p>");
+              "<p>已保存，显示屏正在重启连接 Wi-Fi。连接后，在 Mac App 的「设备」中输入屏幕配对码。</p>");
 }
 
 void HandleScan() {
-  // One call starts the scan, the page polls until "scanning" is false. The
-  // reply that carries the fresh list does not start another one.
-  bool running = PollRescan();
-  const bool fresh = s_scanFresh;
-  s_scanFresh = false;
-  if (!running && !fresh) {
-    // After a refusal wait out the backoff instead of hammering the driver on
-    // every 700 ms poll; the reply then carries failed=true so the page can
-    // say what happened.
-    if (portalscan::Ready(s_scan, millis())) {
-      StartRescan();
-      running = s_scan.scanning;
-    }
-  }
+  if (s_http.arg("refresh") == "1") RequestRescan();
+  const bool running = s_scan.scanning || s_scan.requested;
+  s_http.sendHeader("Cache-Control", "no-store");
   s_http.send(running ? 202 : 200, "application/json; charset=utf-8", ScanJson(running));
 }
 
@@ -446,6 +317,8 @@ void Start() {
   // even show. The list is filled by an async scan started below; the page
   // polls /scan for it.
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setScanTimeout(12000);
+  net::PauseStation(true);
   // Pin the hotspot to the channel the saved network already uses when we know
   // it. Left to itself the AP starts on the STA's channel and moves as the STA
   // retries, and every move drops the phone that is filling in the form.
@@ -460,9 +333,10 @@ void Start() {
   s_http.begin();
   s_active = true;
   s_submitted = false;
+  s_scan = portalscan::State{};
   // Kick the async scan now, while the phone is still joining: by the time the
   // page asks for the list it is usually ready, and nobody sees a rescan drop.
-  StartRescan();
+  RequestRescan();
   s_startedAt = millis();
   s_savedSeen = false;
   const String saved = SavedSsid();
@@ -479,6 +353,8 @@ void Stop() {
   s_dns.stop();
   WiFi.softAPdisconnect(true);
   s_active = false;
+  s_scan = portalscan::State{};
+  net::PauseStation(false);
   s_userOpened = false;  // the next manual hold sets it again
   // Drop the identity so the next opening gets a fresh password: the ten
   // digits are a one-time key for one five-minute window.
@@ -489,6 +365,9 @@ void Stop() {
 void Loop() {
   if (!s_active) return;
   s_dns.processNextRequest();
+  PollRescan();
+  if (portalscan::Ready(s_scan, millis())) KickRescan();
+  if (!s_userOpened && !s_scan.scanning && !s_scan.requested) net::PauseStation(false);
   s_http.handleClient();
 }
 

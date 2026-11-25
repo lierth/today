@@ -43,13 +43,16 @@
     background: transparent;
     display: grid;
     place-items: center;
-    cursor: pointer;
+    cursor: default;
     transition:
       background var(--dur-color, 0.12s) var(--ease, ease),
       border-color var(--dur-color, 0.12s) var(--ease, ease);
   }
   .check:hover:not(:disabled) {
     border-color: var(--ctl-fg, #63636b);
+  }
+  .check:disabled {
+    opacity: 0.5;
   }
   .check.checked {
     background: var(--fg);

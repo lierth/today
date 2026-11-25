@@ -1,6 +1,7 @@
 package frame
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -39,21 +40,11 @@ func TestCarriedRowMarksTimeColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The time column is 56 px wide starting after the gutter; the arrow adds
-	// ink there that a plain "09:30" does not reach.
-	stride := f.Stride()
-	dark := func(x0, x1 int) int {
-		n := 0
-		for y := HeaderHeight; y < HeaderHeight+RowHeight; y++ {
-			for x := x0; x < x1; x++ {
-				if f.Bitmap[y*stride+x/8]>>(7-uint(x%8))&1 != 0 {
-					n++
-				}
-			}
-		}
-		return n
+	plain, err := Build(Input{Now: now, Items: []Item{{ID: "00000000-0000-4000-8000-000000000001", Title: "昨天的周报", StartsAt: &start}}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if dark(0, 8) == 0 {
-		t.Fatal("carried row drew nothing in the gutter")
+	if bytes.Equal(f.Bitmap[72*f.Stride():96*f.Stride()], plain.Bitmap[72*plain.Stride():96*plain.Stride()]) {
+		t.Fatal("carried indicator disappeared from the focus time badge")
 	}
 }

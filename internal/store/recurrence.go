@@ -207,7 +207,7 @@ func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Ti
 	windowStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	windowEnd := windowStart.AddDate(0, 0, days)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, description, all_day, starts_at, rrule
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, description, all_day, starts_at, rrule, COALESCE(category_id, '')
 		FROM items WHERE rrule != '' AND starts_at IS NOT NULL AND deleted_at IS NULL`)
 	if err != nil {
 		return 0, fmt.Errorf("store: materialize: %w", err)
@@ -219,6 +219,7 @@ func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Ti
 		allDay      bool
 		startsAt    time.Time
 		rrule       string
+		categoryID  string
 	}
 	var masters []master
 	for rows.Next() {
@@ -227,7 +228,7 @@ func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Ti
 			allDay   int
 			startsAt string
 		)
-		if err := rows.Scan(&m.id, &m.title, &m.description, &allDay, &startsAt, &m.rrule); err != nil {
+		if err := rows.Scan(&m.id, &m.title, &m.description, &allDay, &startsAt, &m.rrule, &m.categoryID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("store: materialize scan: %w", err)
 		}
@@ -271,9 +272,9 @@ func (s *Store) Materialize(ctx context.Context, loc *time.Location, now time.Ti
 			date := occ.Format(DateLayout)
 			nowStr := timeStr(s.Now())
 			res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO items (`+itemCols+`, deleted_at)
-				VALUES (?,?,?,?,?,NULL,?,?,0,'',?,?,'',0,?,?,NULL)`,
+				SELECT ?,?,?,?,?,NULL,?,?,0,'',?,?,'',0,?,?,?,NULL WHERE NOT EXISTS (SELECT 1 FROM series_exclusions WHERE series_id=? AND date_local=?)`,
 				uuid.NewString(), m.title, m.description, boolInt(m.allDay), timeStr(occ),
-				date, StatusOpen, m.id, occ.Unix(), nowStr, nowStr)
+				date, StatusOpen, m.id, occ.Unix(), nowStr, nowStr, nullable(m.categoryID), m.id, date)
 			if err != nil {
 				return inserted, fmt.Errorf("store: materialize insert: %w", err)
 			}

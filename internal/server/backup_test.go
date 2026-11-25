@@ -20,6 +20,29 @@ func backupEnv(t *testing.T) *testEnv {
 	return e
 }
 
+func TestDeleteSnapshotOnlyDeletesListedBackups(t *testing.T) {
+	e := backupEnv(t)
+	if err := e.srv.RunBackup(""); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := e.srv.SnapshotList()
+	if err != nil || len(snapshots) == 0 {
+		t.Fatal("backup missing", err)
+	}
+	if err := e.srv.DeleteSnapshot("../today.db"); err == nil {
+		t.Fatal("path traversal accepted")
+	}
+	if err := e.srv.DeleteSnapshot(snapshots[0].Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(snapshots[0].Path); !os.IsNotExist(err) {
+		t.Fatal("selected backup was not removed", err)
+	}
+	if _, err := e.st.Settings(context.Background()); err != nil {
+		t.Fatal("live database damaged", err)
+	}
+}
+
 // The daily hook makes one backup per local date, not one per tick.
 func TestDailyHookOncePerDay(t *testing.T) {
 	e := backupEnv(t)

@@ -50,13 +50,16 @@
     width: 100%;
   }
   button.row {
-    cursor: pointer;
+    cursor: default;
   }
   button.row:hover {
     background: var(--pill);
   }
   .row:first-child {
     border-top: 0;
+  }
+  :global(:root[data-window='settings']) .row {
+    padding: 8px 12px;
   }
   .text {
     display: flex;

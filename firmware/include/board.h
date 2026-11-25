@@ -61,7 +61,8 @@ constexpr float kTemperatureOffsetC = 0.0f;  // panel/board self-heating trim
 
 // Cadence.
 constexpr size_t kMaxOutbox = 32;
-constexpr uint32_t kFrameIntervalMs = 60 * 1000;
+// Conditional requests keep controls responsive without repainting the LCD.
+constexpr uint32_t kFrameIntervalMs = 5 * 1000;
 constexpr uint32_t kClimateIntervalMs = 60 * 1000;
 constexpr uint32_t kWifiRetryMs = 20 * 1000;
 constexpr uint8_t kWifiFailuresBeforePortal = 5;

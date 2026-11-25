@@ -100,7 +100,7 @@
     gap: 14px;
   }
   input {
-    height: 25px;
+    height: var(--ctl);
     max-width: 220px;
     padding: 0 6px;
     border: 1px solid var(--line);
@@ -116,7 +116,11 @@
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
   .linkbtn {
-    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--ctl);
     padding: 0 9px;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -124,9 +128,9 @@
     color: var(--fg);
     font: inherit;
     font-size: 11.5px;
-    cursor: pointer;
+    cursor: default;
   }
-  .linkbtn:hover {
+  .linkbtn:hover:not(:disabled) {
     background: var(--pill);
   }
   .error {

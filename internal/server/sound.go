@@ -86,8 +86,8 @@ func onOff(v string, fallback bool) int {
 // Preview is a one-shot "play a test tone on this device" request.
 //
 // It lives in memory, per device: a global settings key would ring whichever
-// board polls first, and writing settings inside the GET frame handler breaks
-// PLAN §9 ("GET never writes"). A mutex makes check-and-clear atomic, so two
+// board polls first, and the GET frame handler must not write settings.
+// A mutex makes check-and-clear atomic, so two
 // concurrent frame requests for the same board cannot both get the flag.
 type previewSet struct {
 	mu   sync.Mutex

@@ -39,11 +39,16 @@
   --radius-lg: 11px;
   --radius-xl: 12px;
   --radius-2xl: 14px;
+  --radius-control: 7px;
+  --radius-option: 4px;
+  --radius-surface: 12px;
+  --radius-floating: 11px;
+  --radius-dialog: 14px;
 
   --shadow-hairline: 0 0 0 1px rgba(0, 0, 0, 0.04);
   --shadow-popover: 0 12px 32px rgba(20, 20, 30, 0.16), 0 2px 6px rgba(20, 20, 30, 0.08);
-  /* Floating layers are the same paper, blurred, never a second opaque card. */
-  --popover-bg: color-mix(in oklab, var(--card) 72%, transparent);
+  /* Floating surfaces are opaque so content underneath cannot bleed through. */
+  --popover-bg: var(--card);
   --popover-blur: blur(24px);
 
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -81,7 +86,7 @@
 
   --shadow-hairline: 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
-  --popover-bg: color-mix(in oklab, var(--card) 72%, transparent);
+  --popover-bg: var(--card);
   --popover-blur: blur(24px);
 }
 

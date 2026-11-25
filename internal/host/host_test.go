@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo"
 )
 
 func TestDeepLinkTarget(t *testing.T) {
@@ -144,5 +146,76 @@ func TestCloseReportsShutdownError(t *testing.T) {
 	h.close("quit")
 	if !released {
 		t.Fatal("release did not run before the failing shutdown")
+	}
+}
+
+func TestCloseWithoutCleanupStillMarksQuitting(t *testing.T) {
+	h := New(nil, true, nil)
+	h.close("quit")
+	h.close("session end")
+	select {
+	case <-h.done:
+	default:
+		t.Fatal("cached panel would prevent quitting without cleanup hooks")
+	}
+}
+
+func TestPanelDismissRetainsContentButAllowsQuit(t *testing.T) {
+	h := New(nil, true, nil)
+	h.panelWanted = true
+	dismiss := &mygo.CloseEvent{}
+	h.onPanelClose(dismiss)
+	if !dismiss.DefaultPrevented() || h.panelWanted {
+		t.Fatal("dismiss should retain the WebView and cancel a pending open")
+	}
+	h.close("quit")
+	quit := &mygo.CloseEvent{}
+	h.onPanelClose(quit)
+	if quit.DefaultPrevented() {
+		t.Fatal("cached panel blocked app quit")
+	}
+}
+
+func TestLoginSettingWithTrayDoesNotDeadlock(t *testing.T) {
+	h := New(nil, true, nil)
+	h.settings = map[string]string{"open_at_login": "false"}
+	h.tray = &mygo.Tray{}
+	changed := make(chan bool, 1)
+	go func() {
+		changed <- h.setSettings(map[string]string{"open_at_login": "true"})
+	}()
+	select {
+	case got := <-changed:
+		if !got || h.setting("open_at_login") != "true" {
+			t.Fatal("login setting was not applied")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("updating settings with an existing tray deadlocked")
+	}
+}
+
+func TestTrayTitleIsOptional(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		settings map[string]string
+		want     string
+	}{
+		{"default", nil, "icon"},
+		{"hidden", map[string]string{"tray_mode": "icon"}, "icon"},
+		{"progress", map[string]string{"tray_mode": "progress"}, "progress"},
+		{"next", map[string]string{"tray_mode": "next"}, "next"},
+		{"legacy shown", map[string]string{"tray_title": "true"}, "progress"},
+		{"legacy hidden", map[string]string{"tray_title": "false"}, "icon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := New(nil, true, nil)
+			h.settings = tc.settings
+			if got := h.trayMode(); got != tc.want {
+				t.Fatalf("trayMode = %q, want %q", got, tc.want)
+			}
+			if tc.want == "icon" && h.title() != "" {
+				t.Fatal("icon-only mode still shows a title")
+			}
+		})
 	}
 }

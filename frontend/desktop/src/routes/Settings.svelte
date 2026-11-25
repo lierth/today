@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
-   * The settings window: one card per group, a segmented control on top where a
-   * toolbar would be. The tab lives in the URL (?tab=devices) so the panel's
+   * The settings window: compact navigation beside grouped controls.
+   * The tab lives in the URL (?tab=devices) so the panel's
    * "添加一台设备" and "设置 → 数据" land in the right place.
    */
   import { isMyGo } from 'mygo-runtime';
+  import { onMount, tick } from 'svelte';
   import { Panel, type SettingsView } from '../mygo';
-  import Snail from '../Snail.svelte';
   import { loadPrefs, startTheme, watchAccessibility } from '../lib/theme';
   import General from './settings/General.svelte';
   import Devices from './settings/Devices.svelte';
@@ -15,43 +15,37 @@
   import Data from './settings/Data.svelte';
   import About from './settings/About.svelte';
 
-  type Tab = { id: string; label: string; hint: string; icon: string };
+  type Tab = { id: string; label: string; icon: string };
   const tabs: Tab[] = [
     {
       id: 'general',
       icon: 'M4 7h16M4 17h16M8 4v6M16 14v6',
       label: '常规',
-      hint: '让 Today 按你的习惯工作。',
     },
     {
       id: 'devices',
       icon: 'M5 3h14v14H5zM9 21h6M12 17v4',
       label: '设备',
-      hint: '连接显示屏，查看状态与预览。',
     },
     {
       id: 'display',
       icon: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4',
       label: '显示与声音',
-      hint: '安排安静的时段，调整提醒方式。',
     },
     {
       id: 'network',
       icon: 'M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M9 16a5 5 0 0 1 6 0M12 20h.01',
       label: '网络',
-      hint: '管理本地连接与远程访问。',
     },
     {
       id: 'data',
       icon: 'M4 6c0-4 16-4 16 0s-16 4-16 0v12c0 4 16 4 16 0V6M4 12c0 4 16 4 16 0',
       label: '数据',
-      hint: '你的日程与备份，都在这里。',
     },
     {
       id: 'about',
       icon: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 11v6M12 7h.01',
       label: '关于',
-      hint: '版本、更新与应用信息。',
     },
   ];
 
@@ -61,6 +55,7 @@
   let error = $state('');
   let note = $state('');
   let saving = $state(0);
+  let keyboardNavigation = $state(false);
   let noticeTimer: ReturnType<typeof setTimeout>;
   const selected = $derived(tabs.find((t) => t.id === tab)!);
   const live = isMyGo();
@@ -114,6 +109,7 @@
     else if (event.key === 'End') next = tabs.length - 1;
     else return;
     event.preventDefault();
+    keyboardNavigation = true;
     const picked = tabs[next];
     if (!picked) return;
     chooseTab(picked.id);
@@ -123,22 +119,38 @@
     list[next]?.focus();
   }
 
-  $effect(() => {
+  onMount(() => {
+    const stopAccessibility = watchAccessibility();
+    const stopTheme = startTheme('system');
+    let active = true;
     void (async () => {
-      watchAccessibility();
-      startTheme('system');
       await loadPrefs();
       await load();
-    })();
+      await tick();
+      if (active && live) await Panel.settingsReady();
+    })().catch((err) => {
+      if (active) error = err instanceof Error ? err.message : String(err);
+    });
+    return () => {
+      active = false;
+      stopAccessibility?.();
+      stopTheme();
+      clearTimeout(noticeTimer);
+    };
   });
 </script>
 
-<div class="window">
+<svelte:window
+  onfocus={() => (keyboardNavigation = false)}
+  onblur={() => (keyboardNavigation = false)}
+  onpointerdown={() => (keyboardNavigation = false)}
+  onkeydown={(event) => {
+    if (event.key === 'Tab') keyboardNavigation = true;
+  }}
+/>
+
+<div class="window" class:keyboard={keyboardNavigation}>
   <aside>
-    <div class="brand">
-      <Snail size={24} />
-      <div><strong>today</strong><span>偏好设置</span></div>
-    </div>
     <div
       class="tabs"
       role="tablist"
@@ -169,10 +181,7 @@
 
   <section class="content">
     <header>
-      <div>
-        <h1>{selected.label}</h1>
-        <p>{selected.hint}</p>
-      </div>
+      <h1>{selected.label}</h1>
       <span class="note" aria-live="polite">{saving ? '正在保存…' : note}</span>
     </header>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -197,50 +206,42 @@
 </div>
 
 <style>
+  .window:not(.keyboard) :global(button:focus-visible) {
+    outline: none;
+  }
   .window {
     display: flex;
     height: 100vh;
     overflow: hidden;
   }
+  aside,
+  .content {
+    --app-region: drag;
+  }
+  .tabs,
+  .body,
+  .error {
+    --app-region: no-drag;
+  }
   aside {
     display: flex;
     flex-direction: column;
-    flex: 0 0 166px;
-    padding: calc(var(--mygo-titlebar-height, 28px) + 20px) 12px 18px;
+    flex: 0 0 148px;
+    padding: calc(var(--mygo-titlebar-height, 28px) + 8px) 10px 12px;
     border-right: 1px solid var(--line);
     background: color-mix(in oklab, var(--bg) 80%, transparent);
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 0 8px 24px;
-  }
-  .brand div {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .brand strong {
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .brand span {
-    font-size: 10.5px;
-    color: var(--muted);
   }
   .tabs {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 3px;
   }
   .tabs button {
     display: flex;
     align-items: center;
     gap: 9px;
     width: 100%;
-    height: 36px;
+    height: 32px;
     padding: 0 9px;
     border: 0;
     border-radius: 8px;
@@ -250,7 +251,6 @@
     font-size: 12px;
     text-align: left;
     cursor: default;
-    transition: background var(--dur-color);
   }
   .tabs button:hover {
     color: var(--fg);
@@ -262,8 +262,8 @@
     font-weight: 500;
   }
   .nav-mark {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     flex: none;
     fill: none;
     stroke: currentcolor;
@@ -282,25 +282,22 @@
     flex-direction: column;
     flex: 1;
     min-width: 0;
-    padding-top: calc(var(--mygo-titlebar-height, 28px) + 18px);
+    padding-top: 20px;
   }
   header {
+    user-select: none;
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 12px;
-    padding: 0 26px 22px;
+    min-height: 28px;
+    padding: 0 20px 12px;
   }
   h1 {
     margin: 0;
-    font-size: 23px;
+    font-size: 18px;
     font-weight: 600;
     letter-spacing: -0.03em;
-  }
-  header p {
-    margin: 5px 0 0;
-    font-size: 12px;
-    color: var(--muted);
   }
   .note {
     font-size: 11px;
@@ -311,16 +308,17 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 0 26px 28px;
+    padding: 0 20px 20px;
   }
   fieldset {
     min-width: 0;
     margin: 0;
     padding: 0;
     border: 0;
+    max-width: 760px;
   }
   .error {
-    margin: 0 26px 12px;
+    margin: 0 20px 10px;
     padding: 9px 12px;
     border: 1px solid var(--error);
     border-radius: 8px;

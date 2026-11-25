@@ -58,6 +58,8 @@ void DrawBoot(uint8_t* out, const char* version);
 // keeps the shared header and puts the password at scale 4.
 void DrawPortal(uint8_t* out, const char* ssid, const char* password, const char* url);
 
+void DrawPairing(uint8_t* out, const char* id, const char* code);
+
 // The banner's own left margin; the widest string the firmware draws there is
 // 396 px on a 400 px panel, so this is all the slack there is.
 constexpr int kBannerPad = 2;
@@ -72,6 +74,7 @@ int BannerTextY(int y, int height, int scale);
 // centring it on that rect runs it off the 400 px panel. Right-aligning to
 // clockX+clockW leaves the declared margin on the right and never clips.
 int ClockTextX(int clockX, int clockW, int scale);
+int ClockScale(int width, int height);
 
 // DrawString writes ASCII text at (x, y) with `scale`. It returns the width
 // used. Only the glyphs the firmware font has are supported; unknown bytes

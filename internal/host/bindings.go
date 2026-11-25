@@ -81,8 +81,8 @@ type Device struct {
 }
 
 // TodayView is the panel's whole payload: the day header, the rows, the
-// leftovers and the devices. One call, because the panel is rebuilt on every
-// open and a round trip per section would show it half-empty for a moment.
+// leftovers and the devices. One call keeps each refresh consistent instead
+// of painting the sections a round trip at a time.
 type TodayView struct {
 	Date    string    `json:"date"`    // 11月19日
 	Weekday string    `json:"weekday"` // 周三
@@ -372,6 +372,14 @@ type Prefs struct {
 // "display", "network", "data" or "about".
 func (p *Panel) OpenSettings(ctx context.Context, tab string) error {
 	p.h.openSettings(tab)
+	return nil
+}
+
+// SettingsReady reveals the settings window after its theme and content render.
+func (p *Panel) SettingsReady(ctx context.Context) error {
+	if win := mygo.CallerWindow(ctx); win != nil && win == p.h.settingsWindow {
+		win.Show()
+	}
 	return nil
 }
 

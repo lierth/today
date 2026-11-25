@@ -17,9 +17,11 @@ constexpr size_t kMaxFrameBytes = 24 + kMaxRows * 20 + 1 + kMaxFooters * 2 +
                                  1 + kMaxWidgets * 9 + kBitmapBytes + 4;
 
 constexpr uint8_t kFlagForceFull = 1 << 0;
+constexpr uint8_t kFlagFocus = 1 << 1;
 
 constexpr uint8_t kRowDone = 1 << 0;
 constexpr uint8_t kRowSummary = 1 << 1;
+constexpr uint8_t kRowHero = 1 << 2;
 
 constexpr uint8_t kActionUp = 1;
 constexpr uint8_t kActionDown = 2;
@@ -36,7 +38,9 @@ struct Row {
   uint8_t id[16];
   uint16_t y;
   uint8_t flags;
+  uint8_t height;  // reserved byte in legacy frames
 };
+static_assert(sizeof(Row) == 20, "NVS row records must remain compatible");
 
 struct FooterButton {
   uint8_t gpio;

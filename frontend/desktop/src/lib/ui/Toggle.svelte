@@ -30,9 +30,9 @@
     padding: 0;
     border: 0;
     border-radius: 999px;
-    background: var(--pill);
+    background: var(--faint);
     position: relative;
-    cursor: pointer;
+    cursor: default;
     transition: background var(--dur-color, 0.12s) var(--ease, ease);
   }
   /* The accent belongs to status and reminders; a switch that is simply on

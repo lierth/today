@@ -172,12 +172,37 @@ func (s *Server) installBackupHook() {
 		return
 	}
 	s.SetDailyHook(func(day string) error {
+		for _, dir := range []string{s.backupDir(), s.cloudDir()} {
+			if err := backup.PruneExpired(dir, s.clock()); err != nil {
+				return err
+			}
+		}
 		if err := s.RunBackup(day); err != nil {
 			s.log.Printf("server: backup %s: %v", day, err)
 			return err
 		}
 		return nil
 	})
+}
+
+func (s *Server) DeleteSnapshot(name string) error {
+	s.backups.mu.Lock()
+	if s.backups.running {
+		s.backups.mu.Unlock()
+		return ErrBackupBusy
+	}
+	s.backups.running = true
+	s.backups.mu.Unlock()
+	defer func() { s.backups.mu.Lock(); s.backups.running = false; s.backups.mu.Unlock() }()
+	snaps, err := s.SnapshotList()
+	if err != nil {
+		return err
+	}
+	snapshot, err := SnapshotByName(snaps, name)
+	if err != nil {
+		return err
+	}
+	return os.Remove(snapshot.Path)
 }
 
 // SetDailyBackupForTest installs the same hook a started server has; the test

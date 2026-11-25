@@ -44,7 +44,7 @@ func (s *Server) GenerateDeviceToken(ctx context.Context, id string) (TokenResul
 	if _, err := s.UpdateSettings(ctx, map[string]string{"device_token_hint": hint}); err != nil {
 		return TokenResult{}, err
 	}
-	return TokenResult{Token: token, Hint: hint, Commands: setupCommands(s.lanBase(), token)}, nil
+	return TokenResult{Token: token, Hint: hint, Commands: setupCommands(s.lanBase(), id, token)}, nil
 }
 
 // PreviewFramePNG renders the frame this board would get right now. The panel
@@ -263,14 +263,21 @@ func (s *Server) AddDevice(ctx context.Context, id, name string) (store.Device, 
 	if name == "" {
 		name = id
 	}
-	if _, err := s.st.Device(ctx, id); err == nil {
-		return store.Device{}, fmt.Errorf("设备 %s 已存在", id)
+	d, err := s.st.Device(ctx, id)
+	if err == nil {
+		if d.RevokedAt == nil {
+			return store.Device{}, fmt.Errorf("设备 %s 已存在", id)
+		}
+		return s.st.RestoreDevice(ctx, id, name)
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return store.Device{}, err
 	}
 	return s.st.CreateDevice(ctx, id, name, "")
 }
 
 // RevokeDevice stops a board from fetching frames. The row stays so the name
-// and its history are still there, and the settings list explains it.
+// and its history are still there if the person adds it again.
 func (s *Server) RevokeDevice(ctx context.Context, id string) error {
 	if !deviceIDPattern.MatchString(id) {
 		return fmt.Errorf("设备 ID 无效")

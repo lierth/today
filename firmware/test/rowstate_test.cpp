@@ -33,4 +33,17 @@ int main() {
   mask = rowstate::ApplyOp(mask, rows, 2, rows[1].id, true);
   mask = rowstate::ApplyOp(mask, rows, 2, rows[0].id, false);
   assert(mask == 2); // pending operations follow IDs after rows are reordered
+
+  memset(bitmap, 0, sizeof(bitmap));
+  rows[0].y = 72; rows[0].height = 96; rows[0].flags = tbf::kRowHero;
+  rows[1].y = 179; rows[1].height = 24; rows[1].flags = 0;
+  bitmap[130 * 50 + 100 / 8] |= 0x80 >> (100 % 8); // large Chinese title ink
+  rowstate::Apply(bitmap, rows, 2, 1, 1, 24, 24, true);
+  assert(black(100,130)); // overlay does not invert or erase the hero title
+  assert(black(84,80));   // an offline completion appears beside the badge
+  assert(black(16,183) && !black(0,179)); // narrow selection marker
+  rowstate::Apply(bitmap, rows, 2, 0, 0, 24, 24, true);
+  assert(!black(84,80) && black(100,130)); // undo preserves the title
+  rows[1].flags = tbf::kRowSummary;
+  assert(rowstate::Next(rows,2,0)==0); // summary is not an actionable task
 }

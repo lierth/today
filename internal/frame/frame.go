@@ -11,7 +11,7 @@ import (
 	"hash/crc32"
 )
 
-// Contract constants, shared with the firmware (docs/PLAN.md §5.2).
+// Contract constants, shared with firmware/src/tbf.h.
 const (
 	Magic         = "TBF1"
 	FormatVersion = 3
@@ -21,15 +21,15 @@ const (
 	Height = 300
 
 	RowHeight    = 24
-	HeaderHeight = 44
-	FooterHeight = 0
+	HeaderHeight = 60
+	FooterHeight = 28
 
-	ContentX     = 16
-	ContentWidth = 368
+	ContentX     = 24
+	ContentWidth = 360
 )
 
 // Widget kinds. The device fills these rectangles itself; the server leaves
-// them blank so minute-level updates never change the ETag (PLAN §5.2).
+// them blank so minute-level updates never change the ETag.
 const (
 	WidgetClock   = 1 // HH:MM
 	WidgetWifi    = 2
@@ -37,29 +37,26 @@ const (
 	WidgetPower   = 4 // battery / USB
 )
 
-// WidgetRects reserves the actual 5x8 clock glyphs at scale 3 (90 px).
-// Wi-Fi, power and climate stay to its left, including their clear regions.
-//
-//	clock   (294, 6, 90, 32)
-//	wifi    (224, 4, 20, 14)
-//	power   (246, 4, 44, 14)
-//	climate (224, 22, 66, 14)
+// WidgetRects keeps the clock beside the date, with the live device status
+// in the bottom strip. Empty days replace the clock rect with a large one.
 var WidgetRects = []Widget{
-	{Kind: WidgetClock, X: 294, Y: 6, W: 90, H: 32},
-	{Kind: WidgetWifi, X: 224, Y: 4, W: 20, H: 14},
-	{Kind: WidgetPower, X: 246, Y: 4, W: 44, H: 14},
-	{Kind: WidgetClimate, X: 224, Y: 22, W: 66, H: 14},
+	{Kind: WidgetClock, X: 294, Y: 10, W: 90, H: 32},
+	{Kind: WidgetWifi, X: 312, Y: 276, W: 20, H: 20},
+	{Kind: WidgetPower, X: 336, Y: 276, W: 48, H: 20},
+	{Kind: WidgetClimate, X: 16, Y: 276, W: 120, H: 20},
 }
 
 // Frame flag bits.
 const (
 	FlagForceFull = 1 << 0
+	FlagFocus     = 1 << 1
 )
 
 // Row flag bits.
 const (
 	RowFlagDone    = 1 << 0
 	RowFlagSummary = 1 << 1
+	RowFlagHero    = 1 << 2
 )
 
 // Cursor encodings.
@@ -67,6 +64,7 @@ const (
 	CursorNone         = 0xFF
 	CursorStyleInvert  = 0
 	CursorStyleStrike  = 1
+	CursorStyleFocus   = 2
 	actionUp           = 1
 	actionDown         = 2
 	actionOK           = 3
@@ -94,10 +92,10 @@ type Widget struct {
 
 // Row binds a bitmap row to an item UUID.
 type Row struct {
-	UUID  [16]byte
-	Y     uint16
-	Flags uint8
-	Pad   uint8
+	UUID   [16]byte
+	Y      uint16
+	Flags  uint8
+	Height uint8 // zero in legacy frames; otherwise the row's actual height
 }
 
 // Footer maps a panel GPIO button to an action code.
@@ -132,6 +130,7 @@ func (f *Frame) Stride() int { return int((f.Width + 7) / 8) }
 // NewFrame returns a frame carrying the panel geometry defaults.
 func NewFrame() *Frame {
 	return &Frame{
+		Flags:       FlagFocus,
 		Width:       Width,
 		Height:      Height,
 		RowH:        RowHeight,
@@ -166,7 +165,7 @@ func (f *Frame) Encode() ([]byte, error) {
 		buf.Write(r.UUID[:])
 		_ = binary.Write(&buf, binary.BigEndian, r.Y)
 		buf.WriteByte(r.Flags)
-		buf.WriteByte(0)
+		buf.WriteByte(r.Height)
 	}
 	buf.WriteByte(byte(len(f.Footer)))
 	for _, b := range f.Footer {
@@ -235,7 +234,7 @@ func Decode(data []byte) (*Frame, error) {
 		copy(f.Rows[i].UUID[:], data[p:p+16])
 		f.Rows[i].Y = binary.BigEndian.Uint16(data[p+16:])
 		f.Rows[i].Flags = data[p+18]
-		f.Rows[i].Pad = data[p+19]
+		f.Rows[i].Height = data[p+19]
 		p += 20
 	}
 	nFooter := int(data[p])
@@ -273,6 +272,9 @@ func Decode(data []byte) (*Frame, error) {
 	f.Bitmap = append([]byte(nil), data[p:p+bitmapLen]...)
 	f.Encoded = append([]byte(nil), data...)
 	f.EncodedChecksum = want
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
 	return f, nil
 }
 
@@ -282,6 +284,19 @@ func (f *Frame) validate() error {
 	}
 	if len(f.Rows) > 255 {
 		return errors.New("frame: too many rows")
+	}
+	if f.Flags&FlagFocus != 0 {
+		if int(f.HeaderH)+int(f.FooterH) > int(f.Height) {
+			return errors.New("frame: invalid focus content bounds")
+		}
+		bottom := int(f.Height) - int(f.FooterH)
+		previous := int(f.HeaderH)
+		for _, row := range f.Rows {
+			if int(row.Height) < int(f.RowH) || int(row.Y) < previous || int(row.Y)+int(row.Height) > bottom {
+				return errors.New("frame: focus row outside content or overlapping")
+			}
+			previous = int(row.Y) + int(row.Height)
+		}
 	}
 	if len(f.Footer) > 255 {
 		return errors.New("frame: too many footer buttons")

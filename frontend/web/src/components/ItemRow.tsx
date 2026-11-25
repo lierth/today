@@ -1,3 +1,5 @@
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import { useRef, useState } from 'react';
 import { Pin, PinOff, Sunrise, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -44,6 +46,12 @@ export function ItemRow({
   swipeable,
   trailing,
 }: ItemRowProps) {
+  const categories = useQuery({
+    queryKey: ['categories'],
+    queryFn: api.categories,
+    enabled: Boolean(item.category_id),
+  });
+  const category = categories.data?.find((c) => c.id === item.category_id);
   const done = item.status === 'done';
   const time = clock(item);
   const [revealed, setRevealed] = useState(false);
@@ -87,7 +95,7 @@ export function ItemRow({
         type="button"
         data-open-item={item.id}
         aria-label={`打开 ${item.title}`}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:-outline-offset-2"
         onClick={onOpen}
       >
         <span
@@ -99,6 +107,14 @@ export function ItemRow({
         >
           {item.title}
         </span>
+        {category ? (
+          <span
+            title={category.name}
+            className="max-w-20 shrink-0 truncate rounded bg-[var(--pill)] px-1.5 py-0.5 text-[10px] text-[var(--ctl-fg)]"
+          >
+            {category.name}
+          </span>
+        ) : null}
         {item.pinned ? (
           <Pin className="size-3 shrink-0 text-[var(--faint)]" aria-label="已置顶" />
         ) : null}

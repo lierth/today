@@ -1,3 +1,4 @@
+import { ConfirmProvider } from './components/Confirm';
 import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -15,6 +16,8 @@ const TodayPage = lazy(() => import('./routes/TodayPage').then((m) => ({ default
 const UpcomingPage = lazy(() => import('./routes/UpcomingPage'));
 const HistoryPage = lazy(() => import('./routes/HistoryPage'));
 const SearchPage = lazy(() => import('./routes/SearchPage'));
+const CategoriesPage = lazy(() => import('./routes/CategoriesPage'));
+const TrashPage = lazy(() => import('./routes/TrashPage'));
 const SettingsPage = lazy(() => import('./routes/SettingsPage'));
 
 const query = new QueryClient({
@@ -42,19 +45,23 @@ function Loading() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={query}>
-      <BrowserRouter>
-        <Suspense fallback={<Loading />}>
-          <Routes>
-            <Route element={<App />}>
-              <Route index element={<TodayPage />} />
-              <Route path="upcoming" element={<UpcomingPage />} />
-              <Route path="history" element={<HistoryPage />} />
-              <Route path="search" element={<SearchPage />} />
-              <Route path="settings" element={<SettingsPage />} />
-            </Route>
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
+      <ConfirmProvider>
+        <BrowserRouter>
+          <Suspense fallback={<Loading />}>
+            <Routes>
+              <Route element={<App />}>
+                <Route index element={<TodayPage />} />
+                <Route path="upcoming" element={<UpcomingPage />} />
+                <Route path="history" element={<HistoryPage />} />
+                <Route path="search" element={<SearchPage />} />
+                <Route path="categories" element={<CategoriesPage />} />
+                <Route path="trash" element={<TrashPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+              </Route>
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+      </ConfirmProvider>
       <Toaster position="bottom-center" />
     </QueryClientProvider>
   </StrictMode>,

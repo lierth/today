@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarDays, Clock, Pin, PinOff, Repeat, Trash2 } from 'lucide-react';
+import { CalendarDays, Pin, PinOff, Repeat, Trash2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -8,7 +8,9 @@ import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TimePicker } from './TimePicker';
+import { CategoryPicker } from './CategoryPicker';
 import {
   Select,
   SelectContent,
@@ -156,22 +158,22 @@ export function ItemDrawer({
   };
 
   return (
-    <Sheet
+    <Dialog
       open={Boolean(id)}
       onOpenChange={(open) => {
         if (!open) void close();
       }}
     >
-      <SheetContent
-        side="right"
+      <DialogContent
         data-drawer="item"
         aria-label="事项详情"
-        className="w-full border-l border-[var(--line)] bg-[var(--card)] p-0 sm:max-w-[420px]"
+        className="max-h-[85dvh] overflow-y-auto bg-[var(--card)] p-0 sm:max-w-[440px]"
+        aria-describedby={undefined}
       >
         {row ? (
           <div className="flex h-full flex-col">
-            <SheetHeader className="gap-1 border-b border-[var(--line)] px-4 py-4">
-              <SheetTitle className="sr-only">事项详情</SheetTitle>
+            <DialogHeader className="gap-1 border-b border-[var(--line)] px-4 py-4 pr-12">
+              <DialogTitle className="sr-only">事项详情</DialogTitle>
               <Input
                 aria-label="标题"
                 value={title}
@@ -210,24 +212,23 @@ export function ItemDrawer({
                   </PopoverContent>
                 </Popover>
 
-                <label className="flex items-center gap-1 rounded-[7px] px-1.5 py-1 hover:bg-[var(--card-2)]">
-                  <Clock className="size-3.5" aria-hidden />
-                  <span className="sr-only">时间</span>
-                  <input
-                    type="time"
-                    aria-label="时间"
-                    value={time}
-                    onChange={(e) => setTime(e.target.value)}
-                    className="bg-transparent tabular-nums outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                  />
-                </label>
+                <TimePicker value={time} onChange={setTime} />
 
                 {row.carried_from ? <span>· 从 {row.carried_from} 顺延</span> : null}
                 {row.rrule ? <span>· 重复事项</span> : null}
               </div>
-            </SheetHeader>
+            </DialogHeader>
 
             <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+              <CategoryPicker
+                value={row.category_id || ''}
+                onChange={(category_id) =>
+                  patch.mutate(
+                    { id: row.id, patch: { category_id } },
+                    { onSuccess: () => onChanged?.() },
+                  )
+                }
+              />
               <div className="flex items-center gap-2">
                 <Repeat className="size-3.5 shrink-0 text-[var(--muted)]" aria-hidden />
                 <Select value={rrule === '' ? NO_REPEAT : rrule} onValueChange={updateRRule}>
@@ -313,7 +314,7 @@ export function ItemDrawer({
             </div>
           </div>
         ) : null}
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -12,6 +12,12 @@ export interface BackupRow {
   where: string;
 }
 
+export interface Board {
+  id: string;
+  name: string;
+  pairable: boolean;
+}
+
 /** Carried is a leftover from an earlier day, offered for "move to today". */
 export interface Carried {
   id: string;
@@ -136,8 +142,8 @@ export interface Tag {
 
 /**
  * TodayView is the panel's whole payload: the day header, the rows, the
- * leftovers and the devices. One call, because the panel is rebuilt on every
- * open and a round trip per section would show it half-empty for a moment.
+ * leftovers and the devices. One call keeps each refresh consistent instead
+ * of painting the sections a round trip at a time.
  */
 export interface TodayView {
   /** 11月19日 */
@@ -212,11 +218,14 @@ export const Panel = {
   copyPassword: bind<[], void>("Panel.CopyPassword", () => []),
   /** CopyText is for the smaller copy buttons (LAN address, setup lines). */
   copyText: bind<[string], void>("Panel.CopyText", (text: string) => [text]),
+  deleteBackup: bind<[string], boolean>("Panel.DeleteBackup", (name: string) => [name]),
   /**
    * DeviceToken mints a token and returns the four lines to type on the board.
    * The token is shown once: only its hash is stored.
    */
   deviceToken: bind<[string], SetupLines>("Panel.DeviceToken", (id: string) => [id]),
+  /** DiscoverBoards finds displays on the Mac's directly attached LAN. */
+  discoverBoards: bind<[], Board[]>("Panel.DiscoverBoards", () => []),
   /**
    * DownloadUpdate starts the full update: check, fetch the asset, verify it and
    * stage it next to the running app. It returns as soon as the work is queued;
@@ -244,6 +253,8 @@ export const Panel = {
    * own setup pages).
    */
   openURL: bind<[string], void>("Panel.OpenURL", (url: string) => [url]),
+  /** PairBoard binds the selected display using its on-screen code. */
+  pairBoard: bind<[string, string, string], DeviceRow>("Panel.PairBoard", (id: string, code: string, name: string) => [id, code, name]),
   /** Parse previews what the parser understood, for the tags under the input. */
   parse: bind<[string], string[]>("Panel.Parse", (text: string) => [text]),
   /**
@@ -306,6 +317,8 @@ export const Panel = {
   settings: bind<[], Record<string, string>>("Panel.Settings", () => []),
   /** SettingsData is the settings window's one read. */
   settingsData: bind<[], SettingsView>("Panel.SettingsData", () => []),
+  /** SettingsReady reveals the settings window after its theme and content render. */
+  settingsReady: bind<[], void>("Panel.SettingsReady", () => []),
   /**
    * Tags is Parse with the verbatim slices: the panel draws one chip per tag and
    * removes a chip by cutting its Text out of the draft, so the label (which is

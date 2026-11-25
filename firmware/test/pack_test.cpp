@@ -25,6 +25,7 @@
 #include "font.h"
 #include "fontcheck.h"
 #include "netescape.h"
+#include "pairing_state.h"
 #include "portal_plan.h"
 #include "portalscan.h"
 #include "logo_inc.h"
@@ -220,6 +221,8 @@ void TestPortalLayoutFits() {
 // The clock text is wider than its declared rect; right-aligning it must keep
 // it on the panel ("14:05" is 90 px at scale 3, the panel is 400 wide).
 void TestClockFitsPanel() {
+  Expect(screens::ClockScale(90,32)==3, "normal clock retains its scale");
+  Expect(screens::ClockScale(210,56)==7, "empty focus screen has a large clock");
   const int x = screens::ClockTextX(320, 64, 3);
   const int w = 5 * 6 * 3;
   printf("clock: x=%d width=%d right=%d (panel %d)\n", x, w, x + w, st7305::kWidth);
@@ -622,6 +625,12 @@ void TestDeviceScreens(const char* outDir) {
     }
     Expect(black > 400, "portal password is drawn large");
   }
+  screens::DrawPairing(bmp, "today-aabbccddeeff", "123456");
+  {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/device-pairing.pbm", outDir);
+    WritePBM(path, bmp, screens::kWidth, screens::kHeight);
+  }
   screens::DrawBoot(bmp, "0.3.0");
   char path[256];
   snprintf(path, sizeof(path), "%s/device-boot.pbm", outDir);
@@ -729,7 +738,7 @@ void TestFrameFile(const char* path) {
          fr.width, fr.height, fr.headerHeight, fr.footerHeight, fr.rowCount,
          fr.widgetCount, fr.bitmapLen);
   Expect(fr.width == 400 && fr.height == 300, "frame geometry");
-  Expect(fr.headerHeight == 44 && fr.footerHeight == 0, "v2 header/footer");
+  Expect(fr.headerHeight == 60 && fr.footerHeight == 28 && (fr.flags & tbf::kFlagFocus), "focus header/footer");
   Expect(fr.widgetCount == 4, "four widgets");
   // Order is a rendering detail; the contract is that each kind is present
   // with a rectangle inside the panel.
@@ -852,54 +861,91 @@ void TestWifiRetry() {
 void TestPortalScanStates() {
   using portalscan::State;
   using portalscan::Kick;
-
-  // A refused kick must not look like a scan in flight, and must come with a
-  // backoff deadline: the old code set the "scanning" flag and dropped the
-  // return value, so the page spun "扫描中…" against a radio that never
-  // answered and then showed an empty list with no explanation.
   State s;
-  portalscan::NoteKick(s, Kick::Refused, -2, 1000, 3000);
-  Expect(!s.scanning, "refused kick is not a running scan");
+  Expect(!portalscan::Ready(s, 1000), "polling alone never starts a scan");
+  Expect(portalscan::Request(s, 1000), "first request reserves the radio");
+  Expect(!portalscan::Request(s, 1100), "duplicate requests do not reset a pending scan");
+  Expect(!portalscan::Ready(s, 1249), "wait for the old connection to stop");
+  Expect(portalscan::Ready(s, 1250), "scan starts after the settling interval");
+  portalscan::NoteKick(s, Kick::Refused, -2, 1250, 3000);
+  Expect(!s.scanning && s.requested, "refused scan remains queued for retry");
   Expect(s.error == -2, "refused kick keeps the driver code");
-  Expect(!portalscan::Ready(s, 3999), "refused kick backs off");
-  Expect(portalscan::Ready(s, 4000), "backoff expires at the deadline");
-
-  // A started kick clears the old error and reports the scan as running.
-  portalscan::NoteKick(s, Kick::Started, -1, 5000, 3000);
-  Expect(s.scanning, "started kick runs");
+  Expect(!portalscan::Ready(s, 4249), "refused kick backs off");
+  Expect(portalscan::Ready(s, 4250), "backoff expires at the deadline");
+  portalscan::NoteKick(s, Kick::Started, -1, 4250, 3000);
+  Expect(s.scanning && !s.requested && !s.complete, "started scan is pending, not empty");
   Expect(s.error == 0, "started kick clears the error");
+  Expect(!portalscan::Request(s, 4300), "refresh cannot replace an in-flight scan");
+  Expect(portalscan::NotePoll(s, -1, 5000, 3000), "running poll keeps waiting");
+  Expect(!portalscan::NotePoll(s, 7, 6000, 3000), "successful poll ends the scan");
+  Expect(!s.scanning && s.complete && s.error == 0, "finished scan is ready to display");
+  Expect(!portalscan::Ready(s, 9000), "reading finished results does not restart scanning");
+  Expect(portalscan::Request(s, 10000), "explicit refresh can start a new scan");
+  Expect(!s.complete, "old completion cannot be mistaken for fresh results");
 
-  // While running, polls keep it running.
-  Expect(portalscan::NotePoll(s, -1, 6000, 3000), "running poll says running");
-  Expect(s.scanning, "still scanning after a running poll");
+  State failed;
+  portalscan::Request(failed, 1000, 0);
+  for (int i = 0; i < 3; ++i) {
+    portalscan::NoteKick(failed, Kick::Started, -1, 1000 + i * 4000, 3000);
+    portalscan::NotePoll(failed, -2, 2000 + i * 4000, 3000);
+  }
+  Expect(!failed.scanning && !failed.requested && !failed.complete,
+         "three failed scans stop instead of waiting forever");
+  Expect(failed.error == -2, "scan failure stays visible");
+  Expect(!portalscan::Ready(failed, 30000), "failed scan waits for an explicit retry");
+  Expect(portalscan::Request(failed, 30000), "person can retry after a failure");
+  Expect(failed.error == 0 && failed.attempts == 0, "manual retry clears the failed attempt");
 
-  // The driver answering with a count ends the scan cleanly.
-  Expect(!portalscan::NotePoll(s, 7, 7000, 3000), "finished poll ends the scan");
-  Expect(!s.scanning, "not scanning after a finished poll");
-  Expect(s.error == 0, "finished poll leaves no error");
+  State busy;
+  portalscan::Request(busy, 1000, 0);
+  portalscan::NoteKick(busy, Kick::Busy, 0, 1000, 3000);
+  Expect(busy.scanning && !busy.requested, "an existing scan is adopted once");
+  portalscan::NotePoll(busy, 0, 2000, 3000);
+  Expect(busy.complete && busy.error == 0, "a finished empty scan is a valid result");
 
-  // The failure that used to vanish: scanComplete() answers WIFI_SCAN_FAILED.
-  State f;
-  portalscan::NoteKick(f, Kick::Started, -1, 1000, 3000);
-  Expect(!portalscan::NotePoll(f, -2, 2000, 3000), "failed poll ends the scan");
-  Expect(!f.scanning, "not scanning after a failed poll");
-  Expect(f.error == -2, "failed poll records the code");
-  Expect(!portalscan::Ready(f, 4999), "failed poll backs off");
-  Expect(portalscan::Ready(f, 5000), "failed poll retries at the deadline");
+  State wrap;
+  portalscan::Request(wrap, 0xffffff00u, 0);
+  portalscan::NoteKick(wrap, Kick::Refused, -2, 0xffffff00u, 3000);
+  Expect(!portalscan::Ready(wrap, 0x00000ab7u), "backoff works across millis wrap");
+  Expect(portalscan::Ready(wrap, 0x00000ab8u), "wrapped deadline is reached");
+}
 
-  // A kick while another scan is already running is not an error: the page
-  // should keep polling the one in flight.
-  State b;
-  portalscan::NoteKick(b, Kick::Busy, 0, 1000, 3000);
-  Expect(b.scanning, "busy kick still reports a running scan");
-  Expect(b.error == 0, "busy kick is not an error");
-  Expect(portalscan::Ready(b, 1000), "busy kick needs no backoff");
-
-  // millis() wrap: deadline just after the wrap, now just past it.
-  State w;
-  portalscan::NoteKick(w, Kick::Refused, -2, 0xFFFFF000u, 3000);
-  Expect(!portalscan::Ready(w, 0xFFFFF500u), "wrap: 1.3 s in is still a wait");
-  Expect(portalscan::Ready(w, 0xFFFFFBB8u), "wrap: deadline reached");
+void TestPairingState() {
+  pairingstate::State state;
+  state.open = true;
+  state.openedAt = 100;
+  for (int i = 0; i < 5; ++i) {
+    Expect(pairingstate::Verify(state, "123456", "000000", 200 + i) == pairingstate::Check::Wrong,
+           "wrong pairing code is refused");
+  }
+  Expect(pairingstate::Verify(state, "123456", "123456", 300) == pairingstate::Check::Blocked,
+         "correct code cannot bypass the guessing cooldown");
+  Expect(pairingstate::Verify(state, "123456", "123456", 30204) == pairingstate::Check::Accepted,
+         "the visible code works after the cooldown");
+  Expect(pairingstate::Verify(state, "123456", "123456", 600100) == pairingstate::Check::Closed,
+         "expired code cannot replace a pairing");
+  state.openedAt = 0xffffff00u;
+  Expect(pairingstate::Active(state, 0x100u), "pairing window survives millis wrap");
+  Expect(!pairingstate::EqualSecret("", ""), "an empty ticket is never proof");
+  Expect(!pairingstate::EqualSecret("123456", "12345"), "truncated code is refused");
+  state.openedAt = 100;
+  Expect(pairingstate::Claim(state, "abcdefghijklmnopqrstuvwxyz012345", 200), "first Mac reserves the pairing");
+  Expect(!pairingstate::Claim(state, "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", 201), "another pairing cannot steal an active reservation");
+  Expect(pairingstate::Owns(state, "abcdefghijklmnopqrstuvwxyz012345", 202), "only the first pairing can commit");
+  Expect(!pairingstate::Owns(state, "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", 202), "another pairing cannot commit with its own claim");
+  Expect(pairingstate::Claim(state, "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", 30200), "abandoned pairing can be retried after thirty seconds");
+  Expect(pairingstate::ValidServer("http://192.168.1.10:8787", "192.168.1.10"), "server may use the pairing Mac address");
+  Expect(pairingstate::ValidServer("http://my-mac.local:8787", "192.168.1.10"), "Bonjour hostname survives DHCP changes");
+  for (const char* bad : {"http://192.168.1.20:8787", "http://example.com:8787", "http://user@my-mac.local:8787",
+                          "http://my-mac.local:0", "http://my-mac.local:65536", "http://my-mac.local:8787/path"}) {
+    Expect(!pairingstate::ValidServer(bad, "192.168.1.10"), "unrelated address or malformed server is refused");
+  }
+  Expect(pairingstate::ValidToken("abcdefghijklmnopqrstuvwxyz012345"), "generated token is accepted");
+  Expect(!pairingstate::ValidToken("123456"), "pairing code cannot be used as a permanent token");
+  uint8_t bitmap[screens::kBytes + 2];
+  memset(bitmap, 0xA5, sizeof(bitmap));
+  screens::DrawPairing(bitmap + 1, "today-aabbccddeeff", "123456");
+  Expect(bitmap[0] == 0xA5 && bitmap[sizeof(bitmap)-1] == 0xA5, "pairing screen stays inside the panel buffer");
 }
 
 int main(int argc, char** argv) {
@@ -910,6 +956,7 @@ int main(int argc, char** argv) {
   TestEscaping();
   TestPortalPlan();
   TestPortalScanStates();
+  TestPairingState();
   TestWifiLostBannerFits();
   TestWifiRetry();
   TestSoundSynth();

@@ -74,11 +74,11 @@
   </Card>
 
   <Card title="声音">
-    <Row label="音量" hint="板子的蜂鸣器">
+    <Row label="扬声器音量">
       <div class="slider">
         <input
           type="range"
-          aria-label="音量"
+          aria-label="扬声器音量"
           min="0"
           max="100"
           step="5"
@@ -124,7 +124,7 @@
     gap: 14px;
   }
   select {
-    height: 25px;
+    height: var(--ctl);
     padding: 0 6px;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -134,7 +134,7 @@
     font-size: 12px;
   }
   input[type='time'] {
-    height: 25px;
+    height: var(--ctl);
     padding: 0 4px;
     border: 1px solid var(--line);
     border-radius: 7px;

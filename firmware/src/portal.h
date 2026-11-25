@@ -16,13 +16,14 @@ void Start();
 void Stop();
 void Loop();
 bool Active();
-// ScanCount: networks in the cached scan (the last completed /scan).
+// ScanCount: networks in the last completed background scan.
 int ScanCount();
 
 // StartUserOpened/UserOpened: a hotspot the person asked for (KEY hold) keeps
 // running even when the saved network comes back, so the setup page cannot
 // vanish under their thumbs. Only a portal closed by a link coming up while it
 // was *not* user-opened clears the flag.
+// Visiting the setup page also marks it user-opened until setup ends.
 void StartUserOpened();
 bool UserOpened();
 

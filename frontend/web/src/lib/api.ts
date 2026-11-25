@@ -61,6 +61,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export interface ItemDraft {
+  category_id?: string;
   title?: string;
   description?: string;
   date?: string;
@@ -81,6 +82,7 @@ export interface UndoPath {
 }
 
 export interface ItemPatchBody {
+  category_id?: string;
   title?: string;
   description?: string;
   status?: 'open' | 'done' | 'cancelled';
@@ -92,6 +94,16 @@ export interface ItemPatchBody {
 }
 
 export const api = {
+  categories: () => call<{ id: string; name: string }[]>('GET', '/api/v2/categories'),
+  saveCategory: (id: string, name: string) =>
+    call<{ id: string; name: string }>(
+      id ? 'PATCH' : 'POST',
+      id ? `/api/v2/categories/${encodeURIComponent(id)}` : '/api/v2/categories',
+      { name },
+    ),
+  deleteCategory: (id: string) => call('DELETE', `/api/v2/categories/${encodeURIComponent(id)}`),
+  trash: () => call<Item[]>('GET', '/api/v2/trash'),
+  deleteForever: (id: string) => call('DELETE', `/api/v2/trash/${encodeURIComponent(id)}`),
   day: () => call<DayPayload>('GET', '/api/v2/day'),
   today: () => call<TodayPayload>('GET', '/api/v2/today'),
   items: (view: 'today' | 'all' = 'today') =>

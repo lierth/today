@@ -38,15 +38,18 @@ export function Tick({
             : '标为完成'
       }
       disabled={busy}
+      aria-busy={busy || undefined}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(!done);
       }}
       className={cn(
         'grid shrink-0 place-items-center rounded-full border transition-colors',
-        done
-          ? 'border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)]'
-          : 'border-[var(--faint)] bg-transparent text-transparent hover:border-[var(--fg)]',
+        busy
+          ? 'border-[var(--line)] bg-transparent text-[var(--ctl-fg)]'
+          : done
+            ? 'border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)]'
+            : 'border-[var(--faint)] bg-transparent text-transparent hover:border-[var(--fg)]',
         busy && 'opacity-60',
         className,
       )}

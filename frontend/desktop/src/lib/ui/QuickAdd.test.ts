@@ -62,4 +62,19 @@ describe('QuickAdd', () => {
     await waitFor(() => expect(submit).toHaveBeenCalledWith('写周报'));
     expect(field.value).toBe('');
   });
+  it('adds with the button and returns focus for the next item', async () => {
+    tags.mockResolvedValue([]);
+    const submit = vi.fn();
+    const user = userEvent.setup();
+    render(QuickAdd, { props: { onsubmit: submit } });
+    const field = screen.getByLabelText('快速添加') as HTMLInputElement;
+    const button = screen.getByRole('button', { name: '添加事项' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await user.type(field, '写周报');
+    await user.click(button);
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('写周报'));
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(field.value).toBe('');
+    expect(button.disabled).toBe(true);
+  });
 });

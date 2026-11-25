@@ -17,8 +17,8 @@ export default function HistoryPage() {
     <div className="flex flex-col gap-4">
       <h1 className="text-[19px] font-[560] tracking-tight md:text-[22px]">历史</h1>
 
-      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 rounded-[12px] border border-[var(--line)] bg-[var(--card)] px-4 py-3">
-        <p className="text-[12.5px] text-[var(--fg-2)]">
+      <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 rounded-[12px] border border-[var(--line)] bg-[var(--card)] px-4 py-3">
+        <p className="flex items-center gap-1 text-[12.5px] text-[var(--fg-2)]">
           本周完成{' '}
           <span className="text-[17px] font-[560] text-[var(--fg)] tabular-nums">
             {data?.done_this_week ?? 0}
