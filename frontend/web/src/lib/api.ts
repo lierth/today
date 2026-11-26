@@ -35,6 +35,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     credentials: 'same-origin',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+  }).catch(() => {
+    throw new ApiRequestError(0, '连接失败，请检查网络或确认 Today 正在运行后重试。');
   });
 
   // A session that expired answers 401 from anywhere — the API, the page, a

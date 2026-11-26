@@ -35,6 +35,7 @@ type Update struct {
 // updateState is the host's copy plus the fields the machine does not need.
 type updater struct {
 	State       release.State
+	CheckResult string
 	Version     string
 	Notes       string
 	PageURL     string
@@ -100,7 +101,7 @@ func fetchReleaseInfo(ctx context.Context, client *http.Client, feed string) (*r
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(body, &gh); err != nil {
+	if err := json.Unmarshal(body, &gh); err != nil || gh.TagName == "" {
 		// The small custom shape: "version" + "url".
 		var small struct {
 			Version string `json:"version"`
@@ -114,6 +115,9 @@ func fetchReleaseInfo(ctx context.Context, client *http.Client, feed string) (*r
 		}
 		if !release.StrictTag(small.Version) {
 			return nil, fmt.Errorf("更新源的版本号格式不合法：%q", small.Version)
+		}
+		if !strings.HasPrefix(small.URL, "https://") && !strings.HasPrefix(small.URL, "http://") {
+			return nil, fmt.Errorf("更新地址必须是 http(s)")
 		}
 		return &releaseInfoFull{Version: small.Version, PageURL: small.URL}, nil
 	}
@@ -186,6 +190,10 @@ func (h *Host) applyUpdateEvent(ev release.Event) release.Transition {
 	tr := release.Next(cur, ev)
 	h.updater.State = tr.State
 	switch ev.Kind {
+	case release.EventNone:
+		if tr.State == release.StateIdle {
+			h.updater.CheckResult = tr.Note
+		}
 	case release.EventAvailable:
 		h.updater.Version = ev.Version
 	case release.EventFail:
@@ -696,7 +704,9 @@ func (h *Host) updateStatus() string {
 	defer h.mu.Unlock()
 	switch h.updater.State {
 	case release.StateIdle, "":
-		return ""
+		return h.updater.CheckResult
+	case release.StateChecking:
+		return "正在检查更新…"
 	case release.StateAvailable:
 		return "发现新版本 " + h.updater.Version
 	case release.StateDownloading:

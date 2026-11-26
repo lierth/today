@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"today/internal/boardlink"
+	"today/internal/release"
 )
 
 // errNoHost is what every binding answers when the panel was built without a
@@ -132,8 +133,14 @@ func (p *Panel) SettingsData(ctx context.Context) (SettingsView, error) {
 	p.h.mu.Lock()
 	funnel, detail, action := p.h.funnel.State, p.h.funnel.Detail, p.h.funnel.ActionURL
 	localNet := string(p.h.localNet)
-	updating := p.h.updating
-	latest, updateURL := p.h.latest, p.h.updateURL
+	state := p.h.updater.State
+	updating := state == release.StateChecking || state == release.StateDownloading ||
+		state == release.StateVerifying || state == release.StateInstalling
+	latest, updateURL := "", ""
+	if state == release.StateAvailable || state == release.StateDownloading ||
+		state == release.StateVerifying || state == release.StateReady {
+		latest, updateURL = p.h.updater.Version, p.h.updater.PageURL
+	}
 	p.h.mu.Unlock()
 	return SettingsView{
 		Version: Version, Dev: p.h.dev, Settings: settings,
@@ -294,18 +301,18 @@ func (p *Panel) CheckUpdate(ctx context.Context) error {
 	if p == nil || p.h == nil {
 		return errNoHost
 	}
-	p.h.checkUpdate()
+	p.h.beginUpdate()
 	return nil
 }
 
-// DownloadUpdate starts the full update: check, fetch the asset, verify it and
-// stage it next to the running app. It returns as soon as the work is queued;
+// DownloadUpdate fetches and verifies the release found by CheckUpdate, then
+// stages it next to the running app. It returns as soon as the work is queued;
 // the window re-reads SettingsData to follow the progress line.
 func (p *Panel) DownloadUpdate() {
 	if p == nil || p.h == nil {
 		return
 	}
-	p.h.beginUpdate()
+	p.h.downloadUpdate()
 }
 
 // UploadFirmware reads a .bin the window picked and stages it for the boards.

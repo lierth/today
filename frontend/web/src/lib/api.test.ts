@@ -65,4 +65,15 @@ describe('api.call', () => {
 
     await expect(api.today()).rejects.toMatchObject({ message: '新口令至少 8 位' });
   });
+
+  it('shows a useful message when the network is unavailable', async () => {
+    globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+    const { api } = await loadApi();
+
+    await expect(api.create({ title: '保留草稿' })).rejects.toMatchObject({
+      status: 0,
+      message: '连接失败，请检查网络或确认 Today 正在运行后重试。',
+    });
+    expect(navigated).toEqual([]);
+  });
 });

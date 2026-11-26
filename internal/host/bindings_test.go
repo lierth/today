@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"today/internal/release"
 	"today/internal/server"
 	"today/internal/store"
 )
@@ -46,6 +49,52 @@ func newPanelEnv(t *testing.T) (*Host, *Panel, *store.Store) {
 	st.SetNow(func() time.Time { return pin })
 	h := New(srv, true, log.New(io.Discard, "", 0))
 	return h, NewPanel(h), st
+}
+
+func TestPanelCheckUpdateReportsProgressAndResult(t *testing.T) {
+	h, panel, _ := newPanelEnv(t)
+	respond := make(chan struct{})
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-respond
+		_, _ = io.WriteString(w, `{"tag_name":"v0.0.0","html_url":"https://example.com/release"}`)
+	}))
+	t.Cleanup(feed.Close)
+	h.settings = map[string]string{"update_feed": feed.URL}
+	ctx := context.Background()
+	if err := panel.CheckUpdate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	view, err := panel.SettingsData(ctx)
+	if err != nil || !view.Update.Updating || view.Update.Status != "正在检查更新…" {
+		close(respond)
+		t.Fatalf("check progress = %+v, error %v", view.Update, err)
+	}
+	close(respond)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		view, err = panel.SettingsData(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !view.Update.Updating {
+			if view.Update.Status != "已是最新版本" {
+				t.Fatalf("completed check = %+v", view.Update)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("update check did not finish")
+}
+
+func TestPanelDownloadUsesCheckedRelease(t *testing.T) {
+	h, panel, _ := newPanelEnv(t)
+	h.updater.State = release.StateAvailable
+	h.updater.Version = "v99.0.0"
+	panel.DownloadUpdate()
+	if h.updater.State != release.StateFailed || h.updater.Err != "没有可下载的版本" {
+		t.Fatalf("download did not validate the checked asset: %+v", h.updater)
+	}
 }
 
 func TestPanelTodayShape(t *testing.T) {

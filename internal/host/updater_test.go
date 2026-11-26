@@ -128,6 +128,25 @@ func TestFetchReleaseInfoPicksArm64Zip(t *testing.T) {
 	}
 }
 
+func TestFetchReleaseInfoCustomFeed(t *testing.T) {
+	for _, target := range []string{"https://example.com/release", "file:///tmp/release"} {
+		t.Run(target, func(t *testing.T) {
+			feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"version": "v0.4.0", "url": target})
+			}))
+			defer feed.Close()
+			info, err := fetchReleaseInfo(context.Background(), feed.Client(), feed.URL)
+			if strings.HasPrefix(target, "https://") {
+				if err != nil || info.Version != "v0.4.0" || info.PageURL != target {
+					t.Fatalf("custom feed = %+v, error %v", info, err)
+				}
+			} else if err == nil {
+				t.Fatal("non-HTTP update URL accepted")
+			}
+		})
+	}
+}
+
 // The signed manifest path: the right key parses the sums, and a flipped byte
 // in the manifest is refused before anything is downloaded.
 func TestFetchSignedSumsFromServer(t *testing.T) {

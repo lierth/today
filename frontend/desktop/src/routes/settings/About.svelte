@@ -51,6 +51,12 @@
   const update = $derived(data.update);
   const newer = $derived(update.latest !== '' && update.latest !== data.version);
   const s = $derived(data.settings);
+
+  $effect(() => {
+    if (!update.updating) return;
+    const timer = setInterval(() => void reload(), 1000);
+    return () => clearInterval(timer);
+  });
 </script>
 
 <div class="stack">

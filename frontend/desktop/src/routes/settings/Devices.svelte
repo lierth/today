@@ -197,12 +197,12 @@
               {soundSent === device.id ? '已发送' : '试听提示音'}
             </button>
             <button type="button" onclick={() => frame(device.id)}>
-              {previewOf === device.id ? '收起预览' : '预览画面'}
+              {previewOf === device.id ? '收起预览' : '布局预览'}
             </button>
             <button type="button" class="danger" onclick={() => revoke(device)}>取消配对</button>
           </div>
           {#if previewOf === device.id && preview}
-            <img class="frame" src={preview} alt="{device.name} 的画面预览" />
+            <img class="frame" src={preview} alt="{device.name} 的布局预览，时钟和状态为示意值" />
           {/if}
         </div>
       {/each}

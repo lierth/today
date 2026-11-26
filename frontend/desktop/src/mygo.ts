@@ -227,8 +227,8 @@ export const Panel = {
   /** DiscoverBoards finds displays on the Mac's directly attached LAN. */
   discoverBoards: bind<[], Board[]>("Panel.DiscoverBoards", () => []),
   /**
-   * DownloadUpdate starts the full update: check, fetch the asset, verify it and
-   * stage it next to the running app. It returns as soon as the work is queued;
+   * DownloadUpdate fetches and verifies the release found by CheckUpdate, then
+   * stages it next to the running app. It returns as soon as the work is queued;
    * the window re-reads SettingsData to follow the progress line.
    */
   downloadUpdate: bind<[], void>("Panel.DownloadUpdate", () => []),
